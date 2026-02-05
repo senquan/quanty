@@ -1,0 +1,39 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:15
+    container_name: quant-postgres
+    environment:
+      POSTGRES_DB: quant_db
+      POSTGRES_USER: quant_user
+      POSTGRES_PASSWORD: quant_password
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init:/docker-entrypoint-initdb.d
+    networks:
+      - quant-network
+
+  backend:
+    build: .
+    container_name: quant-backend
+    environment:
+      DATABASE_URL: postgresql+asyncpg://quant_user:quant_password@postgres:5432/quant_db
+      SECRET_KEY: your-secret-key-change-in-production
+      DEBUG: "False"
+    ports:
+      - "8000:8000"
+    depends_on:
+      - postgres
+    networks:
+      - quant-network
+    command: ["sh", "-c", "alembic upgrade head && uvicorn main:app --host 0.0.0.0 --port 8000"]
+
+volumes:
+  postgres_data:
+
+networks:
+  quant-network:
+    driver: bridge

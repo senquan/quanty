@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+dist/
+
+# PyInstaller
+*.manifest
+*.spec
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Unit test / coverage reports
+.cache
+test/
+*_test.py
+
+# Scripts
+scripts/
+
+# Environment
+.venv
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# db
+*.db

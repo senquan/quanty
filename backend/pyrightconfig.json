@@ -1,0 +1,23 @@
+{
+  "include": [
+    "app",
+    "scripts"
+  ],
+  "exclude": [
+    "**/__pycache__",
+    "**/.pytest_cache",
+    "**/venv",
+    "**/.venv"
+  ],
+  "venvPath": ".",
+  "venv": ".venv",
+  "extraPaths": [
+    "."
+  ],
+  "typeCheckingMode": "strict",
+  "reportMissingImports": false,
+  "reportMissingTypeStubs": "warning",
+  "reportImplicitOverride": "error",
+  "reportIncompatibleMethodOverride": "error",
+  "pythonVersion": "3.12"
+}
