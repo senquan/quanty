@@ -1,0 +1,6 @@
+⭕ 	FastAPI通过集成Pydantic库实现自动请求数据验证。
+⭕ 	对于/login接口，使用fastapi.security自带的OAuth2PasswordRequestForm，Content-Type 必须是 application/x-www-form-urlencoded，并且严格要求表单中必须包含 username 和 password 字段
+⭕ 	sqlalchemy.exc.MissingGreenlet 错误是一个典型的 SQLAlchemy 异步/同步混用问题。当使用postgres异步驱动时（DATABASE_URL=postgresql+asyncpg://...）使用 create_async_engine 创建连接引擎，并
+	from sqlalchemy.ext.asyncio import AsyncSession 采用异步会话，在查询时注意使用 await 关键词。
+⭕ 	
+
