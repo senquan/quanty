@@ -11,5 +11,13 @@
     "title": "概览",
     "analytics": "分析页",
     "workspace": "工作台"
+  },
+  "quant": {
+    "title": "量化交易",
+    "dashboard": "量化概览",
+    "strategy": "策略管理",
+    "strategyEdit": "策略编辑",
+    "backtest": "回测结果",
+    "trading": "交易管理"
   }
 }
