@@ -1,7 +1,20 @@
 <script lang="ts" setup>
-import { ref, reactive } from 'vue';
+import { ref } from 'vue';
 import { useRouter } from 'vue-router';
-import { Card, Table, Tag, Button, Input, Select, Row, Col } from 'element-plus';
+
+import {
+  ElButton,
+  ElCard,
+  ElCol,
+  ElInput,
+  ElRow,
+  ElSelect,
+  ElTable,
+  ElTableColumn,
+  ElTag,
+  ElOption,
+} from 'element-plus';
+
 import { Plus, Search, Play, Pause, Trash2, Edit } from 'lucide-vue-next';
 
 const router = useRouter();
@@ -100,14 +113,14 @@ const handleDelete = (row: Strategy) => {
 
 <template>
   <div class="strategy-list p-4">
-    <Card shadow="never">
+    <ElCard shadow="never">
       <!-- 搜索和操作栏 -->
       <template #header>
-        <Row justify="space-between" align="middle">
-          <Col>
-            <Row :gutter="12">
-              <Col>
-                <Input
+        <ElRow justify="space-between" align="middle">
+          <ElCol>
+            <ElRow :gutter="12">
+              <ElCol>
+                <ElInput
                   v-model="searchKeyword"
                   placeholder="搜索策略名称..."
                   clearable
@@ -116,77 +129,77 @@ const handleDelete = (row: Strategy) => {
                   <template #prefix>
                     <Search class="w-4 h-4" />
                   </template>
-                </Input>
-              </Col>
-              <Col>
-                <Select v-model="statusFilter" placeholder="状态筛选" clearable style="width: 140px">
-                  <el-option label="运行中" value="running" />
-                  <el-option label="已暂停" value="paused" />
-                  <el-option label="回测中" value="backtesting" />
-                  <el-option label="草稿" value="draft" />
-                </Select>
-              </Col>
-            </Row>
-          </Col>
-          <Col>
-            <Button type="primary" @click="handleCreate">
+                </ElInput>
+              </ElCol>
+              <ElCol>
+                <ElSelect v-model="statusFilter" placeholder="状态筛选" clearable style="width: 140px">
+                  <ElOption label="运行中" value="running" />
+                  <ElOption label="已暂停" value="paused" />
+                  <ElOption label="回测中" value="backtesting" />
+                  <ElOption label="草稿" value="draft" />
+                </ElSelect>
+              </ElCol>
+            </ElRow>
+          </ElCol>
+          <ElCol>
+            <ElButton type="primary" @click="handleCreate">
               <Plus class="w-4 h-4 mr-1" />
               新建策略
-            </Button>
-          </Col>
-        </Row>
+            </ElButton>
+          </ElCol>
+        </ElRow>
       </template>
 
       <!-- 策略表格 -->
-      <Table :data="strategies" stripe>
-        <el-table-column prop="name" label="策略名称" min-width="180">
+      <ElTable :data="strategies" stripe>
+        <ElTableColumn prop="name" label="策略名称" min-width="180">
           <template #default="{ row }">
             <div>
               <div class="font-medium">{{ row.name }}</div>
               <div class="text-xs text-gray-400 mt-1">{{ row.description }}</div>
             </div>
           </template>
-        </el-table-column>
-        <el-table-column prop="status" label="状态" width="100" align="center">
+        </ElTableColumn>
+        <ElTableColumn prop="status" label="状态" width="100" align="center">
           <template #default="{ row }">
-            <Tag :type="getStatusType(row.status)">{{ getStatusLabel(row.status) }}</Tag>
+            <ElTag :type="getStatusType(row.status)">{{ getStatusLabel(row.status) }}</ElTag>
           </template>
-        </el-table-column>
-        <el-table-column prop="totalReturn" label="总收益率" width="100" align="right">
+        </ElTableColumn>
+        <ElTableColumn prop="totalReturn" label="总收益率" width="100" align="right">
           <template #default="{ row }">
             <span :class="row.totalReturn >= 0 ? 'text-green-500' : 'text-red-500'">
               {{ row.totalReturn >= 0 ? '+' : '' }}{{ row.totalReturn }}%
             </span>
           </template>
-        </el-table-column>
-        <el-table-column prop="sharpeRatio" label="夏普比率" width="100" align="right" />
-        <el-table-column prop="maxDrawdown" label="最大回撤" width="100" align="right">
+        </ElTableColumn>
+        <ElTableColumn prop="sharpeRatio" label="夏普比率" width="100" align="right" />
+        <ElTableColumn prop="maxDrawdown" label="最大回撤" width="100" align="right">
           <template #default="{ row }">
             <span class="text-red-500">{{ row.maxDrawdown }}%</span>
           </template>
-        </el-table-column>
-        <el-table-column prop="winRate" label="胜率" width="80" align="right">
+        </ElTableColumn>
+        <ElTableColumn prop="winRate" label="胜率" width="80" align="right">
           <template #default="{ row }">{{ row.winRate }}%</template>
-        </el-table-column>
-        <el-table-column prop="updatedAt" label="更新时间" width="110" />
-        <el-table-column label="操作" width="200" fixed="right">
+        </ElTableColumn>
+        <ElTableColumn prop="updatedAt" label="更新时间" width="110" />
+        <ElTableColumn label="操作" width="200" fixed="right">
           <template #default="{ row }">
-            <Button link type="primary" size="small" @click="handleEdit(row)">
+            <ElButton link type="primary" size="small" @click="handleEdit(row)">
               <Edit class="w-4 h-4 mr-1" />编辑
-            </Button>
-            <Button link type="success" size="small" @click="handleRun(row)" v-if="row.status !== 'running'">
+            </ElButton>
+            <ElButton link type="success" size="small" @click="handleRun(row)" v-if="row.status !== 'running'">
               <Play class="w-4 h-4 mr-1" />运行
-            </Button>
-            <Button link type="warning" size="small" @click="handlePause(row)" v-if="row.status === 'running'">
+            </ElButton>
+            <ElButton link type="warning" size="small" @click="handlePause(row)" v-if="row.status === 'running'">
               <Pause class="w-4 h-4 mr-1" />暂停
-            </Button>
-            <Button link type="danger" size="small" @click="handleDelete(row)">
+            </ElButton>
+            <ElButton link type="danger" size="small" @click="handleDelete(row)">
               <Trash2 class="w-4 h-4" />
-            </Button>
+            </ElButton>
           </template>
-        </el-table-column>
-      </Table>
-    </Card>
+        </ElTableColumn>
+      </ElTable>
+    </ElCard>
   </div>
 </template>
 

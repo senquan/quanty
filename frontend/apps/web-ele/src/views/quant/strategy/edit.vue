@@ -1,8 +1,23 @@
 <script lang="ts" setup>
 import { ref, reactive, computed } from 'vue';
 import { useRouter, useRoute } from 'vue-router';
-import { Card, Form, FormItem, Input, Select, Button, Row, Col, Tabs, TabPane, Message } from 'element-plus';
-import { Save, Play, ArrowLeft, Code, Settings, Info } from 'lucide-vue-next';
+
+import {
+  ElButton,
+  ElCard,
+  ElCol,
+  ElForm,
+  ElFormItem,
+  ElInput,
+  ElMessage,
+  ElOption,
+  ElRow,
+  ElSelect,
+  ElTabPane,
+  ElTabs,
+} from 'element-plus';
+
+import { Save, ArrowLeft, Code, Settings, Info } from 'lucide-vue-next';
 
 const router = useRouter();
 const route = useRoute();
@@ -101,102 +116,102 @@ const handleBack = () => {
 
 const handleSave = () => {
   console.log('保存策略:', form);
-  Message.success('策略已保存');
+  ElMessage.success('策略已保存');
 };
 
 const handleValidate = () => {
   console.log('验证策略代码...');
-  Message.info('正在验证策略代码...');
+  ElMessage.info('正在验证策略代码...');
 };
 
 const handleApplyTemplate = (template: typeof strategyTemplates[0]) => {
   form.code = template.code;
-  Message.success(`已应用模板: ${template.name}`);
+  ElMessage.success(`已应用模板: ${template.name}`);
 };
 </script>
 
 <template>
   <div class="strategy-edit p-4">
     <!-- 顶部操作栏 -->
-    <Row justify="space-between" align="middle" class="mb-4">
-      <Col>
-        <Button @click="handleBack">
+    <ElRow justify="space-between" align="middle" class="mb-4">
+      <ElCol>
+        <ElButton @click="handleBack">
           <ArrowLeft class="w-4 h-4 mr-1" />
           返回列表
-        </Button>
-      </Col>
-      <Col>
-        <Row :gutter="8">
-          <Col>
-            <Button @click="handleValidate">
+        </ElButton>
+      </ElCol>
+      <ElCol>
+        <ElRow :gutter="8">
+          <ElCol>
+            <ElButton @click="handleValidate">
               <Code class="w-4 h-4 mr-1" />
               验证代码
-            </Button>
-          </Col>
-          <Col>
-            <Button type="primary" @click="handleSave">
+            </ElButton>
+          </ElCol>
+          <ElCol>
+            <ElButton type="primary" @click="handleSave">
               <Save class="w-4 h-4 mr-1" />
               保存策略
-            </Button>
-          </Col>
-        </Row>
-      </Col>
-    </Row>
+            </ElButton>
+          </ElCol>
+        </ElRow>
+      </ElCol>
+    </ElRow>
 
-    <Row :gutter="16">
+    <ElRow :gutter="16">
       <!-- 左侧：基本信息和配置 -->
-      <Col :span="6">
-        <Card shadow="never" class="mb-4">
+      <ElCol :span="6">
+        <ElCard shadow="never" class="mb-4">
           <template #header>
-            <Row align="middle" :gutter="4">
-              <Col><Info class="w-4 h-4" /></Col>
-              <Col>基本信息</Col>
-            </Row>
+            <ElRow align="middle" :gutter="4">
+              <ElCol><Info class="w-4 h-4" /></ElCol>
+              <ElCol>基本信息</ElCol>
+            </ElRow>
           </template>
-          <Form :model="form" label-position="top">
-            <FormItem label="策略名称" required>
-              <Input v-model="form.name" placeholder="请输入策略名称" />
-            </FormItem>
-            <FormItem label="策略描述">
-              <Input v-model="form.description" type="textarea" :rows="3" placeholder="请输入策略描述" />
-            </FormItem>
-          </Form>
-        </Card>
+          <ElForm :model="form" label-position="top">
+            <ElFormItem label="策略名称" required>
+              <ElInput v-model="form.name" placeholder="请输入策略名称" />
+            </ElFormItem>
+            <ElFormItem label="策略描述">
+              <ElInput v-model="form.description" type="textarea" :rows="3" placeholder="请输入策略描述" />
+            </ElFormItem>
+          </ElForm>
+        </ElCard>
 
-        <Card shadow="never" class="mb-4">
+        <ElCard shadow="never" class="mb-4">
           <template #header>
-            <Row align="middle" :gutter="4">
-              <Col><Settings class="w-4 h-4" /></Col>
-              <Col>回测配置</Col>
-            </Row>
+            <ElRow align="middle" :gutter="4">
+              <ElCol><Settings class="w-4 h-4" /></ElCol>
+              <ElCol>回测配置</ElCol>
+            </ElRow>
           </template>
-          <Form :model="form" label-position="top">
-            <FormItem label="数据源">
-              <Select v-model="form.dataSource" style="width: 100%">
-                <el-option label="Yahoo Finance" value="yahoo" />
-                <el-option label="CCXT (加密货币)" value="ccxt" />
-              </Select>
-            </FormItem>
-            <FormItem label="标的代码">
-              <Input v-model="form.symbol" placeholder="如: AAPL, BTC/USDT" />
-            </FormItem>
-            <FormItem label="时间周期">
-              <Select v-model="form.timeframe" style="width: 100%">
-                <el-option label="1分钟" value="1m" />
-                <el-option label="5分钟" value="5m" />
-                <el-option label="15分钟" value="15m" />
-                <el-option label="1小时" value="1h" />
-                <el-option label="1天" value="1d" />
-                <el-option label="1周" value="1w" />
-              </Select>
-            </FormItem>
-          </Form>
-        </Card>
+          <ElForm :model="form" label-position="top">
+            <ElFormItem label="数据源">
+              <ElSelect v-model="form.dataSource" style="width: 100%">
+                <ElOption label="Yahoo Finance" value="yahoo" />
+                <ElOption label="CCXT (加密货币)" value="ccxt" />
+              </ElSelect>
+            </ElFormItem>
+            <ElFormItem label="标的代码">
+              <ElInput v-model="form.symbol" placeholder="如: AAPL, BTC/USDT" />
+            </ElFormItem>
+            <ElFormItem label="时间周期">
+              <ElSelect v-model="form.timeframe" style="width: 100%">
+                <ElOption label="1分钟" value="1m" />
+                <ElOption label="5分钟" value="5m" />
+                <ElOption label="15分钟" value="15m" />
+                <ElOption label="1小时" value="1h" />
+                <ElOption label="1天" value="1d" />
+                <ElOption label="1周" value="1w" />
+              </ElSelect>
+            </ElFormItem>
+          </ElForm>
+        </ElCard>
 
-        <Card shadow="never">
+        <ElCard shadow="never">
           <template #header>策略模板</template>
           <div class="space-y-2">
-            <Button
+            <ElButton
               v-for="template in strategyTemplates"
               :key="template.name"
               link
@@ -205,17 +220,17 @@ const handleApplyTemplate = (template: typeof strategyTemplates[0]) => {
               class="block w-full text-left"
             >
               {{ template.name }}
-            </Button>
+            </ElButton>
           </div>
-        </Card>
-      </Col>
+        </ElCard>
+      </ElCol>
 
       <!-- 右侧：代码编辑器 -->
-      <Col :span="18">
-        <Card shadow="never">
-          <Tabs v-model="activeTab">
-            <TabPane label="策略代码" name="code">
-              <Input
+      <ElCol :span="18">
+        <ElCard shadow="never">
+          <ElTabs v-model="activeTab">
+            <ElTabPane label="策略代码" name="code">
+              <ElInput
                 v-model="form.code"
                 type="textarea"
                 :rows="30"
@@ -223,16 +238,16 @@ const handleApplyTemplate = (template: typeof strategyTemplates[0]) => {
                 class="code-editor"
                 style="font-family: 'JetBrains Mono', 'Fira Code', monospace;"
               />
-            </TabPane>
-            <TabPane label="回测结果" name="result">
+            </ElTabPane>
+            <ElTabPane label="回测结果" name="result">
               <div class="h-96 flex items-center justify-center text-gray-400">
                 请先运行回测以查看结果
               </div>
-            </TabPane>
-          </Tabs>
-        </Card>
-      </Col>
-    </Row>
+            </ElTabPane>
+          </ElTabs>
+        </ElCard>
+      </ElCol>
+    </ElRow>
   </div>
 </template>
 

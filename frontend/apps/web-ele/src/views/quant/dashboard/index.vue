@@ -1,7 +1,18 @@
 <script lang="ts" setup>
 import { ref, onMounted } from 'vue';
-import { Card, Col, Row, Statistic, Progress, Table, Tag } from 'element-plus';
-import { TrendingUp, TrendingDown, BarChart3, Activity, Target, DollarSign } from 'lucide-vue-next';
+
+import {
+  ElCard,
+  ElCol,
+  ElProgress,
+  ElRow,
+  ElStatistic,
+  ElTable,
+  ElTableColumn,
+  ElTag,
+} from 'element-plus';
+
+import { TrendingUp, TrendingDown } from 'lucide-vue-next';
 
 interface StatItem {
   label: string;
@@ -42,10 +53,10 @@ onMounted(() => {
 <template>
   <div class="quant-dashboard p-4">
     <!-- 统计卡片 -->
-    <Row :gutter="16" class="mb-4">
-      <Col :span="6" v-for="stat in stats" :key="stat.label">
-        <Card shadow="hover">
-          <Statistic
+    <ElRow :gutter="16" class="mb-4">
+      <ElCol :span="6" v-for="stat in stats" :key="stat.label">
+        <ElCard shadow="hover">
+          <ElStatistic
             :value="stat.value"
             :title="stat.label"
             :value-style="{ color: stat.color }"
@@ -54,48 +65,48 @@ onMounted(() => {
               <TrendingUp v-if="stat.trend === 'up'" class="w-4 h-4" />
               <TrendingDown v-if="stat.trend === 'down'" class="w-4 h-4" />
             </template>
-          </Statistic>
-        </Card>
-      </Col>
-    </Row>
+          </ElStatistic>
+        </ElCard>
+      </ElCol>
+    </ElRow>
 
     <!-- 图表区域 -->
-    <Row :gutter="16" class="mb-4">
-      <Col :span="16">
-        <Card shadow="hover" header="净值曲线">
+    <ElRow :gutter="16" class="mb-4">
+      <ElCol :span="16">
+        <ElCard shadow="hover" header="净值曲线">
           <div class="h-64 flex items-center justify-center text-gray-400">
             📈 图表区域（集成 ECharts）
           </div>
-        </Card>
-      </Col>
-      <Col :span="8">
-        <Card shadow="hover" header="收益分布">
+        </ElCard>
+      </ElCol>
+      <ElCol :span="8">
+        <ElCard shadow="hover" header="收益分布">
           <div class="h-64 flex items-center justify-center text-gray-400">
             📊 直方图区域
           </div>
-        </Card>
-      </Col>
-    </Row>
+        </ElCard>
+      </ElCol>
+    </ElRow>
 
     <!-- 最近策略 -->
-    <Card shadow="hover" header="最近策略">
-      <el-table :data="recentStrategies" stripe>
-        <el-table-column prop="name" label="策略名称" width="180" />
-        <el-table-column prop="status" label="状态" width="100">
+    <ElCard shadow="hover" header="最近策略">
+      <ElTable :data="recentStrategies" stripe>
+        <ElTableColumn prop="name" label="策略名称" width="180" />
+        <ElTableColumn prop="status" label="状态" width="100">
           <template #default="{ row }">
-            <Tag :type="getStatusType(row.status)">{{ row.status }}</Tag>
+            <ElTag :type="getStatusType(row.status)">{{ row.status }}</ElTag>
           </template>
-        </el-table-column>
-        <el-table-column prop="return" label="收益率" width="100" />
-        <el-table-column prop="sharpe" label="夏普比率" width="100" />
-        <el-table-column label="操作" width="150">
+        </ElTableColumn>
+        <ElTableColumn prop="return" label="收益率" width="100" />
+        <ElTableColumn prop="sharpe" label="夏普比率" width="100" />
+        <ElTableColumn label="操作" width="150">
           <template #default>
-            <el-button link type="primary">查看</el-button>
-            <el-button link type="primary">编辑</el-button>
+            <ElButton link type="primary">查看</ElButton>
+            <ElButton link type="primary">编辑</ElButton>
           </template>
-        </el-table-column>
-      </el-table>
-    </Card>
+        </ElTableColumn>
+      </ElTable>
+    </ElCard>
   </div>
 </template>
 
