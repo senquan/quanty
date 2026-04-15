@@ -1,7 +1,22 @@
 <script lang="ts" setup>
-import { ref, reactive } from 'vue';
-import { Card, Table, Tag, Row, Col, Tabs, TabPane, Select, Button, DatePicker } from 'element-plus';
-import { Play, Download, RefreshCw } from 'lucide-vue-next';
+import { ref } from 'vue';
+
+import {
+  ElButton,
+  ElCard,
+  ElCol,
+  ElInput,
+  ElOption,
+  ElRow,
+  ElSelect,
+  ElTabPane,
+  ElTabs,
+  ElTable,
+  ElTableColumn,
+  ElTag,
+} from 'element-plus';
+
+import { Play, Download } from 'lucide-vue-next';
 
 interface BacktestRecord {
   id: number;
@@ -18,7 +33,6 @@ interface BacktestRecord {
 }
 
 const selectedStrategy = ref('');
-const dateRange = ref<[string, string]>(['2023-01-01', '2023-12-31']);
 
 const backtestHistory = ref<BacktestRecord[]>([
   {
@@ -92,117 +106,116 @@ const handleExport = (row: BacktestRecord) => {
 <template>
   <div class="backtest-page p-4">
     <!-- 顶部操作栏 -->
-    <Card shadow="never" class="mb-4">
-      <Row :gutter="12" align="middle">
-        <Col>
-          <Select v-model="selectedStrategy" placeholder="选择策略" clearable style="width: 200px">
-            <el-option label="双均线交叉策略" value="1" />
-            <el-option label="RSI均值回归策略" value="2" />
-            <el-option label="动量突破策略" value="3" />
-          </Select>
-        </Col>
-        <Col>
-          <Select placeholder="数据源" style="width: 160px">
-            <el-option label="Yahoo Finance" value="yahoo" />
-            <el-option label="CCXT" value="ccxt" />
-          </Select>
-        </Col>
-        <Col>
-          <Input placeholder="标的代码" style="width: 140px" />
-        </Col>
-        <Col :flex="1" />
-        <Col>
-          <Button type="primary" @click="handleRunBacktest">
+    <ElCard shadow="never" class="mb-4">
+      <ElRow :gutter="12" align="middle">
+        <ElCol>
+          <ElSelect v-model="selectedStrategy" placeholder="选择策略" clearable style="width: 200px">
+            <ElOption label="双均线交叉策略" value="1" />
+            <ElOption label="RSI均值回归策略" value="2" />
+            <ElOption label="动量突破策略" value="3" />
+          </ElSelect>
+        </ElCol>
+        <ElCol>
+          <ElSelect placeholder="数据源" style="width: 160px">
+            <ElOption label="Yahoo Finance" value="yahoo" />
+            <ElOption label="CCXT" value="ccxt" />
+          </ElSelect>
+        </ElCol>
+        <ElCol>
+          <ElInput placeholder="标的代码" style="width: 140px" />
+        </ElCol>
+        <ElCol :flex="1" />
+        <ElCol>
+          <ElButton type="primary" @click="handleRunBacktest">
             <Play class="w-4 h-4 mr-1" />
             运行回测
-          </Button>
-        </Col>
-      </Row>
-    </Card>
+          </ElButton>
+        </ElCol>
+      </ElRow>
+    </ElCard>
 
     <!-- 回测结果 -->
-    <Card shadow="never">
-      <Tabs>
-        <TabPane label="净值曲线">
+    <ElCard shadow="never">
+      <ElTabs>
+        <ElTabPane label="净值曲线">
           <div class="h-80 flex items-center justify-center text-gray-400 border-dashed border rounded">
             📈 ECharts 净值曲线图表区域
-            <br />（集成后显示收益走势和回撤分析）
           </div>
-        </TabPane>
-        <TabPane label="收益分布">
+        </ElTabPane>
+        <ElTabPane label="收益分布">
           <div class="h-80 flex items-center justify-center text-gray-400 border-dashed border rounded">
             📊 ECharts 收益分布直方图
           </div>
-        </TabPane>
-        <TabPane label="详细指标">
-          <Row :gutter="16">
-            <Col :span="8">
-              <Card header="收益指标" shadow="never" class="mb-3">
+        </ElTabPane>
+        <ElTabPane label="详细指标">
+          <ElRow :gutter="16">
+            <ElCol :span="8">
+              <ElCard header="收益指标" shadow="never" class="mb-3">
                 <div class="space-y-2 text-sm">
-                  <Row justify="space-between"><span>总收益率</span><span class="text-green-500">+15.6%</span></Row>
-                  <Row justify="space-between"><span>年化收益</span><span class="text-green-500">+15.6%</span></Row>
-                  <Row justify="space-between"><span>月均收益</span><span>+1.3%</span></Row>
+                  <ElRow justify="space-between"><span>总收益率</span><span class="text-green-500">+15.6%</span></ElRow>
+                  <ElRow justify="space-between"><span>年化收益</span><span class="text-green-500">+15.6%</span></ElRow>
+                  <ElRow justify="space-between"><span>月均收益</span><span>+1.3%</span></ElRow>
                 </div>
-              </Card>
-            </Col>
-            <Col :span="8">
-              <Card header="风险指标" shadow="never" class="mb-3">
+              </ElCard>
+            </ElCol>
+            <ElCol :span="8">
+              <ElCard header="风险指标" shadow="never" class="mb-3">
                 <div class="space-y-2 text-sm">
-                  <Row justify="space-between"><span>波动率</span><span>12.3%</span></Row>
-                  <Row justify="space-between"><span>最大回撤</span><span class="text-red-500">-8.2%</span></Row>
-                  <Row justify="space-between"><span>VaR (95%)</span><span>-2.1%</span></Row>
+                  <ElRow justify="space-between"><span>波动率</span><span>12.3%</span></ElRow>
+                  <ElRow justify="space-between"><span>最大回撤</span><span class="text-red-500">-8.2%</span></ElRow>
+                  <ElRow justify="space-between"><span>VaR (95%)</span><span>-2.1%</span></ElRow>
                 </div>
-              </Card>
-            </Col>
-            <Col :span="8">
-              <Card header="风险调整收益" shadow="never" class="mb-3">
+              </ElCard>
+            </ElCol>
+            <ElCol :span="8">
+              <ElCard header="风险调整收益" shadow="never" class="mb-3">
                 <div class="space-y-2 text-sm">
-                  <Row justify="space-between"><span>夏普比率</span><span>1.85</span></Row>
-                  <Row justify="space-between"><span>索提诺比率</span><span>2.4</span></Row>
-                  <Row justify="space-between"><span>卡尔玛比率</span><span>1.9</span></Row>
+                  <ElRow justify="space-between"><span>夏普比率</span><span>1.85</span></ElRow>
+                  <ElRow justify="space-between"><span>索提诺比率</span><span>2.4</span></ElRow>
+                  <ElRow justify="space-between"><span>卡尔玛比率</span><span>1.9</span></ElRow>
                 </div>
-              </Card>
-            </Col>
-          </Row>
-        </TabPane>
-        <TabPane label="历史记录">
-          <Table :data="backtestHistory" stripe>
-            <el-table-column prop="strategyName" label="策略" width="160" />
-            <el-table-column prop="symbol" label="标的" width="100" />
-            <el-table-column prop="period" label="回测区间" width="160" />
-            <el-table-column prop="totalReturn" label="总收益" width="90" align="right">
+              </ElCard>
+            </ElCol>
+          </ElRow>
+        </ElTabPane>
+        <ElTabPane label="历史记录">
+          <ElTable :data="backtestHistory" stripe>
+            <ElTableColumn prop="strategyName" label="策略" width="160" />
+            <ElTableColumn prop="symbol" label="标的" width="100" />
+            <ElTableColumn prop="period" label="回测区间" width="160" />
+            <ElTableColumn prop="totalReturn" label="总收益" width="90" align="right">
               <template #default="{ row }">
                 <span :class="row.totalReturn >= 0 ? 'text-green-500' : 'text-red-500'">
                   {{ row.totalReturn >= 0 ? '+' : '' }}{{ row.totalReturn }}%
                 </span>
               </template>
-            </el-table-column>
-            <el-table-column prop="sharpeRatio" label="夏普" width="70" align="right" />
-            <el-table-column prop="maxDrawdown" label="回撤" width="80" align="right">
+            </ElTableColumn>
+            <ElTableColumn prop="sharpeRatio" label="夏普" width="70" align="right" />
+            <ElTableColumn prop="maxDrawdown" label="回撤" width="80" align="right">
               <template #default="{ row }">
                 <span class="text-red-500">{{ row.maxDrawdown }}%</span>
               </template>
-            </el-table-column>
-            <el-table-column prop="winRate" label="胜率" width="70" align="right">
+            </ElTableColumn>
+            <ElTableColumn prop="winRate" label="胜率" width="70" align="right">
               <template #default="{ row }">{{ row.winRate }}%</template>
-            </el-table-column>
-            <el-table-column prop="trades" label="交易次数" width="80" align="center" />
-            <el-table-column prop="status" label="状态" width="80" align="center">
+            </ElTableColumn>
+            <ElTableColumn prop="trades" label="交易次数" width="80" align="center" />
+            <ElTableColumn prop="status" label="状态" width="80" align="center">
               <template #default="{ row }">
-                <Tag :type="getStatusType(row.status)">{{ getStatusLabel(row.status) }}</Tag>
+                <ElTag :type="getStatusType(row.status)">{{ getStatusLabel(row.status) }}</ElTag>
               </template>
-            </el-table-column>
-            <el-table-column label="操作" width="100" fixed="right">
+            </ElTableColumn>
+            <ElTableColumn label="操作" width="100" fixed="right">
               <template #default="{ row }">
-                <Button link type="primary" size="small" @click="handleExport(row)">
+                <ElButton link type="primary" size="small" @click="handleExport(row)">
                   <Download class="w-4 h-4 mr-1" />导出
-                </Button>
+                </ElButton>
               </template>
-            </el-table-column>
-          </Table>
-        </TabPane>
-      </Tabs>
-    </Card>
+            </ElTableColumn>
+          </ElTable>
+        </ElTabPane>
+      </ElTabs>
+    </ElCard>
   </div>
 </template>
 
