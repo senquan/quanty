@@ -19,5 +19,11 @@
     "strategyEdit": "策略编辑",
     "backtest": "回测结果",
     "trading": "交易管理"
+  },
+  "system": {
+    "title": "系统管理",
+    "user": "用户管理",
+    "role": "角色管理",
+    "menu": "菜单管理"
   }
 }
