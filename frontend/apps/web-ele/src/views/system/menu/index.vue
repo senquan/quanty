@@ -1,5 +1,5 @@
 <script lang="ts" setup>
-import { ref, reactive } from 'vue';
+import { reactive, ref } from 'vue';
 
 import {
   ElButton,
@@ -21,8 +21,7 @@ import {
   ElTag,
   ElTree,
 } from 'element-plus';
-
-import { Plus, Edit, Delete, Refresh } from 'lucide-vue-next';
+import { FilePenLine, Plus, Trash } from 'lucide-vue-next';
 
 interface MenuItem {
   id: number;
@@ -84,16 +83,16 @@ const getTypeLabel = (type: number) => {
   return map[type] || '未知';
 };
 
-const getTypeTag = (type: number) => {
-  const map: Record<number, string> = { 0: 'primary', 1: 'success', 2: 'warning' };
-  return map[type] || '';
+const getTypeTag = (type: number): "danger" | "info" | "primary" | "success" | "warning" | undefined => {
+  const map: Record<number, "primary" | "success" | "warning"> = { 0: 'primary', 1: 'success', 2: 'warning' };
+  return map[type] || undefined;
 };
 
 const getTreeData = () => {
   const buildTree = (parentId: number): any[] => {
     return menuList.value
       .filter(m => m.parent_id === parentId)
-      .sort((a, b) => a.oidx - b.oidx)
+      .toSorted((a, b) => a.oidx - b.oidx)
       .map(m => ({
         id: m.id,
         label: m.label,
@@ -141,8 +140,8 @@ const handleDelete = (row: MenuItem) => {
 const handleSubmit = () => {
   if (isEdit.value) {
     const idx = menuList.value.findIndex(m => m.id === editId.value);
-    if (idx >= 0) {
-      Object.assign(menuList.value[idx], { ...menuForm });
+    if (idx !== -1) {
+      Object.assign(menuList.value[idx]!, { ...menuForm });
     }
     ElMessage.success('更新成功');
   } else {
@@ -205,10 +204,10 @@ const handleSubmit = () => {
             <ElTableColumn label="操作" width="150" fixed="right">
               <template #default="{ row }">
                 <ElButton link type="primary" size="small" @click="handleEdit(row)">
-                  <Edit class="w-4 h-4 mr-1" />编辑
+                  <FilePenLine class="w-4 h-4 mr-1" />编辑
                 </ElButton>
                 <ElButton link type="danger" size="small" @click="handleDelete(row)">
-                  <Delete class="w-4 h-4" />
+                  <Trash class="w-4 h-4" />
                 </ElButton>
               </template>
             </ElTableColumn>

@@ -1,11 +1,9 @@
 <script lang="ts" setup>
-import { ref, reactive } from 'vue';
+import { reactive, ref } from 'vue';
 
 import {
   ElButton,
   ElCard,
-  ElCheckbox,
-  ElCheckboxGroup,
   ElCol,
   ElDialog,
   ElForm,
@@ -20,8 +18,7 @@ import {
   ElTag,
   ElTree,
 } from 'element-plus';
-
-import { Plus, Edit, Delete, Setting } from 'lucide-vue-next';
+import { FilePenLine, KeyRound, Plus, Trash } from 'lucide-vue-next';
 
 interface Role {
   id: number;
@@ -120,9 +117,9 @@ const handleSubmit = () => {
         <ElTableColumn prop="created_at" label="创建时间" width="110" />
         <ElTableColumn label="操作" width="200" fixed="right">
           <template #default="{ row }">
-            <ElButton link type="primary" size="small" @click="handleEdit(row)"><Edit class="w-4 h-4 mr-1" />编辑</ElButton>
-            <ElButton link type="success" size="small" @click="handlePermission(row)"><Setting class="w-4 h-4 mr-1" />权限</ElButton>
-            <ElButton link type="danger" size="small" @click="handleDelete(row)"><Delete class="w-4 h-4" /></ElButton>
+            <ElButton link type="primary" size="small" @click="handleEdit(row)"><FilePenLine class="w-4 h-4 mr-1" />编辑</ElButton>
+            <ElButton link type="success" size="small" @click="handlePermission(row)"><KeyRound class="w-4 h-4 mr-1" />权限</ElButton>
+            <ElButton link type="danger" size="small" @click="handleDelete(row)"><Trash class="w-4 h-4" /></ElButton>
           </template>
         </ElTableColumn>
       </ElTable>
@@ -135,12 +132,12 @@ const handleSubmit = () => {
         <ElFormItem label="描述"><ElInput v-model="roleForm.description" type="textarea" :rows="3" /></ElFormItem>
         <ElFormItem label="状态"><ElSwitch v-model="roleForm.is_active" /></ElFormItem>
       </ElForm>
-      <template #footer><ElButton @click="dialogVisible=false">取消</ElButton><ElButton type="primary" @click="handleSubmit">确定</ElButton></template>
+      <template #footer><ElButton @click="dialogVisible = false">取消</ElButton><ElButton type="primary" @click="handleSubmit">确定</ElButton></template>
     </ElDialog>
 
     <ElDialog v-model="permissionDialogVisible" title="分配权限" width="400px">
-      <ElTree :data="menuTree" show-checkbox node-key="id" :default-checked-keys="selectedMenus" :props="{ label: 'label', children: 'children' }" @check="(_, { checkedKeys }) => selectedMenus = checkedKeys" />
-      <template #footer><ElButton @click="permissionDialogVisible=false">取消</ElButton><ElButton type="primary" @click="handleSavePermission">保存</ElButton></template>
+      <ElTree :data="menuTree" show-checkbox node-key="id" :default-checked-keys="selectedMenus" :props="{ label: 'label', children: 'children' }" @check="(_, { checkedKeys }) => selectedMenus = checkedKeys.map(Number)" />
+      <template #footer><ElButton @click="permissionDialogVisible = false">取消</ElButton><ElButton type="primary" @click="handleSavePermission">保存</ElButton></template>
     </ElDialog>
   </div>
 </template>
