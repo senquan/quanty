@@ -46,7 +46,8 @@
     "element-plus": "catalog:",
     "pinia": "catalog:",
     "vue": "catalog:",
-    "vue-router": "catalog:"
+    "vue-router": "catalog:",
+    "monaco-editor": "^0.52.0"
   },
   "devDependencies": {
     "unplugin-element-plus": "catalog:"

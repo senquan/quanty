@@ -15,7 +15,7 @@ import {
   ElOption,
 } from 'element-plus';
 
-import { Plus, Search, Play, Pause, Trash2, Edit } from 'lucide-vue-next';
+import { Plus, Search, Play, Pause, Trash2, Edit } from '@lucide/vue';
 
 const router = useRouter();
 
