@@ -1,6 +1,7 @@
 <script lang="ts" setup>
 import { reactive, ref } from 'vue';
 
+import { FilePenLine, KeyRound, Plus, Trash } from '@lucide/vue';
 import {
   ElButton,
   ElCard,
@@ -18,7 +19,6 @@ import {
   ElTag,
   ElTree,
 } from 'element-plus';
-import { FilePenLine, KeyRound, Plus, Trash } from 'lucide-vue-next';
 
 interface Role {
   id: number;
@@ -103,7 +103,6 @@ const handleSubmit = () => {
     <ElCard shadow="never">
       <template #header>
         <ElRow justify="space-between" align="middle">
-          <ElCol>角色列表</ElCol>
           <ElCol><ElButton type="primary" @click="handleAdd"><Plus class="w-4 h-4 mr-1" />新增角色</ElButton></ElCol>
         </ElRow>
       </template>

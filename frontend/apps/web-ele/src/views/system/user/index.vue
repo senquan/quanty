@@ -1,6 +1,7 @@
 <script lang="ts" setup>
-import { ref, reactive } from 'vue';
+import { reactive, ref } from 'vue';
 
+import { FilePenLine, Plus, Search, Trash } from '@lucide/vue';
 import {
   ElButton,
   ElCard,
@@ -20,8 +21,6 @@ import {
   ElTableColumn,
   ElTag,
 } from 'element-plus';
-
-import { Plus, Edit, Delete, Search } from 'lucide-vue-next';
 
 interface User {
   id: number;
@@ -85,10 +84,12 @@ const handleSubmit = () => {
         <ElRow justify="space-between" align="middle">
           <ElCol>
             <ElRow :gutter="12">
-              <ElCol><ElInput v-model="searchKeyword" placeholder="搜索用户名/昵称..." clearable style="width:240px"><template #prefix><Search class="w-4 h-4" /></template></ElInput></ElCol>
+              <ElCol>
+                <ElInput v-model="searchKeyword" placeholder="搜索用户名/昵称..." clearable style="width:240px"><template #prefix><Search class="w-4 h-4" /></template></ElInput>
+                <ElButton type="primary" @click="handleAdd" class="ml-2"><Plus class="w-4 h-4 mr-1" />新增用户</ElButton>
+              </ElCol>
             </ElRow>
           </ElCol>
-          <ElCol><ElButton type="primary" @click="handleAdd"><Plus class="w-4 h-4 mr-1" />新增用户</ElButton></ElCol>
         </ElRow>
       </template>
       <ElTable :data="users" stripe>
@@ -103,8 +104,8 @@ const handleSubmit = () => {
         <ElTableColumn prop="created_at" label="创建时间" width="110" />
         <ElTableColumn label="操作" width="150" fixed="right">
           <template #default="{ row }">
-            <ElButton link type="primary" size="small" @click="handleEdit(row)"><Edit class="w-4 h-4 mr-1" />编辑</ElButton>
-            <ElButton link type="danger" size="small" @click="handleDelete(row)"><Delete class="w-4 h-4" /></ElButton>
+            <ElButton link type="primary" size="small" @click="handleEdit(row)"><FilePenLine class="w-4 h-4 mr-1" />编辑</ElButton>
+            <ElButton link type="danger" size="small" @click="handleDelete(row)"><Trash class="w-4 h-4" /></ElButton>
           </template>
         </ElTableColumn>
       </ElTable>
@@ -121,7 +122,7 @@ const handleSubmit = () => {
         <ElFormItem label="角色"><ElSelect v-model="userForm.role" style="width:100%"><ElOption label="超级管理员" value="超级管理员" /><ElOption label="普通用户" value="普通用户" /></ElSelect></ElFormItem>
         <ElFormItem label="状态"><ElSwitch v-model="userForm.is_active" /></ElFormItem>
       </ElForm>
-      <template #footer><ElButton @click="dialogVisible=false">取消</ElButton><ElButton type="primary" @click="handleSubmit">确定</ElButton></template>
+      <template #footer><ElButton @click="dialogVisible = false">取消</ElButton><ElButton type="primary" @click="handleSubmit">确定</ElButton></template>
     </ElDialog>
   </div>
 </template>

@@ -1,6 +1,7 @@
 <script lang="ts" setup>
 import { reactive, ref } from 'vue';
 
+import { FilePenLine, Plus, Trash } from '@lucide/vue';
 import {
   ElButton,
   ElCard,
@@ -21,7 +22,6 @@ import {
   ElTag,
   ElTree,
 } from 'element-plus';
-import { FilePenLine, Plus, Trash } from 'lucide-vue-next';
 
 interface MenuItem {
   id: number;
@@ -174,11 +174,8 @@ const handleSubmit = () => {
         <ElCard shadow="never">
           <template #header>
             <ElRow justify="space-between" align="middle">
-              <ElCol>菜单列表</ElCol>
               <ElCol>
-                <ElButton type="primary" @click="handleAdd">
-                  <Plus class="w-4 h-4 mr-1" />新增菜单
-                </ElButton>
+                <ElButton type="primary" @click="handleAdd"><Plus class="w-4 h-4 mr-1" />新增菜单</ElButton>
               </ElCol>
             </ElRow>
           </template>

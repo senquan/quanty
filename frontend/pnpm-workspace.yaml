@@ -38,6 +38,7 @@ catalog:
   '@intlify/core-base': ^11.3.0
   '@intlify/unplugin-vue-i18n': ^11.0.7
   '@jspm/generator': ^2.12.0
+  '@lucide/vue': ^1.8.0
   '@manypkg/get-packages': ^3.1.0
   '@nolebase/vitepress-plugin-git-changelog': ^2.18.2
   '@playwright/test': ^1.58.2
@@ -198,4 +199,3 @@ catalog:
   yaml-eslint-parser: ^2.0.0
   zod: ^3.25.76
   zod-defaults: 0.1.3
-

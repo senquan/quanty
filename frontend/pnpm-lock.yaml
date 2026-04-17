@@ -6,519 +6,24 @@ settings:
 
 catalogs:
   default:
-    '@changesets/changelog-github':
-      specifier: ^0.6.0
-      version: 0.6.0
-    '@changesets/cli':
-      specifier: ^2.30.0
-      version: 2.30.0
-    '@changesets/git':
-      specifier: ^3.0.4
-      version: 3.0.4
-    '@clack/prompts':
-      specifier: ^1.1.0
-      version: 1.2.0
-    '@commitlint/cli':
-      specifier: ^20.5.0
-      version: 20.5.0
-    '@commitlint/config-conventional':
-      specifier: ^20.5.0
-      version: 20.5.0
-    '@eslint-community/eslint-plugin-eslint-comments':
-      specifier: ^4.7.1
-      version: 4.7.1
-    '@eslint/js':
-      specifier: ^10.0.1
-      version: 10.0.1
-    '@faker-js/faker':
-      specifier: ^10.4.0
-      version: 10.4.0
-    '@iconify/json':
-      specifier: ^2.2.456
-      version: 2.2.458
-    '@iconify/tailwind4':
-      specifier: ^1.2.3
-      version: 1.2.3
-    '@iconify/vue':
-      specifier: ^5.0.0
-      version: 5.0.0
-    '@intlify/core-base':
-      specifier: ^11.3.0
-      version: 11.3.0
-    '@intlify/unplugin-vue-i18n':
-      specifier: ^11.0.7
-      version: 11.0.7
-    '@jspm/generator':
-      specifier: ^2.12.0
-      version: 2.12.0
-    '@manypkg/get-packages':
-      specifier: ^3.1.0
-      version: 3.1.0
-    '@nolebase/vitepress-plugin-git-changelog':
-      specifier: ^2.18.2
-      version: 2.18.2
-    '@playwright/test':
-      specifier: ^1.58.2
-      version: 1.58.2
-    '@pnpm/workspace.read-manifest':
-      specifier: ^1000.3.1
-      version: 1000.3.1
-    '@stylistic/stylelint-plugin':
-      specifier: ^5.1.0
-      version: 5.1.0
-    '@tailwindcss/typography':
-      specifier: ^0.5.19
-      version: 0.5.19
-    '@tailwindcss/vite':
-      specifier: ^4.2.2
-      version: 4.2.2
-    '@tanstack/vue-store':
-      specifier: ^0.9.3
-      version: 0.9.3
-    '@tiptap/core':
-      specifier: ^3.21.0
-      version: 3.22.0
-    '@tiptap/extension-document':
-      specifier: ^3.21.0
-      version: 3.22.0
-    '@tiptap/extension-highlight':
-      specifier: ^3.21.0
-      version: 3.22.0
-    '@tiptap/extension-image':
-      specifier: ^3.21.0
-      version: 3.22.0
-    '@tiptap/extension-link':
-      specifier: ^3.21.0
-      version: 3.22.0
-    '@tiptap/extension-placeholder':
-      specifier: ^3.21.0
-      version: 3.22.0
-    '@tiptap/extension-text-align':
-      specifier: ^3.21.0
-      version: 3.22.0
-    '@tiptap/extension-text-style':
-      specifier: ^3.21.0
-      version: 3.22.0
-    '@tiptap/extension-underline':
-      specifier: ^3.21.0
-      version: 3.22.0
-    '@tiptap/starter-kit':
-      specifier: ^3.21.0
-      version: 3.22.0
-    '@tiptap/vue-3':
-      specifier: ^3.21.0
-      version: 3.22.0
-    '@tsdown/css':
-      specifier: ^0.21.7
-      version: 0.21.7
-    '@types/archiver':
-      specifier: ^7.0.0
-      version: 7.0.0
-    '@types/html-minifier-terser':
-      specifier: ^7.0.2
-      version: 7.0.2
-    '@types/json-bigint':
-      specifier: ^1.0.4
-      version: 1.0.4
-    '@types/jsonwebtoken':
-      specifier: ^9.0.10
-      version: 9.0.10
-    '@types/lodash.clonedeep':
-      specifier: ^4.5.9
-      version: 4.5.9
-    '@types/node':
-      specifier: ^25.5.0
-      version: 25.5.0
-    '@types/nprogress':
-      specifier: ^0.2.3
-      version: 0.2.3
-    '@types/qrcode':
-      specifier: ^1.5.6
-      version: 1.5.6
-    '@types/qs':
-      specifier: ^6.15.0
-      version: 6.15.0
-    '@types/sortablejs':
-      specifier: ^1.15.9
-      version: 1.15.9
-    '@typescript-eslint/eslint-plugin':
-      specifier: ^8.57.2
-      version: 8.58.0
-    '@typescript-eslint/parser':
-      specifier: ^8.57.2
-      version: 8.58.0
-    '@vee-validate/zod':
-      specifier: ^4.15.1
-      version: 4.15.1
-    '@vite-pwa/vitepress':
-      specifier: ^1.1.0
-      version: 1.1.0
-    '@vitejs/plugin-vue':
-      specifier: ^6.0.5
-      version: 6.0.5
-    '@vitejs/plugin-vue-jsx':
-      specifier: ^5.1.5
-      version: 5.1.5
-    '@vue/shared':
-      specifier: ^3.5.31
-      version: 3.5.31
-    '@vue/test-utils':
-      specifier: ^2.4.6
-      version: 2.4.6
+    '@lucide/vue':
+      specifier: ^1.8.0
+      version: 1.8.0
     '@vueuse/core':
       specifier: ^14.2.1
       version: 14.2.1
-    '@vueuse/integrations':
-      specifier: ^14.2.1
-      version: 14.2.1
-    '@vueuse/motion':
-      specifier: ^3.0.3
-      version: 3.0.3
-    ant-design-vue:
-      specifier: ^4.2.6
-      version: 4.2.6
-    antdv-next:
-      specifier: ^1.1.7
-      version: 1.1.8
-    archiver:
-      specifier: ^7.0.1
-      version: 7.0.1
-    axios:
-      specifier: ^1.14.0
-      version: 1.14.0
-    axios-mock-adapter:
-      specifier: ^2.1.0
-      version: 2.1.0
-    cac:
-      specifier: ^7.0.0
-      version: 7.0.0
-    chalk:
-      specifier: ^5.6.2
-      version: 5.6.2
-    cheerio:
-      specifier: ^1.2.0
-      version: 1.2.0
-    circular-dependency-scanner:
-      specifier: ^3.0.1
-      version: 3.0.1
-    class-variance-authority:
-      specifier: ^0.7.1
-      version: 0.7.1
-    commitlint-plugin-function-rules:
-      specifier: ^4.3.2
-      version: 4.3.2
-    consola:
-      specifier: ^3.4.2
-      version: 3.4.2
-    cross-env:
-      specifier: ^10.1.0
-      version: 10.1.0
-    cspell:
-      specifier: ^9.7.0
-      version: 9.7.0
-    cz-git:
-      specifier: ^1.12.0
-      version: 1.12.0
-    czg:
-      specifier: ^1.12.0
-      version: 1.12.0
     dayjs:
       specifier: ^1.11.20
       version: 1.11.20
-    defu:
-      specifier: ^6.1.4
-      version: 6.1.4
-    depcheck:
-      specifier: ^1.4.7
-      version: 1.4.7
-    dotenv:
-      specifier: ^17.3.1
-      version: 17.3.1
-    echarts:
-      specifier: ^6.0.0
-      version: 6.0.0
     element-plus:
       specifier: ^2.13.6
       version: 2.13.6
-    es-toolkit:
-      specifier: ^1.45.1
-      version: 1.45.1
-    eslint:
-      specifier: ^10.1.0
-      version: 10.1.0
-    eslint-plugin-better-tailwindcss:
-      specifier: ^4.3.2
-      version: 4.3.2
-    eslint-plugin-command:
-      specifier: ^3.5.2
-      version: 3.5.2
-    eslint-plugin-jsonc:
-      specifier: ^3.1.2
-      version: 3.1.2
-    eslint-plugin-n:
-      specifier: ^17.24.0
-      version: 17.24.0
-    eslint-plugin-perfectionist:
-      specifier: ^5.7.0
-      version: 5.7.0
-    eslint-plugin-pnpm:
-      specifier: ^1.6.0
-      version: 1.6.0
-    eslint-plugin-unicorn:
-      specifier: ^64.0.0
-      version: 64.0.0
-    eslint-plugin-unused-imports:
-      specifier: ^4.4.1
-      version: 4.4.1
-    eslint-plugin-vue:
-      specifier: ^10.8.0
-      version: 10.8.0
-    eslint-plugin-yml:
-      specifier: ^3.3.1
-      version: 3.3.1
-    execa:
-      specifier: ^9.6.1
-      version: 9.6.1
-    find-up:
-      specifier: ^8.0.0
-      version: 8.0.0
-    get-port:
-      specifier: ^7.2.0
-      version: 7.2.0
-    globals:
-      specifier: ^17.4.0
-      version: 17.4.0
-    h3:
-      specifier: ^1.15.10
-      version: 1.15.10
-    happy-dom:
-      specifier: ^20.8.9
-      version: 20.8.9
-    html-minifier-terser:
-      specifier: ^7.2.0
-      version: 7.2.0
-    is-ci:
-      specifier: ^4.1.0
-      version: 4.1.0
-    json-bigint:
-      specifier: ^1.0.0
-      version: 1.0.0
-    jsonwebtoken:
-      specifier: ^9.0.3
-      version: 9.0.3
-    lefthook:
-      specifier: ^2.1.4
-      version: 2.1.4
-    lodash.clonedeep:
-      specifier: ^4.5.0
-      version: 4.5.0
-    lucide-vue-next:
-      specifier: ^0.577.0
-      version: 0.577.0
-    medium-zoom:
-      specifier: ^1.1.0
-      version: 1.1.0
-    naive-ui:
-      specifier: ^2.44.1
-      version: 2.44.1
-    nitropack:
-      specifier: ^2.13.2
-      version: 2.13.2
-    nprogress:
-      specifier: ^0.2.0
-      version: 0.2.0
-    ora:
-      specifier: ^9.3.0
-      version: 9.3.0
-    oxfmt:
-      specifier: ^0.42.0
-      version: 0.42.0
-    oxlint:
-      specifier: ^1.58.0
-      version: 1.58.0
-    oxlint-tsgolint:
-      specifier: ^0.18.1
-      version: 0.18.1
-    pinia-plugin-persistedstate:
-      specifier: ^4.7.1
-      version: 4.7.1
-    pkg-types:
-      specifier: ^2.3.0
-      version: 2.3.0
-    playwright:
-      specifier: ^1.58.2
-      version: 1.58.2
-    postcss:
-      specifier: ^8.5.8
-      version: 8.5.8
-    postcss-html:
-      specifier: ^1.8.1
-      version: 1.8.1
-    postcss-scss:
-      specifier: ^4.0.9
-      version: 4.0.9
-    publint:
-      specifier: ^0.3.18
-      version: 0.3.18
-    qrcode:
-      specifier: ^1.5.4
-      version: 1.5.4
-    qs:
-      specifier: ^6.15.0
-      version: 6.15.0
-    reka-ui:
-      specifier: ^2.9.2
-      version: 2.9.2
-    resolve.exports:
-      specifier: ^2.0.3
-      version: 2.0.3
-    rimraf:
-      specifier: ^6.1.3
-      version: 6.1.3
-    rolldown:
-      specifier: ^1.0.0-rc.12
-      version: 1.0.0-rc.12
-    rollup-plugin-visualizer:
-      specifier: ^7.0.1
-      version: 7.0.1
-    sass:
-      specifier: ^1.98.0
-      version: 1.98.0
-    sass-embedded:
-      specifier: ^1.98.0
-      version: 1.98.0
-    secure-ls:
-      specifier: ^2.0.0
-      version: 2.0.0
-    sortablejs:
-      specifier: ^1.15.7
-      version: 1.15.7
-    stylelint:
-      specifier: ^17.6.0
-      version: 17.6.0
-    stylelint-config-recess-order:
-      specifier: ^7.7.0
-      version: 7.7.0
-    stylelint-config-recommended:
-      specifier: ^18.0.0
-      version: 18.0.0
-    stylelint-config-recommended-scss:
-      specifier: ^17.0.0
-      version: 17.0.0
-    stylelint-config-recommended-vue:
-      specifier: ^1.6.1
-      version: 1.6.1
-    stylelint-config-standard:
-      specifier: ^40.0.0
-      version: 40.0.0
-    stylelint-order:
-      specifier: ^8.1.1
-      version: 8.1.1
-    stylelint-scss:
-      specifier: ^7.0.0
-      version: 7.0.0
-    tailwind-merge:
-      specifier: ^3.5.0
-      version: 3.5.0
-    tailwindcss:
-      specifier: ^4.2.2
-      version: 4.2.2
-    tdesign-vue-next:
-      specifier: ^1.18.6
-      version: 1.18.6
-    theme-colors:
-      specifier: ^0.1.0
-      version: 0.1.0
-    tippy.js:
-      specifier: ^6.3.7
-      version: 6.3.7
-    tsdown:
-      specifier: ^0.21.7
-      version: 0.21.7
-    turbo:
-      specifier: ^2.9.3
-      version: 2.9.3
-    tw-animate-css:
-      specifier: ^1.4.0
-      version: 1.4.0
-    typescript:
-      specifier: ^5.9.3
-      version: 5.9.3
-    unplugin-dts:
-      specifier: ^1.0.0-beta.6
-      version: 1.0.0-beta.6
     unplugin-element-plus:
       specifier: ^0.11.2
       version: 0.11.2
-    unplugin-vue:
-      specifier: ^7.1.1
-      version: 7.1.1
-    vee-validate:
-      specifier: ^4.15.1
-      version: 4.15.1
-    vite:
-      specifier: ^8.0.3
-      version: 8.0.3
-    vite-plugin-compression:
-      specifier: ^0.5.1
-      version: 0.5.1
-    vite-plugin-html:
-      specifier: ^3.2.2
-      version: 3.2.2
-    vite-plugin-lazy-import:
-      specifier: ^1.0.7
-      version: 1.0.7
-    vite-plugin-pwa:
-      specifier: ^1.2.0
-      version: 1.2.0
-    vite-plugin-vue-devtools:
-      specifier: ^8.1.1
-      version: 8.1.1
-    vitepress:
-      specifier: ^1.6.4
-      version: 1.6.4
-    vitepress-plugin-group-icons:
-      specifier: ^1.7.3
-      version: 1.7.3
-    vitest:
-      specifier: ^4.1.2
-      version: 4.1.2
-    vue-eslint-parser:
-      specifier: ^10.4.0
-      version: 10.4.0
-    vue-i18n:
-      specifier: ^11.3.0
-      version: 11.3.0
-    vue-json-viewer:
-      specifier: ^3.0.4
-      version: 3.0.4
     vue-router:
       specifier: ^5.0.4
       version: 5.0.4
-    vue-tippy:
-      specifier: ^6.7.1
-      version: 6.7.1
-    vue-tsc:
-      specifier: ^3.2.6
-      version: 3.2.6
-    vxe-pc-ui:
-      specifier: ^4.13.20
-      version: 4.13.20
-    vxe-table:
-      specifier: ^4.18.10
-      version: 4.18.10
-    watermark-js-plus:
-      specifier: ^1.6.3
-      version: 1.6.3
-    yaml-eslint-parser:
-      specifier: ^2.0.0
-      version: 2.0.0
-    zod:
-      specifier: ^3.25.76
-      version: 3.25.76
-    zod-defaults:
-      specifier: 0.1.3
-      version: 0.1.3
 
 overrides:
   '@ast-grep/napi': ^0.42.0
@@ -790,6 +295,9 @@ importers:
 
   apps/web-ele:
     dependencies:
+      '@lucide/vue':
+        specifier: 'catalog:'
+        version: 1.8.0(vue@3.5.31(typescript@5.9.3))
       '@vben/access':
         specifier: workspace:*
         version: link:../../packages/effects/access
@@ -841,9 +349,6 @@ importers:
       element-plus:
         specifier: 'catalog:'
         version: 2.13.6(typescript@5.9.3)(vue@3.5.31(typescript@5.9.3))
-      lucide-vue-next:
-        specifier: 'catalog:'
-        version: 0.577.0(vue@3.5.31(typescript@5.9.3))
       pinia:
         specifier: ^3.0.4
         version: 3.0.4(typescript@5.9.3)(vue@3.5.31(typescript@5.9.3))
@@ -3958,6 +3463,11 @@ packages:
 
   '@keyv/serialize@1.1.1':
     resolution: {integrity: sha512-dXn3FZhPv0US+7dtJsIi2R+c7qWYiReoEh5zUntWCf4oSpMNib8FDhSoed6m3QyZdx5hK7iLFkYk3rNxwt8vTA==}
+
+  '@lucide/vue@1.8.0':
+    resolution: {integrity: sha512-Rgy2rxfOx9yP6fWneE3QO6xwUbF2o7f9+MRbzGLRakee4tzUeVWHdX23uRH4ymwEzoq2+8vqRI9yGsxeZhYlWw==}
+    peerDependencies:
+      vue: ^3.5.31
 
   '@manypkg/find-root@1.1.0':
     resolution: {integrity: sha512-mki5uBvhHzO8kYYix/WRy2WX8S3B5wdVSc9D6KcU5lQNglP2yt58/VfLuAK49glRXChosY8ap2oJ1qgma3GUVA==}
@@ -13423,6 +12933,10 @@ snapshots:
       keyv: 5.6.0
 
   '@keyv/serialize@1.1.1': {}
+
+  '@lucide/vue@1.8.0(vue@3.5.31(typescript@5.9.3))':
+    dependencies:
+      vue: 3.5.31(typescript@5.9.3)
 
   '@manypkg/find-root@1.1.0':
     dependencies:
