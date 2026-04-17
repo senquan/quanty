@@ -17,7 +17,8 @@ import {
   ElTabs,
 } from 'element-plus';
 
-import { Save, ArrowLeft, Code, Settings, Info } from 'lucide-vue-next';
+import { Save, ArrowLeft, Code, Settings, Info } from '@lucide/vue';
+import MonacoEditor from '#/components/MonacoEditor/index.vue';
 
 const router = useRouter();
 const route = useRoute();
@@ -109,6 +110,7 @@ def on_data(data, context):
 ];
 
 const activeTab = ref('code');
+const monacoEditorRef = ref<InstanceType<typeof MonacoEditor> | null>(null);
 
 const handleBack = () => {
   router.push('/quant/strategy');
@@ -120,11 +122,39 @@ const handleSave = () => {
 };
 
 const handleValidate = () => {
-  console.log('验证策略代码...');
-  ElMessage.info('正在验证策略代码...');
+  const code = form.code;
+  // Basic Python syntax validation
+  const errors: string[] = [];
+
+  // Check for unbalanced parentheses
+  let parenCount = 0;
+  let bracketCount = 0;
+  let braceCount = 0;
+  for (const char of code) {
+    if (char === '(') parenCount++;
+    if (char === ')') parenCount--;
+    if (char === '[') bracketCount++;
+    if (char === ']') bracketCount--;
+    if (char === '{') braceCount++;
+    if (char === '}') braceCount--;
+  }
+  if (parenCount !== 0) errors.push('括号不匹配');
+  if (bracketCount !== 0) errors.push('方括号不匹配');
+  if (braceCount !== 0) errors.push('花括号不匹配');
+
+  // Check for on_data function
+  if (!code.includes('def on_data')) {
+    errors.push('缺少 on_data 函数');
+  }
+
+  if (errors.length > 0) {
+    ElMessage.error(`验证失败: ${errors.join(', ')}`);
+  } else {
+    ElMessage.success('代码语法验证通过');
+  }
 };
 
-const handleApplyTemplate = (template: typeof strategyTemplates[0]) => {
+const handleApplyTemplate = (template: (typeof strategyTemplates)[0]) => {
   form.code = template.code;
   ElMessage.success(`已应用模板: ${template.name}`);
 };
@@ -173,7 +203,12 @@ const handleApplyTemplate = (template: typeof strategyTemplates[0]) => {
               <ElInput v-model="form.name" placeholder="请输入策略名称" />
             </ElFormItem>
             <ElFormItem label="策略描述">
-              <ElInput v-model="form.description" type="textarea" :rows="3" placeholder="请输入策略描述" />
+              <ElInput
+                v-model="form.description"
+                type="textarea"
+                :rows="3"
+                placeholder="请输入策略描述"
+              />
             </ElFormItem>
           </ElForm>
         </ElCard>
@@ -216,8 +251,8 @@ const handleApplyTemplate = (template: typeof strategyTemplates[0]) => {
               :key="template.name"
               link
               type="primary"
-              @click="handleApplyTemplate(template)"
               class="block w-full text-left"
+              @click="handleApplyTemplate(template)"
             >
               {{ template.name }}
             </ElButton>
@@ -230,13 +265,15 @@ const handleApplyTemplate = (template: typeof strategyTemplates[0]) => {
         <ElCard shadow="never">
           <ElTabs v-model="activeTab">
             <ElTabPane label="策略代码" name="code">
-              <ElInput
+              <MonacoEditor
+                ref="monacoEditorRef"
                 v-model="form.code"
-                type="textarea"
-                :rows="30"
-                placeholder="请输入策略代码"
-                class="code-editor"
-                style="font-family: 'JetBrains Mono', 'Fira Code', monospace;"
+                language="python"
+                theme="vs-dark"
+                height="600px"
+                :minimap="true"
+                :font-size="14"
+                word-wrap="on"
               />
             </ElTabPane>
             <ElTabPane label="回测结果" name="result">
@@ -254,12 +291,5 @@ const handleApplyTemplate = (template: typeof strategyTemplates[0]) => {
 <style scoped>
 .strategy-edit {
   min-height: 100%;
-}
-
-.code-editor :deep(.el-textarea__inner) {
-  font-family: 'JetBrains Mono', 'Fira Code', 'Consolas', monospace;
-  font-size: 14px;
-  line-height: 1.5;
-  tab-size: 4;
 }
 </style>
