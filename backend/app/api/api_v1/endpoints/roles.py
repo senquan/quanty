@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy.orm import Session
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 from typing import List, Optional
 from app.core.database import get_db
 from app.core.dependencies import get_current_user
@@ -16,37 +17,36 @@ async def get_roles(
     skip: int = Query(0, ge=0),
     limit: int = Query(10, ge=1, le=100),
     search: Optional[str] = Query(None),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),  # H1-1: sync → async
     current_user: User = Depends(get_current_user)
 ):
     """获取角色列表"""
-    query = db.query(Role)
-    
+    query = select(Role)
     if search:
-        query = query.filter(Role.name.contains(search))
-    
-    total = query.count()
-    roles = query.offset(skip).limit(limit).all()
-    
+        query = query.where(Role.name.contains(search))
+    query = query.offset(skip).limit(limit)
+    result = await db.execute(query)
+    roles = result.scalars().all()
     return roles
 
 @router.get("/{role_id}", response_model=RoleWithPermissions)
 async def get_role(
     role_id: int,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),  # H1-1: sync → async
     current_user: User = Depends(get_current_user)
 ):
     """获取单个角色信息"""
-    role = db.query(Role).filter(Role.id == role_id).first()
+    result = await db.execute(select(Role).filter(Role.id == role_id))
+    role = result.scalars().first()
     if not role:
         raise HTTPException(status_code=404, detail="角色不存在")
     
-    # 获取权限信息
-    permissions = db.query(RolePermission).filter(
-        RolePermission.role_id == role_id
-    ).all()
+    # H1-4: 获取权限信息
+    perm_result = await db.execute(select(RolePermission).filter(RolePermission.role_id == role_id))
+    permissions = perm_result.scalars().all()
     
     role_dict = role.__dict__.copy()
+    role_dict.pop('_sa_instance_state', None)
     role_dict['permissions'] = [perm.__dict__ for perm in permissions]
     
     return role_dict
@@ -54,16 +54,14 @@ async def get_role(
 @router.post("/", response_model=RoleInDB)
 async def create_role(
     role_data: RoleCreate,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),  # H1-1: sync → async
     current_user: User = Depends(get_current_user)
 ):
     """创建角色"""
-    # 检查角色名是否已存在
-    existing_role = db.query(Role).filter(Role.name == role_data.name).first()
-    if existing_role:
+    existing_role = await db.execute(select(Role).where(Role.name == role_data.name))
+    if existing_role.scalars().first():
         raise HTTPException(status_code=400, detail="角色名已存在")
     
-    # 创建新角色
     new_role = Role(
         name=role_data.name,
         description=role_data.description,
@@ -71,8 +69,8 @@ async def create_role(
     )
     
     db.add(new_role)
-    db.commit()
-    db.refresh(new_role)
+    await db.commit()
+    await db.refresh(new_role)
     
     return new_role
 
@@ -80,47 +78,51 @@ async def create_role(
 async def update_role(
     role_id: int,
     role_data: RoleUpdate,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),  # H1-1: sync → async
     current_user: User = Depends(get_current_user)
 ):
     """更新角色信息"""
-    role = db.query(Role).filter(Role.id == role_id).first()
+    result = await db.execute(select(Role).filter(Role.id == role_id))
+    role = result.scalars().first()
     if not role:
         raise HTTPException(status_code=404, detail="角色不存在")
     
-    # 如果更新角色名，检查是否已存在
     if role_data.name and role_data.name != role.name:
-        existing_role = db.query(Role).filter(Role.name == role_data.name).first()
-        if existing_role:
+        existing_role = await db.execute(select(Role).where(Role.name == role_data.name))
+        if existing_role.scalars().first():
             raise HTTPException(status_code=400, detail="角色名已存在")
     
-    # 更新角色数据
-    for field, value in role_data.dict(exclude_unset=True).items():
+    # H1-5: dict() → model_dump()
+    update_dict = role_data.model_dump(exclude_unset=True)
+    for field, value in update_dict.items():
         setattr(role, field, value)
     
-    db.commit()
-    db.refresh(role)
+    await db.commit()
+    await db.refresh(role)
     
     return role
 
 @router.delete("/{role_id}")
 async def delete_role(
     role_id: int,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),  # H1-1: sync → async
     current_user: User = Depends(get_current_user)
 ):
     """删除角色"""
-    role = db.query(Role).filter(Role.id == role_id).first()
-    if not role:
-        raise HTTPException(status_code=404, detail="角色不存在")
-    
-    # 检查是否有用户在使用这个角色
-    user_count = db.query(User).filter(User.role_id == role_id).count()
+    result = await db.execute(select(User).filter(User.role_id == role_id))
+    user_count = len(result.scalars().all())
     if user_count > 0:
         raise HTTPException(status_code=400, detail="该角色正在被用户使用，无法删除")
     
-    db.delete(role)
-    db.commit()
+    # 删除角色关联的权限
+    await db.execute(RolePermission.delete().where(RolePermission.role_id == role_id))
+    
+    result2 = await db.execute(select(Role).where(Role.id == role_id))
+    role = result2.scalars().first()
+    if role:
+        await db.delete(role)
+    
+    await db.commit()
     
     return {"message": "角色删除成功"}
 
@@ -128,17 +130,18 @@ async def delete_role(
 async def update_role_status(
     role_id: int,
     is_active: bool,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),  # H1-1: sync → async
     current_user: User = Depends(get_current_user)
 ):
     """更新角色状态"""
-    role = db.query(Role).filter(Role.id == role_id).first()
+    result = await db.execute(select(Role).filter(Role.id == role_id))
+    role = result.scalars().first()
     if not role:
         raise HTTPException(status_code=404, detail="角色不存在")
     
     role.is_active = is_active
-    db.commit()
-    db.refresh(role)
+    await db.commit()
+    await db.refresh(role)
     
     return {"message": "角色状态更新成功"}
 
@@ -146,21 +149,22 @@ async def update_role_status(
 async def set_role_permissions(
     role_id: int,
     menu_ids: List[int],
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),  # H1-1: sync → async
     current_user: User = Depends(get_current_user)
 ):
     """设置角色权限"""
-    role = db.query(Role).filter(Role.id == role_id).first()
+    result = await db.execute(select(Role).filter(Role.id == role_id))
+    role = result.scalars().first()
     if not role:
         raise HTTPException(status_code=404, detail="角色不存在")
     
     # 删除现有权限
-    db.query(RolePermission).filter(RolePermission.role_id == role_id).delete()
+    await db.execute(RolePermission.delete().where(RolePermission.role_id == role_id))
     
     # 添加新权限
     for menu_id in menu_ids:
-        # 检查菜单是否存在
-        menu = db.query(Menu).filter(Menu.id == menu_id).first()
+        menu_result = await db.execute(select(Menu).where(Menu.id == menu_id))
+        menu = menu_result.scalars().first()
         if menu:
             permission = RolePermission(
                 role_id=role_id,
@@ -172,6 +176,6 @@ async def set_role_permissions(
             )
             db.add(permission)
     
-    db.commit()
+    await db.commit()
     
     return {"message": "权限设置成功"}

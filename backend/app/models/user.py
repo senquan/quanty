@@ -13,10 +13,11 @@ class User(Base):
     phone = Column(String(20))
     gander = Column(Integer, default=0)
     realname = Column(String(20))
-    status = Column(Integer, default=1)
+    is_active = Column(Integer, default=1)  # 0=disabled, 1=active
+    role_id = Column(Integer, ForeignKey("roles.id"))  # H1-3: 添加角色关联
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
-    
+
     # 关系
-    # strategies = relationship("Strategy", back_populates="user")
-    # role = relationship("Role", back_populates="users")
+    # strategies = relationship("_strategy", back_populates="user")
+    user_roles = relationship("RolePermission", back_populates="user", uselist=False)

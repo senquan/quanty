@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
+from sqlalchemy import select
 from typing import List
 from datetime import datetime, timedelta
 import pandas as pd
@@ -25,6 +26,7 @@ async def create_strategy(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
+    """创建策略 - H1-1: 改为 async 数据库操作"""
     # 验证策略代码
     validator = StrategyValidator()
     validation = validator.validate_strategy(strategy_data.code)
@@ -43,8 +45,8 @@ async def create_strategy(
     )
     
     db.add(strategy)
-    db.commit()
-    db.refresh(strategy)
+    await db.commit()
+    await db.refresh(strategy)
     
     return strategy
 
@@ -55,10 +57,13 @@ async def get_strategies(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    strategies = db.query(Strategy).filter(
-        Strategy.user_id == current_user.id
-    ).offset(skip).limit(limit).all()
-    return strategies
+    """获取策略列表"""
+    result = await db.execute(
+        select(Strategy).filter(
+            Strategy.user_id == current_user.id
+        ).offset(skip).limit(limit)
+    )
+    return result.scalars().all()
 
 @router.get("/strategies/{strategy_id}", response_model=StrategyResponse)
 async def get_strategy(
@@ -66,10 +71,14 @@ async def get_strategy(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    strategy = db.query(Strategy).filter(
-        Strategy.id == strategy_id,
-        Strategy.user_id == current_user.id
-    ).first()
+    """获取单个策略"""
+    result = await db.execute(
+        select(Strategy).filter(
+            Strategy.id == strategy_id,
+            Strategy.user_id == current_user.id
+        )
+    )
+    strategy = result.scalars().first()
     
     if not strategy:
         raise HTTPException(status_code=404, detail="Strategy not found")
@@ -114,13 +123,16 @@ async def run_backtest(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    """运行回测"""
+    """运行回测 - H1-1: 改为 async 数据库操作"""
     try:
         # 获取策略
-        strategy = db.query(Strategy).filter(
-            Strategy.id == backtest_request.strategy_id,
-            Strategy.user_id == current_user.id
-        ).first()
+        result = await db.execute(
+            select(Strategy).filter(
+                Strategy.id == backtest_request.strategy_id,
+                Strategy.user_id == current_user.id
+            )
+        )
+        strategy = result.scalars().first()
         
         if not strategy:
             raise HTTPException(status_code=404, detail="Strategy not found")
@@ -152,8 +164,8 @@ async def run_backtest(
         )
         
         db.add(backtest_result)
-        db.commit()
-        db.refresh(backtest_result)
+        await db.commit()
+        await db.refresh(backtest_result)
         
         # 转换交易数据
         trades = [
@@ -195,19 +207,25 @@ async def get_backtest_history(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    """获取策略回测历史"""
+    """获取策略回测历史 - H1-1: 改为 async 数据库操作"""
     # 验证策略所有权
-    strategy = db.query(Strategy).filter(
-        Strategy.id == strategy_id,
-        Strategy.user_id == current_user.id
-    ).first()
+    result = await db.execute(
+        select(Strategy).filter(
+            Strategy.id == strategy_id,
+            Strategy.user_id == current_user.id
+        )
+    )
+    strategy = result.scalars().first()
     
     if not strategy:
         raise HTTPException(status_code=404, detail="Strategy not found")
     
     # 获取回测历史
-    history = db.query(BacktestResultModel).filter(
-        BacktestResultModel.strategy_id == strategy_id
-    ).order_by(BacktestResultModel.created_at.desc()).all()
+    history_result = await db.execute(
+        select(BacktestResultModel)
+        .where(BacktestResultModel.strategy_id == strategy_id)
+        .order_by(BacktestResultModel.created_at.desc())
+    )
+    history = history_result.scalars().all()
     
     return history
