@@ -44,10 +44,10 @@
     "@vueuse/core": "catalog:",
     "dayjs": "catalog:",
     "element-plus": "catalog:",
+    "monaco-editor": "catalog:",
     "pinia": "catalog:",
     "vue": "catalog:",
-    "vue-router": "catalog:",
-    "monaco-editor": "^0.52.0"
+    "vue-router": "catalog:"
   },
   "devDependencies": {
     "unplugin-element-plus": "catalog:"
