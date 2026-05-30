@@ -16,7 +16,7 @@ import {
   ElTag,
 } from 'element-plus';
 
-import { Play, Download } from 'lucide-vue-next';
+import { Play, Download } from '@lucide/vue';
 
 import { EchartsUI, useEcharts } from '@vben/plugins/echarts';
 

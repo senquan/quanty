@@ -59,6 +59,9 @@ class BacktestEngine:
     def execute_strategy(self, strategy_code: str, data: pd.DataFrame) -> Dict:
         """执行策略代码"""
         try:
+            # 保存初始资金用于最终计算
+            initial_capital_snapshot = self.initial_capital
+            
             # 添加技术指标
             from app.services.technical_indicators import DataEnricher
             enriched_data = DataEnricher.add_technical_indicators(data)
@@ -74,21 +77,43 @@ class BacktestEngine:
                 'get_capital': lambda: self.capital,
             }
             
-            # 计算每日组合价值和收益率
+            # 按天推进：在每个 bar 执行策略逻辑后计算组合价值
             portfolio_values = []
+            
+            # 先重置实例状态，避免多次调用时数据残留
+            self.capital = initial_capital_snapshot
+            
+            # 执行策略代码（策略函数内部通过循环调用 buy/sell）
+            exec(strategy_code, strategy_globals)
+            
+            # 策略执行后，按实际交易结果计算每日组合价值
+            # 重新按天遍历，模拟逐日盈亏
             current_position = 0
+            current_capital = initial_capital_snapshot
+            trade_index = 0
+            trades_sorted = sorted(self.trades, key=lambda t: t['timestamp'])
             
             for i in range(len(enriched_data)):
                 current_price = enriched_data.iloc[i]['close']
-                current_value = self.capital + (current_position * current_price)
+                
+                # 处理当天成交的交易
+                while trade_index < len(trades_sorted) and trades_sorted[trade_index]['timestamp'].date() <= enriched_data.index[i].date():
+                    trade = trades_sorted[trade_index]
+                    if trade['type'] == 'buy':
+                        current_position += trade['quantity']
+                        current_capital -= trade['price'] * trade['quantity']
+                    else:
+                        current_position -= trade['quantity']
+                        current_capital += trade['price'] * trade['quantity']
+                    trade_index += 1
+                
+                # 组合价值 = 可用现金 + 持仓市值
+                current_value = current_capital + (current_position * current_price)
                 portfolio_values.append(current_value)
-            
-            # 执行策略代码
-            exec(strategy_code, strategy_globals)
             
             return {
                 'trades': self.trades,
-                'final_capital': self.capital,
+                'final_capital': current_capital,
                 'portfolio_values': portfolio_values,
                 'daily_returns': self._calculate_daily_returns(portfolio_values)
             }
@@ -98,8 +123,14 @@ class BacktestEngine:
     
     def _buy(self, price: float, quantity: int = None):
         """买入操作"""
+        if price is None or price <= 0:
+            return  # 价格无效，跳过
+        
         if quantity is None:
             quantity = int(self.capital / price)
+        
+        if quantity <= 0:
+            return  # 数量为零，跳过
         
         cost = price * quantity
         if cost <= self.capital:
@@ -114,19 +145,27 @@ class BacktestEngine:
     
     def _sell(self, price: float, quantity: int = None):
         """卖出操作"""
+        if price is None or price <= 0:
+            return  # 价格无效，跳过
+        
         if quantity is None:
             quantity = self.position
         
-        if quantity <= self.position:
-            revenue = price * quantity
-            self.capital += revenue
-            self.position -= quantity
-            self.trades.append({
-                'type': 'sell',
-                'price': price,
-                'quantity': quantity,
-                'timestamp': pd.Timestamp.now()
-            })
+        if quantity <= 0:
+            return  # 无持仓可卖
+        
+        if quantity > self.position:
+            quantity = self.position  # 不超过实际持仓
+        
+        revenue = price * quantity
+        self.capital += revenue
+        self.position -= quantity
+        self.trades.append({
+            'type': 'sell',
+            'price': price,
+            'quantity': quantity,
+            'timestamp': pd.Timestamp.now()
+        })
     
     def calculate_metrics(self, results: Dict) -> Dict:
         """计算回测指标"""

@@ -131,7 +131,7 @@ async def update_strategy(
     for field, value in update_data.items():
         setattr(strategy, field, value)
     
-    strategy.updated_at = datetime.utcnow()
+    strategy.updated_at = func.now()
     
     await db.commit()
     await db.refresh(strategy)
