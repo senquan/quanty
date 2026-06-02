@@ -19,8 +19,12 @@ export interface RoleCreate {
   is_active: boolean;
 }
 
-export async function getRolesApi() {
-  return requestClient.get<Role[]>('/roles/');
+export async function getRolesApi(params?: {
+  skip?: number;
+  limit?: number;
+  search?: string;
+}) {
+  return requestClient.get<Role[]>('/roles/', { params });
 }
 
 export async function getRoleApi(id: number) {

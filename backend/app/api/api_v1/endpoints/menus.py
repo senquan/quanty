@@ -5,7 +5,6 @@ This module provides CRUD operations for menu items, including listing,
 creating, updating, deleting, and managing menu hierarchies.
 """
 from datetime import datetime
-from email import message
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
@@ -13,11 +12,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db
 from app.models.menu import Menu
 from app.schemas.menu import MenuCreate, MenuUpdate, MenuInDB
-from app.schemas.response import Response
 
 router = APIRouter()
 
-@router.get("/", response_model=Response[List[MenuInDB]])
+@router.get("/", response_model=List[MenuInDB])
 async def get_menus(
     search: Optional[str] = Query(None),
     parent_id: Optional[int] = Query(None),
@@ -28,12 +26,12 @@ async def get_menus(
     if parent_id is not None:
         query = query.where(Menu.parent_id == parent_id)
     if search:
-        query = query.where(Menu.name.ilike(f"%{search}%"))
-    query = query.order_by(Menu.id.desc())
+        query = query.where(
+            Menu.name.ilike(f"%{search}%") | Menu.label.ilike(f"%{search}%")
+        )
+    query = query.order_by(Menu.oidx.asc(), Menu.id.asc())
     result = await db.execute(query)
-    menus = result.scalars().all()
-
-    return Response.success(data=menus)
+    return result.scalars().all()
 
 @router.get("/{menu_id}", response_model=MenuInDB)
 async def get_menu(
@@ -69,7 +67,7 @@ async def create_menu(
     await db.commit()
     await db.refresh(new_menu)
 
-    return Response.success(data=new_menu)
+    return new_menu
 
 @router.put("/{menu_id}", response_model=MenuInDB)
 async def update_menu(
@@ -112,9 +110,8 @@ async def delete_menu(
         raise HTTPException(status_code=404, detail="菜单不存在")
 
     # 检查是否有子菜单
-    count_result = await db.execute(select(Menu.id).where(Menu.parent_id == menu_id))
-    child_count = count_result.scalars().first()
-    if child_count:
+    child_result = await db.execute(select(Menu.id).where(Menu.parent_id == menu_id).limit(1))
+    if child_result.scalars().first():
         raise HTTPException(status_code=400, detail="该菜单下存在子菜单，无法删除")
 
     await db.delete(menu)

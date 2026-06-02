@@ -1,5 +1,5 @@
 from pydantic import BaseModel, EmailStr
-from typing import Optional
+from typing import List, Optional
 from datetime import datetime
 
 class UserBase(BaseModel):
@@ -35,6 +35,10 @@ class UserResponse(UserBase):
 
 class UserWithRole(UserResponse):
     role: Optional[dict] = None
+
+class PaginatedUsers(BaseModel):
+    items: List[UserWithRole]
+    total: int
 
 class Token(BaseModel):
     access_token: str
