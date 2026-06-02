@@ -9,6 +9,11 @@ class StrategyBase(BaseModel):
 class StrategyCreate(StrategyBase):
     code: str  # 策略代码
 
+class StrategyUpdate(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+    code: Optional[str] = None
+
 class StrategyResponse(StrategyBase):
     id: int
     user_id: int

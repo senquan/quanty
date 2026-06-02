@@ -12,7 +12,7 @@ import {
   ElTag,
 } from 'element-plus';
 
-import { TrendingUp, TrendingDown } from 'lucide-vue-next';
+import { TrendingUp, TrendingDown } from '@lucide/vue';
 
 interface StatItem {
   label: string;

@@ -19,7 +19,7 @@ import {
   ElTag,
 } from 'element-plus';
 
-import { ShoppingCart, Wallet, BarChart3, ArrowUpRight, ArrowDownLeft } from 'lucide-vue-next';
+import { ShoppingCart, Wallet, BarChart3, ArrowUpRight as ArrowUp, ArrowDownLeft as ArrowDown } from '@lucide/vue';
 
 interface Order {
   id: string;
@@ -127,8 +127,8 @@ const handleCancelOrder = (row: Order) => {
       <ElCol :span="6">
         <ElCard shadow="hover">
           <div class="text-center">
-            <ArrowUpRight v-if="accountInfo.totalPnl >= 0" class="w-6 h-6 mx-auto mb-2 text-green-500" />
-            <ArrowDownLeft v-else class="w-6 h-6 mx-auto mb-2 text-red-500" />
+            <ArrowUp v-if="accountInfo.totalPnl >= 0" class="w-6 h-6 mx-auto mb-2 text-green-500" />
+            <ArrowDown v-else class="w-6 h-6 mx-auto mb-2 text-red-500" />
             <div class="text-sm text-gray-500">总盈亏</div>
             <div :class="['text-xl font-bold', accountInfo.totalPnl >= 0 ? 'text-green-500' : 'text-red-500']">
               {{ accountInfo.totalPnl >= 0 ? '+' : '' }}¥{{ accountInfo.totalPnl.toLocaleString() }}

@@ -29,7 +29,7 @@ class BacktestResult(Base):
     sharpe_ratio: float = Column(Float)  # 夏普比率
     max_drawdown: float = Column(Float)  # 最大回撤
     win_rate: float = Column(Float)  # 胜率
-    trades_count = Column(Integer)  # 交易次数
+    trades_count = Column(Integer, nullable=True)  # 交易次数
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     
     # 关系

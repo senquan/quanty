@@ -135,19 +135,40 @@ class PerformanceAnalyzer:
         buy_trades = [t for t in self.trades if t['type'] == 'buy']
         sell_trades = [t for t in self.trades if t['type'] == 'sell']
         
-        # 配对买卖交易
+        # 按时间排序，确保 FIFO 配对
+        buy_trades.sort(key=lambda t: t['timestamp'])
+        sell_trades.sort(key=lambda t: t['timestamp'])
+        
+        # 队列式配对：对每笔 sell，按 FIFO 匹配所有未使用的 buy（按数量逐笔平仓）
         trade_pairs = []
+        buy_queue = list(buy_trades)  # 未使用的买入队列（保持 FIFO）
+        
         for sell in sell_trades:
-            for buy in buy_trades:
-                if buy['timestamp'] < sell['timestamp']:
-                    trade_pairs.append({
-                        'buy_price': buy['price'],
-                        'sell_price': sell['price'],
-                        'buy_time': buy['timestamp'],
-                        'sell_time': sell['timestamp'],
-                        'quantity': min(buy['quantity'], sell['quantity'])
-                    })
+            remaining_sell_qty = sell['quantity']
+            
+            while remaining_sell_qty > 0 and buy_queue:
+                buy = buy_queue[0]
+                
+                # 跳过买入时间晚于卖出时间的订单
+                if buy['timestamp'] > sell['timestamp']:
                     break
+                
+                paired_qty = min(remaining_sell_qty, buy['quantity'])
+                
+                trade_pairs.append({
+                    'buy_price': buy['price'],
+                    'sell_price': sell['price'],
+                    'buy_time': buy['timestamp'],
+                    'sell_time': sell['timestamp'],
+                    'quantity': paired_qty
+                })
+                
+                remaining_sell_qty -= paired_qty
+                buy_queue[0]['quantity'] -= paired_qty
+                
+                # 如果这支买入被完全用尽，移出发队列
+                if buy_queue[0]['quantity'] <= 0:
+                    buy_queue.pop(0)
         
         if not trade_pairs:
             return {
