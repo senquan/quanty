@@ -73,8 +73,6 @@ export interface ValidationResult {
   valid: boolean;
   errors: string[];
   warnings: string[];
-  has_buy_function: boolean;
-  has_sell_function: boolean;
 }
 
 /** 市场数据响应 */
@@ -94,7 +92,11 @@ export interface MarketDataResponse {
 // ============ API 接口 ============
 
 /** 获取策略列表 */
-export async function getStrategiesApi(params?: { skip?: number; limit?: number }) {
+export async function getStrategiesApi(params?: {
+  skip?: number;
+  limit?: number;
+  search?: string;
+}) {
   return requestClient.get<Strategy[]>('/quant/strategies', { params });
 }
 
@@ -130,7 +132,11 @@ export async function getBacktestHistoryApi(strategyId: number) {
 
 /** 验证策略代码 */
 export async function validateStrategyApi(code: string) {
-  return requestClient.post<ValidationResult>('/quant/validate-strategy', { code });
+  return requestClient.post<ValidationResult>(
+    '/quant/validate-strategy',
+    null,
+    { params: { strategy_code: code } },
+  );
 }
 
 /** 获取市场数据 */

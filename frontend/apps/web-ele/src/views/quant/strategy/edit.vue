@@ -1,6 +1,6 @@
 <script lang="ts" setup>
-import { ref, reactive, computed } from 'vue';
-import { useRouter, useRoute } from 'vue-router';
+import { computed, onMounted, reactive, ref } from 'vue';
+import { useRoute, useRouter } from 'vue-router';
 
 import {
   ElButton,
@@ -17,13 +17,30 @@ import {
   ElTabs,
 } from 'element-plus';
 
-import { Save, ArrowLeft, Code, Settings, Info } from '@lucide/vue';
+import { ArrowLeft, Code, Info, Save, Settings } from '@lucide/vue';
+
+import {
+  createStrategyApi,
+  getStrategyApi,
+  updateStrategyApi,
+  validateStrategyApi,
+} from '#/api/quant';
 import MonacoEditor from '#/components/MonacoEditor/index.vue';
 
 const router = useRouter();
 const route = useRoute();
 
-const isEdit = computed(() => !!route.query.id);
+const strategyId = computed(() => {
+  const id = route.query.id;
+  if (!id || Array.isArray(id)) return null;
+  const parsed = Number(id);
+  return Number.isFinite(parsed) ? parsed : null;
+});
+
+const isEdit = computed(() => strategyId.value !== null);
+const pageLoading = ref(false);
+const saving = ref(false);
+const validating = ref(false);
 
 interface StrategyForm {
   name: string;
@@ -112,45 +129,86 @@ def on_data(data, context):
 const activeTab = ref('code');
 const monacoEditorRef = ref<InstanceType<typeof MonacoEditor> | null>(null);
 
+async function loadStrategy() {
+  if (!strategyId.value) return;
+  pageLoading.value = true;
+  try {
+    const strategy = await getStrategyApi(strategyId.value);
+    form.name = strategy.name;
+    form.description = strategy.description ?? '';
+    form.code = strategy.code;
+  } catch {
+    ElMessage.error('加载策略失败');
+    router.push('/quant/strategy');
+  } finally {
+    pageLoading.value = false;
+  }
+}
+
+onMounted(() => {
+  if (strategyId.value) {
+    loadStrategy();
+  }
+});
+
 const handleBack = () => {
   router.push('/quant/strategy');
 };
 
-const handleSave = () => {
-  console.log('保存策略:', form);
-  ElMessage.success('策略已保存');
+const handleSave = async () => {
+  const name = form.name.trim();
+  if (!name) {
+    ElMessage.warning('请输入策略名称');
+    return;
+  }
+  if (!form.code.trim()) {
+    ElMessage.warning('请输入策略代码');
+    return;
+  }
+
+  const payload = {
+    name,
+    description: form.description.trim(),
+    code: form.code,
+  };
+
+  saving.value = true;
+  try {
+    if (isEdit.value && strategyId.value) {
+      await updateStrategyApi(strategyId.value, payload);
+      ElMessage.success('策略已更新');
+    } else {
+      await createStrategyApi(payload);
+      ElMessage.success('策略已创建');
+    }
+    router.push('/quant/strategy');
+  } catch {
+    ElMessage.error(isEdit.value ? '更新失败' : '创建失败');
+  } finally {
+    saving.value = false;
+  }
 };
 
-const handleValidate = () => {
-  const code = form.code;
-  // Basic Python syntax validation
-  const errors: string[] = [];
-
-  // Check for unbalanced parentheses
-  let parenCount = 0;
-  let bracketCount = 0;
-  let braceCount = 0;
-  for (const char of code) {
-    if (char === '(') parenCount++;
-    if (char === ')') parenCount--;
-    if (char === '[') bracketCount++;
-    if (char === ']') bracketCount--;
-    if (char === '{') braceCount++;
-    if (char === '}') braceCount--;
-  }
-  if (parenCount !== 0) errors.push('括号不匹配');
-  if (bracketCount !== 0) errors.push('方括号不匹配');
-  if (braceCount !== 0) errors.push('花括号不匹配');
-
-  // Check for on_data function
-  if (!code.includes('def on_data')) {
-    errors.push('缺少 on_data 函数');
+const handleValidate = async () => {
+  if (!form.code.trim()) {
+    ElMessage.warning('请先输入策略代码');
+    return;
   }
 
-  if (errors.length > 0) {
-    ElMessage.error(`验证失败: ${errors.join(', ')}`);
-  } else {
-    ElMessage.success('代码语法验证通过');
+  validating.value = true;
+  try {
+    const result = await validateStrategyApi(form.code);
+    if (result.valid) {
+      const warnMsg =
+        result.warnings.length > 0 ? `（${result.warnings.join('；')}）` : '';
+      ElMessage.success(`代码验证通过${warnMsg}`);
+    } else {
+      ElMessage.error(`验证失败：${result.errors.join('，')}`);
+    }
+  } catch {
+    ElMessage.error('验证请求失败');
+  } finally {
+    validating.value = false;
   }
 };
 
@@ -161,7 +219,7 @@ const handleApplyTemplate = (template: (typeof strategyTemplates)[0]) => {
 </script>
 
 <template>
-  <div class="strategy-edit p-4">
+  <div v-loading="pageLoading" class="strategy-edit p-4">
     <!-- 顶部操作栏 -->
     <ElRow justify="space-between" align="middle" class="mb-4">
       <ElCol>
@@ -173,15 +231,15 @@ const handleApplyTemplate = (template: (typeof strategyTemplates)[0]) => {
       <ElCol>
         <ElRow :gutter="8">
           <ElCol>
-            <ElButton @click="handleValidate">
+            <ElButton :loading="validating" @click="handleValidate">
               <Code class="w-4 h-4 mr-1" />
               验证代码
             </ElButton>
           </ElCol>
           <ElCol>
-            <ElButton type="primary" @click="handleSave">
+            <ElButton type="primary" :loading="saving" @click="handleSave">
               <Save class="w-4 h-4 mr-1" />
-              保存策略
+              {{ isEdit ? '保存修改' : '创建策略' }}
             </ElButton>
           </ElCol>
         </ElRow>

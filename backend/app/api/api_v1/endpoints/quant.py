@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, or_
+from sqlalchemy import delete, select, func, or_
 from typing import List, Optional
 from datetime import datetime, timedelta
 import pandas as pd
@@ -159,7 +159,7 @@ async def delete_strategy(
     
     # 级联删除关联的回测结果
     await db.execute(
-        func.delete(BacktestResultModel).where(BacktestResultModel.strategy_id == strategy_id)
+        delete(BacktestResultModel).where(BacktestResultModel.strategy_id == strategy_id)
     )
     
     await db.delete(strategy)
