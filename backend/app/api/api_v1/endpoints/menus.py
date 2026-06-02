@@ -5,6 +5,7 @@ This module provides CRUD operations for menu items, including listing,
 creating, updating, deleting, and managing menu hierarchies.
 """
 from datetime import datetime
+from email import message
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
@@ -132,11 +133,11 @@ async def update_menu_status(
     menu = result.scalars().first()
     if not menu:
         raise HTTPException(status_code=404, detail="菜单不存在")
-
+  
     menu.is_enabled = is_active
     await db.commit()
     await db.refresh(menu)
-
+    
     return {"message": "菜单状态更新成功"}
 
 @router.get("/{menu_id}/children", response_model=List[MenuInDB])

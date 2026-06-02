@@ -187,9 +187,9 @@ const handleSubmit = () => {
                 <ElTag :type="getTypeTag(row.type)">{{ getTypeLabel(row.type) }}</ElTag>
               </template>
             </ElTableColumn>
-            <ElTableColumn prop="path" label="路由路径" width="200" />
-            <ElTableColumn prop="component" label="组件路径" width="220" />
-            <ElTableColumn prop="icon" label="图标" width="150" />
+            <ElTableColumn prop="path" label="路由路径" min-width="200" />
+            <ElTableColumn prop="component" label="组件路径" width="200" />
+            <ElTableColumn prop="icon" label="图标" width="200" />
             <ElTableColumn prop="oidx" label="排序" width="60" align="center" />
             <ElTableColumn prop="is_enabled" label="状态" width="80" align="center">
               <template #default="{ row }">
@@ -198,14 +198,10 @@ const handleSubmit = () => {
                 </ElTag>
               </template>
             </ElTableColumn>
-            <ElTableColumn label="操作" width="150" fixed="right">
+            <ElTableColumn label="操作" width="180" fixed="right">
               <template #default="{ row }">
-                <ElButton link type="primary" size="small" @click="handleEdit(row)">
-                  <FilePenLine class="w-4 h-4 mr-1" />编辑
-                </ElButton>
-                <ElButton link type="danger" size="small" @click="handleDelete(row)">
-                  <Trash class="w-4 h-4" />
-                </ElButton>
+                <ElButton type="primary" @click="handleEdit(row)"><FilePenLine class="w-4 h-4 mr-1" />编辑</ElButton>
+                <ElButton type="danger" @click="handleDelete(row)"><Trash class="w-4 h-4" /></ElButton>
               </template>
             </ElTableColumn>
           </ElTable>

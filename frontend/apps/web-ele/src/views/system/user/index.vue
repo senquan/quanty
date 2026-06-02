@@ -38,9 +38,9 @@ const currentPage = ref(1);
 const pageSize = ref(10);
 
 const users = ref<User[]>([
-  { id: 1, username: 'admin', nickname: '管理员', email: 'admin@example.com', phone: '13800138000', is_active: true, role: '超级管理员', created_at: '2026-01-01' },
-  { id: 2, username: 'zhangsan', nickname: '张三', email: 'zhangsan@example.com', phone: '13800138001', is_active: true, role: '普通用户', created_at: '2026-02-15' },
-  { id: 3, username: 'lisi', nickname: '李四', email: 'lisi@example.com', phone: '13800138002', is_active: false, role: '普通用户', created_at: '2026-03-20' },
+  { id: 1, username: 'admin', nickname: '管理员', email: 'admin@example.com', phone: '13800138000', is_active: true, role: '超级管理员', created_at: '2026-01-01 12:00:00' },
+  { id: 2, username: 'zhangsan', nickname: '张三', email: 'zhangsan@example.com', phone: '13800138001', is_active: true, role: '普通用户', created_at: '2026-02-15 12:00:00' },
+  { id: 3, username: 'lisi', nickname: '李四', email: 'lisi@example.com', phone: '13800138002', is_active: false, role: '普通用户', created_at: '2026-03-20 12:00:00' },
 ]);
 
 const dialogVisible = ref(false);
@@ -93,19 +93,19 @@ const handleSubmit = () => {
         </ElRow>
       </template>
       <ElTable :data="users" stripe>
-        <ElTableColumn prop="username" label="用户名" width="120" />
-        <ElTableColumn prop="nickname" label="昵称" width="100" />
+        <ElTableColumn prop="username" label="用户名" width="180" />
+        <ElTableColumn prop="nickname" label="昵称" width="120" />
         <ElTableColumn prop="email" label="邮箱" width="200" />
         <ElTableColumn prop="phone" label="手机号" width="140" />
         <ElTableColumn prop="role" label="角色" width="100" />
         <ElTableColumn prop="is_active" label="状态" width="80" align="center">
           <template #default="{ row }"><ElTag :type="row.is_active ? 'success' : 'danger'">{{ row.is_active ? '启用' : '禁用' }}</ElTag></template>
         </ElTableColumn>
-        <ElTableColumn prop="created_at" label="创建时间" width="110" />
-        <ElTableColumn label="操作" width="150" fixed="right">
+        <ElTableColumn prop="created_at" label="创建时间" width="180" />
+        <ElTableColumn label="操作" width="180" fixed="right">
           <template #default="{ row }">
-            <ElButton link type="primary" size="small" @click="handleEdit(row)"><FilePenLine class="w-4 h-4 mr-1" />编辑</ElButton>
-            <ElButton link type="danger" size="small" @click="handleDelete(row)"><Trash class="w-4 h-4" /></ElButton>
+            <ElButton type="primary" @click="handleEdit(row)"><FilePenLine class="w-4 h-4 mr-1" />编辑</ElButton>
+            <ElButton type="danger" @click="handleDelete(row)"><Trash class="w-4 h-4" /></ElButton>
           </template>
         </ElTableColumn>
       </ElTable>

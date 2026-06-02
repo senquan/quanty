@@ -31,9 +31,9 @@ interface Role {
 }
 
 const roles = ref<Role[]>([
-  { id: 1, name: '超级管理员', code: 'admin', description: '拥有所有权限', is_active: true, menu_ids: [1,2,3,4,5,6,7,8,9], created_at: '2026-01-01' },
-  { id: 2, name: '普通用户', code: 'user', description: '基本查看权限', is_active: true, menu_ids: [5,6,7,8,9], created_at: '2026-02-15' },
-  { id: 3, name: '交易员', code: 'trader', description: '量化交易权限', is_active: true, menu_ids: [5,6,7,8,9], created_at: '2026-03-20' },
+  { id: 1, name: '超级管理员', code: 'admin', description: '拥有所有权限', is_active: true, menu_ids: [1,2,3,4,5,6,7,8,9], created_at: '2026-01-01 12:00:00' },
+  { id: 2, name: '普通用户', code: 'user', description: '基本查看权限', is_active: true, menu_ids: [5,6,7,8,9], created_at: '2026-02-15 12:00:00' },
+  { id: 3, name: '交易员', code: 'trader', description: '量化交易权限', is_active: true, menu_ids: [5,6,7,8,9], created_at: '2026-03-20 12:00:00' },
 ]);
 
 const menuTree = ref([
@@ -107,18 +107,18 @@ const handleSubmit = () => {
         </ElRow>
       </template>
       <ElTable :data="roles" stripe>
-        <ElTableColumn prop="name" label="角色名称" width="140" />
+        <ElTableColumn prop="name" label="角色名称" width="160" />
         <ElTableColumn prop="code" label="角色编码" width="120" />
         <ElTableColumn prop="description" label="描述" />
         <ElTableColumn prop="is_active" label="状态" width="80" align="center">
           <template #default="{ row }"><ElTag :type="row.is_active ? 'success' : 'danger'">{{ row.is_active ? '启用' : '禁用' }}</ElTag></template>
         </ElTableColumn>
-        <ElTableColumn prop="created_at" label="创建时间" width="110" />
-        <ElTableColumn label="操作" width="200" fixed="right">
+        <ElTableColumn prop="created_at" label="创建时间" width="160" />
+        <ElTableColumn label="操作" width="260" fixed="right">
           <template #default="{ row }">
-            <ElButton link type="primary" size="small" @click="handleEdit(row)"><FilePenLine class="w-4 h-4 mr-1" />编辑</ElButton>
-            <ElButton link type="success" size="small" @click="handlePermission(row)"><KeyRound class="w-4 h-4 mr-1" />权限</ElButton>
-            <ElButton link type="danger" size="small" @click="handleDelete(row)"><Trash class="w-4 h-4" /></ElButton>
+            <ElButton type="primary" @click="handleEdit(row)"><FilePenLine class="w-4 h-4 mr-1" />编辑</ElButton>
+            <ElButton type="success" @click="handlePermission(row)"><KeyRound class="w-4 h-4 mr-1" />权限</ElButton>
+            <ElButton type="danger" @click="handleDelete(row)"><Trash class="w-4 h-4" /></ElButton>
           </template>
         </ElTableColumn>
       </ElTable>
