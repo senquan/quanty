@@ -1,9 +1,11 @@
 <script lang="ts" setup>
+import type { Role } from '#/api/core/roles';
+import type { SystemUser, UserCreate } from '#/api/core/user';
+
 import { onMounted, reactive, ref, watch } from 'vue';
 
-import { useDebounceFn } from '@vueuse/core';
-
 import { FilePenLine, Plus, Search, Trash } from '@lucide/vue';
+import { useDebounceFn } from '@vueuse/core';
 import {
   ElButton,
   ElCard,
@@ -24,9 +26,7 @@ import {
   ElTag,
 } from 'element-plus';
 
-import type { Role } from '#/api/core/roles';
 import { getRolesApi } from '#/api/core/roles';
-import type { SystemUser, UserCreate } from '#/api/core/user';
 import {
   createUserApi,
   deleteUserApi,
@@ -55,11 +55,11 @@ const userForm = reactive({
   email: '',
   phone: '',
   password: '',
-  role_id: null as number | null,
+  role_id: null as null | number,
   is_active: true,
 });
 
-function formatDateTime(value?: string | null) {
+function formatDateTime(value?: null | string) {
   if (!value) return '-';
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;

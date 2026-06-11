@@ -44,3 +44,6 @@ Thumbs.db
 # Misc
 *.log
 .cache/
+
+# Documents
+docs/notes/

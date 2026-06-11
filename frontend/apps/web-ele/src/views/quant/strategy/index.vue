@@ -1,9 +1,11 @@
 <script lang="ts" setup>
+import type { Strategy } from '#/api/quant';
+
 import { onMounted, ref, watch } from 'vue';
 import { useRouter } from 'vue-router';
 
+import { Edit, Plus, Search, Trash2 } from '@lucide/vue';
 import { useDebounceFn } from '@vueuse/core';
-
 import {
   ElButton,
   ElCard,
@@ -16,9 +18,6 @@ import {
   ElTableColumn,
 } from 'element-plus';
 
-import { Plus, Search, Trash2, Edit } from '@lucide/vue';
-
-import type { Strategy } from '#/api/quant';
 import { deleteStrategyApi, getStrategiesApi } from '#/api/quant';
 
 const router = useRouter();
@@ -27,7 +26,7 @@ const searchKeyword = ref('');
 const strategies = ref<Strategy[]>([]);
 const loading = ref(false);
 
-function formatDateTime(value?: string | null) {
+function formatDateTime(value?: null | string) {
   if (!value) return '-';
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
@@ -107,9 +106,7 @@ const handleDelete = (row: Strategy) => {
                 <Search class="w-4 h-4" />
               </template>
             </ElInput>
-          </ElCol>
-          <ElCol>
-            <ElButton type="primary" @click="handleCreate">
+            <ElButton type="primary" class="ml-2" @click="handleCreate">
               <Plus class="w-4 h-4 mr-1" />
               新建策略
             </ElButton>

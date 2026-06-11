@@ -2,6 +2,7 @@
 import { computed, onMounted, reactive, ref } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 
+import { ArrowLeft, Code, Info, Save, Settings } from '@lucide/vue';
 import {
   ElButton,
   ElCard,
@@ -16,8 +17,6 @@ import {
   ElTabPane,
   ElTabs,
 } from 'element-plus';
-
-import { ArrowLeft, Code, Info, Save, Settings } from '@lucide/vue';
 
 import {
   createStrategyApi,
@@ -227,22 +226,14 @@ const handleApplyTemplate = (template: (typeof strategyTemplates)[0]) => {
           <ArrowLeft class="w-4 h-4 mr-1" />
           返回列表
         </ElButton>
-      </ElCol>
-      <ElCol>
-        <ElRow :gutter="8">
-          <ElCol>
-            <ElButton :loading="validating" @click="handleValidate">
-              <Code class="w-4 h-4 mr-1" />
-              验证代码
-            </ElButton>
-          </ElCol>
-          <ElCol>
-            <ElButton type="primary" :loading="saving" @click="handleSave">
-              <Save class="w-4 h-4 mr-1" />
-              {{ isEdit ? '保存修改' : '创建策略' }}
-            </ElButton>
-          </ElCol>
-        </ElRow>
+        <ElButton class="ml-2" :loading="validating" @click="handleValidate">
+          <Code class="w-4 h-4 mr-1" />
+          验证代码
+        </ElButton>
+        <ElButton class="ml-2" type="primary" :loading="saving" @click="handleSave">
+          <Save class="w-4 h-4 mr-1" />
+          {{ isEdit ? '保存修改' : '创建策略' }}
+        </ElButton>
       </ElCol>
     </ElRow>
 
@@ -251,9 +242,8 @@ const handleApplyTemplate = (template: (typeof strategyTemplates)[0]) => {
       <ElCol :span="6">
         <ElCard shadow="never" class="mb-4">
           <template #header>
-            <ElRow align="middle" :gutter="4">
-              <ElCol><Info class="w-4 h-4" /></ElCol>
-              <ElCol>基本信息</ElCol>
+            <ElRow align="middle">
+              <ElCol><span class="inline-flex items-center"><Info class="w-4 h-4 mr-2" />基本信息</span></ElCol>
             </ElRow>
           </template>
           <ElForm :model="form" label-position="top">
@@ -274,8 +264,7 @@ const handleApplyTemplate = (template: (typeof strategyTemplates)[0]) => {
         <ElCard shadow="never" class="mb-4">
           <template #header>
             <ElRow align="middle" :gutter="4">
-              <ElCol><Settings class="w-4 h-4" /></ElCol>
-              <ElCol>回测配置</ElCol>
+              <ElCol><span class="inline-flex items-center"><Settings class="w-4 h-4 mr-2" />回测配置</span></ElCol>
             </ElRow>
           </template>
           <ElForm :model="form" label-position="top">

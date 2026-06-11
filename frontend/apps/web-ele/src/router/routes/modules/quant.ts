@@ -6,7 +6,7 @@ const routes: RouteRecordRaw[] = [
   {
     meta: {
       icon: 'lucide:bar-chart-3',
-      order: 10,
+      order: 30,
       title: $t('page.quant.title'),
     },
     name: 'Quant',

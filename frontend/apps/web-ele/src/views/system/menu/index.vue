@@ -1,9 +1,10 @@
 <script lang="ts" setup>
+import type { Menu, MenuCreate } from '#/api/core/menus';
+
 import { computed, onMounted, reactive, ref, watch } from 'vue';
 
-import { useDebounceFn } from '@vueuse/core';
-
 import { FilePenLine, Plus, Trash } from '@lucide/vue';
+import { useDebounceFn } from '@vueuse/core';
 import {
   ElButton,
   ElCard,
@@ -25,7 +26,6 @@ import {
   ElTree,
 } from 'element-plus';
 
-import type { Menu, MenuCreate } from '#/api/core/menus';
 import {
   createMenuApi,
   deleteMenuApi,
@@ -64,7 +64,7 @@ const typeOptions = [
   { label: '按钮', value: 2 },
 ];
 
-function normalizeParentId(parentId?: number | null) {
+function normalizeParentId(parentId?: null | number) {
   return parentId == null || parentId === 0 ? 0 : parentId;
 }
 
@@ -101,7 +101,7 @@ const getTreeData = (): MenuTreeNode[] => {
       .toSorted((a, b) => a.oidx - b.oidx)
       .map((m) => ({
         id: m.id,
-        label: m.label,
+        label: m.name,
         children: buildTree(m.id),
       }));
   };
@@ -283,7 +283,7 @@ const handleSubmit = async () => {
             row-key="id"
             empty-text="暂无菜单数据"
           >
-            <ElTableColumn prop="label" label="菜单名称" width="160" />
+            <ElTableColumn prop="name" label="菜单名称" width="160" />
             <ElTableColumn prop="type" label="类型" width="80" align="center">
               <template #default="{ row }">
                 <ElTag :type="getTypeTag(row.type)">{{ getTypeLabel(row.type) }}</ElTag>
