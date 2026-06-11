@@ -6,18 +6,19 @@ from app.core.database import get_db
 from app.core.dependencies import get_current_user
 from app.models.user import User
 from app.models.role import Role
+from app.schemas.response import Response
 from app.schemas.role import RoleCreate, RoleUpdate, RoleInDB, RoleWithPermissions
 from app.models.role_permission import RolePermission
 from app.models.menu import Menu
 
 router = APIRouter()
 
-@router.get("/", response_model=List[RoleInDB])
+@router.get("/", response_model=Response[List[RoleInDB]])
 async def get_roles(
     skip: int = Query(0, ge=0),
     limit: int = Query(10, ge=1, le=100),
     search: Optional[str] = Query(None),
-    db: AsyncSession = Depends(get_db),  # H1-1: sync → async
+    db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
     """获取角色列表"""
@@ -27,12 +28,12 @@ async def get_roles(
     query = query.offset(skip).limit(limit)
     result = await db.execute(query)
     roles = result.scalars().all()
-    return roles
+    return Response.success(data=roles)
 
-@router.get("/{role_id}", response_model=RoleWithPermissions)
+@router.get("/{role_id}", response_model=Response[RoleWithPermissions])
 async def get_role(
     role_id: int,
-    db: AsyncSession = Depends(get_db),  # H1-1: sync → async
+    db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
     """获取单个角色信息"""
@@ -41,7 +42,6 @@ async def get_role(
     if not role:
         raise HTTPException(status_code=404, detail="角色不存在")
     
-    # H1-4: 获取权限信息
     perm_result = await db.execute(select(RolePermission).filter(RolePermission.role_id == role_id))
     permissions = perm_result.scalars().all()
     
@@ -49,12 +49,12 @@ async def get_role(
     role_dict.pop('_sa_instance_state', None)
     role_dict['permissions'] = [perm.__dict__ for perm in permissions]
     
-    return role_dict
+    return Response.success(data=role_dict)
 
-@router.post("/", response_model=RoleInDB)
+@router.post("/", response_model=Response[RoleInDB])
 async def create_role(
     role_data: RoleCreate,
-    db: AsyncSession = Depends(get_db),  # H1-1: sync → async
+    db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
     """创建角色"""
@@ -72,13 +72,13 @@ async def create_role(
     await db.commit()
     await db.refresh(new_role)
     
-    return new_role
+    return Response.success(data=new_role)
 
-@router.put("/{role_id}", response_model=RoleInDB)
+@router.put("/{role_id}", response_model=Response[RoleInDB])
 async def update_role(
     role_id: int,
     role_data: RoleUpdate,
-    db: AsyncSession = Depends(get_db),  # H1-1: sync → async
+    db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
     """更新角色信息"""
@@ -92,7 +92,6 @@ async def update_role(
         if existing_role.scalars().first():
             raise HTTPException(status_code=400, detail="角色名已存在")
     
-    # H1-5: dict() → model_dump()
     update_dict = role_data.model_dump(exclude_unset=True)
     for field, value in update_dict.items():
         setattr(role, field, value)
@@ -100,12 +99,12 @@ async def update_role(
     await db.commit()
     await db.refresh(role)
     
-    return role
+    return Response.success(data=role)
 
-@router.delete("/{role_id}")
+@router.delete("/{role_id}", response_model=Response)
 async def delete_role(
     role_id: int,
-    db: AsyncSession = Depends(get_db),  # H1-1: sync → async
+    db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
     """删除角色"""
@@ -115,7 +114,7 @@ async def delete_role(
         raise HTTPException(status_code=400, detail="该角色正在被用户使用，无法删除")
     
     # 删除角色关联的权限
-    await db.execute(RolePermission.delete().where(RolePermission.role_id == role_id))
+    await db.execute(delete(RolePermission).where(RolePermission.role_id == role_id))
     
     result2 = await db.execute(select(Role).where(Role.id == role_id))
     role = result2.scalars().first()
@@ -124,13 +123,13 @@ async def delete_role(
     
     await db.commit()
     
-    return {"message": "角色删除成功"}
+    return Response.success(msg="角色删除成功")
 
-@router.put("/{role_id}/status")
+@router.put("/{role_id}/status", response_model=Response)
 async def update_role_status(
     role_id: int,
     is_active: bool,
-    db: AsyncSession = Depends(get_db),  # H1-1: sync → async
+    db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
     """更新角色状态"""
@@ -143,13 +142,13 @@ async def update_role_status(
     await db.commit()
     await db.refresh(role)
     
-    return {"message": "角色状态更新成功"}
+    return Response.success(msg="角色状态更新成功")
 
-@router.post("/{role_id}/permissions")
+@router.post("/{role_id}/permissions", response_model=Response)
 async def set_role_permissions(
     role_id: int,
     menu_ids: List[int],
-    db: AsyncSession = Depends(get_db),  # H1-1: sync → async
+    db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
     """设置角色权限"""
@@ -159,7 +158,7 @@ async def set_role_permissions(
         raise HTTPException(status_code=404, detail="角色不存在")
     
     # 删除现有权限
-    await db.execute(RolePermission.delete().where(RolePermission.role_id == role_id))
+    await db.execute(delete(RolePermission).where(RolePermission.role_id == role_id))
     
     # 添加新权限
     for menu_id in menu_ids:
@@ -178,4 +177,4 @@ async def set_role_permissions(
     
     await db.commit()
     
-    return {"message": "权限设置成功"}
+    return Response.success(msg="权限设置成功")

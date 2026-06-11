@@ -12,6 +12,7 @@ from app.schemas.quant import (
     StrategyCreate, StrategyResponse, StrategyUpdate, BacktestRequest, 
     BacktestResult, ValidationResult, MarketDataResponse, TradeInfo
 )
+from app.schemas.response import Response
 from app.api.api_v1.endpoints.auth import get_current_user
 from app.services.backtest_engine import (
     BacktestEngine, DataManager, StrategyValidator
@@ -21,14 +22,13 @@ from app.services.performance_analyzer import PerformanceAnalyzer
 router = APIRouter()
 
 
-@router.post("/strategies", response_model=StrategyResponse)
+@router.post("/strategies", response_model=Response[StrategyResponse])
 async def create_strategy(
     strategy_data: StrategyCreate,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    """创建策略 - H1-1: 改为 async 数据库操作"""
-    # 验证策略代码
+    """创建策略"""
     validator = StrategyValidator()
     validation = validator.validate_strategy(strategy_data.code)
     
@@ -49,10 +49,10 @@ async def create_strategy(
     await db.commit()
     await db.refresh(strategy)
     
-    return strategy
+    return Response.success(data=strategy)
 
 
-@router.get("/strategies", response_model=List[StrategyResponse])
+@router.get("/strategies", response_model=Response[List[StrategyResponse]])
 async def get_strategies(
     skip: int = Query(0, ge=0),
     limit: int = Query(100, ge=1, le=100),
@@ -73,10 +73,10 @@ async def get_strategies(
         )
     query = query.offset(skip).limit(limit)
     result = await db.execute(query)
-    return result.scalars().all()
+    return Response.success(data=result.scalars().all())
 
 
-@router.get("/strategies/{strategy_id}", response_model=StrategyResponse)
+@router.get("/strategies/{strategy_id}", response_model=Response[StrategyResponse])
 async def get_strategy(
     strategy_id: int,
     db: AsyncSession = Depends(get_db),
@@ -94,17 +94,17 @@ async def get_strategy(
     if not strategy:
         raise HTTPException(status_code=404, detail="Strategy not found")
     
-    return strategy
+    return Response.success(data=strategy)
 
 
-@router.put("/strategies/{strategy_id}", response_model=StrategyResponse)
+@router.put("/strategies/{strategy_id}", response_model=Response[StrategyResponse])
 async def update_strategy(
     strategy_id: int,
     strategy_data: StrategyUpdate,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    """更新策略 - P0-1: 补全更新端点"""
+    """更新策略"""
     result = await db.execute(
         select(Strategy).filter(
             Strategy.id == strategy_id,
@@ -116,7 +116,6 @@ async def update_strategy(
     if not strategy:
         raise HTTPException(status_code=404, detail="Strategy not found")
     
-    # 如果更新了代码，重新验证
     if strategy_data.code:
         validator = StrategyValidator()
         validation = validator.validate_strategy(strategy_data.code)
@@ -136,16 +135,16 @@ async def update_strategy(
     await db.commit()
     await db.refresh(strategy)
     
-    return strategy
+    return Response.success(data=strategy)
 
 
-@router.delete("/strategies/{strategy_id}")
+@router.delete("/strategies/{strategy_id}", response_model=Response)
 async def delete_strategy(
     strategy_id: int,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    """删除策略 - P0-1: 补全删除端点"""
+    """删除策略"""
     result = await db.execute(
         select(Strategy).filter(
             Strategy.id == strategy_id,
@@ -157,7 +156,6 @@ async def delete_strategy(
     if not strategy:
         raise HTTPException(status_code=404, detail="Strategy not found")
     
-    # 级联删除关联的回测结果
     await db.execute(
         delete(BacktestResultModel).where(BacktestResultModel.strategy_id == strategy_id)
     )
@@ -165,17 +163,17 @@ async def delete_strategy(
     await db.delete(strategy)
     await db.commit()
     
-    return {"message": "策略已删除"}
+    return Response.success(msg="策略已删除")
 
 
-@router.post("/validate-strategy", response_model=ValidationResult)
+@router.post("/validate-strategy", response_model=Response[ValidationResult])
 async def validate_strategy(strategy_code: str):
     """验证策略代码"""
     validator = StrategyValidator()
-    return validator.validate_strategy(strategy_code)
+    return Response.success(data=validator.validate_strategy(strategy_code))
 
 
-@router.get("/market-data")
+@router.get("/market-data", response_model=Response[MarketDataResponse])
 async def get_market_data(
     symbol: str = "AAPL",
     data_source: str = "yahoo",
@@ -192,25 +190,25 @@ async def get_market_data(
         data_manager = DataManager()
         data = data_manager.get_data(data_source, symbol, start_date, end_date)
         
-        return MarketDataResponse(
+        result = MarketDataResponse(
             symbol=symbol,
             data_source=data_source,
             data=data.reset_index().to_dict('records'),
             columns=list(data.columns)
         )
+        return Response.success(data=result)
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
 
-@router.post("/backtest", response_model=BacktestResult)
+@router.post("/backtest", response_model=Response[BacktestResult])
 async def run_backtest(
     backtest_request: BacktestRequest, 
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    """运行回测 - H1-1: 改为 async 数据库操作"""
+    """运行回测"""
     try:
-        # 获取策略
         result = await db.execute(
             select(Strategy).filter(
                 Strategy.id == backtest_request.strategy_id,
@@ -222,7 +220,6 @@ async def run_backtest(
         if not strategy:
             raise HTTPException(status_code=404, detail="Strategy not found")
         
-        # 获取市场数据
         data_manager = DataManager()
         data = data_manager.get_data(
             backtest_request.data_source,
@@ -231,13 +228,11 @@ async def run_backtest(
             backtest_request.end_date.strftime('%Y-%m-%d')
         )
         
-        # 运行回测引擎
         engine = BacktestEngine(initial_capital=backtest_request.initial_capital)
         results = engine.execute_strategy(strategy.code, data)
         metrics = engine.calculate_metrics(results)
         
-        # 保存回测结果到数据库
-        backtest_result = BacktestResultModel(
+        backtest_result_model = BacktestResultModel(
             strategy_id=backtest_request.strategy_id,
             start_date=backtest_request.start_date,
             end_date=backtest_request.end_date,
@@ -248,11 +243,10 @@ async def run_backtest(
             trades_count=metrics['total_trades']
         )
         
-        db.add(backtest_result)
+        db.add(backtest_result_model)
         await db.commit()
-        await db.refresh(backtest_result)
+        await db.refresh(backtest_result_model)
         
-        # 转换交易数据
         trades = [
             TradeInfo(
                 type=trade['type'],
@@ -263,14 +257,13 @@ async def run_backtest(
             for trade in results['trades']
         ]
         
-        # 高级性能分析
         analyzer = PerformanceAnalyzer(
             portfolio_values=results.get('portfolio_values', []),
             trades=results['trades']
         )
-        advanced_metrics = analyzer.comprehensive_analysis()
+        analyzer.comprehensive_analysis()
         
-        return BacktestResult(
+        backtest_result = BacktestResult(
             strategy_id=backtest_request.strategy_id,
             total_return=metrics['total_return'],
             sharpe_ratio=metrics['sharpe_ratio'],
@@ -283,18 +276,19 @@ async def run_backtest(
             portfolio_values=results.get('portfolio_values', [])
         )
         
+        return Response.success(data=backtest_result)
+        
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Backtest failed: {str(e)}")
 
 
-@router.get("/backtest-history/{strategy_id}")
+@router.get("/backtest-history/{strategy_id}", response_model=Response)
 async def get_backtest_history(
     strategy_id: int,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    """获取策略回测历史 - H1-1: 改为 async 数据库操作"""
-    # 验证策略所有权
+    """获取策略回测历史"""
     result = await db.execute(
         select(Strategy).filter(
             Strategy.id == strategy_id,
@@ -306,7 +300,6 @@ async def get_backtest_history(
     if not strategy:
         raise HTTPException(status_code=404, detail="Strategy not found")
     
-    # 获取回测历史
     history_result = await db.execute(
         select(BacktestResultModel)
         .where(BacktestResultModel.strategy_id == strategy_id)
@@ -314,4 +307,4 @@ async def get_backtest_history(
     )
     history = history_result.scalars().all()
     
-    return history
+    return Response.success(data=history)

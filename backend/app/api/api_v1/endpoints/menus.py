@@ -12,10 +12,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db
 from app.models.menu import Menu
 from app.schemas.menu import MenuCreate, MenuUpdate, MenuInDB
+from app.schemas.response import Response
 
 router = APIRouter()
 
-@router.get("/", response_model=List[MenuInDB])
+@router.get("/", response_model=Response[List[MenuInDB]])
 async def get_menus(
     search: Optional[str] = Query(None),
     parent_id: Optional[int] = Query(None),
@@ -31,9 +32,9 @@ async def get_menus(
         )
     query = query.order_by(Menu.oidx.asc(), Menu.id.asc())
     result = await db.execute(query)
-    return result.scalars().all()
+    return Response.success(data=result.scalars().all())
 
-@router.get("/{menu_id}", response_model=MenuInDB)
+@router.get("/{menu_id}", response_model=Response[MenuInDB])
 async def get_menu(
     menu_id: int,
     db: AsyncSession = Depends(get_db)
@@ -44,9 +45,9 @@ async def get_menu(
     if not menu:
         raise HTTPException(status_code=404, detail="菜单不存在")
 
-    return menu
+    return Response.success(data=menu)
 
-@router.post("/", response_model=MenuInDB)
+@router.post("/", response_model=Response[MenuInDB])
 async def create_menu(
     menu_data: MenuCreate,
     db: AsyncSession = Depends(get_db)
@@ -67,9 +68,9 @@ async def create_menu(
     await db.commit()
     await db.refresh(new_menu)
 
-    return new_menu
+    return Response.success(data=new_menu)
 
-@router.put("/{menu_id}", response_model=MenuInDB)
+@router.put("/{menu_id}", response_model=Response[MenuInDB])
 async def update_menu(
     menu_id: int,
     menu_data: MenuUpdate,
@@ -88,17 +89,16 @@ async def update_menu(
         if not parent_menu:
             raise HTTPException(status_code=400, detail="父菜单不存在")
 
-    # 更新菜单数据 - H1-5: dict() → model_dump()
-    update_dict = menu_data.model_dump(exclude_unset=True)  # H1-5
+    update_dict = menu_data.model_dump(exclude_unset=True)
     for field, value in update_dict.items():
         setattr(menu, field, value)
 
     await db.commit()
     await db.refresh(menu)
 
-    return menu
+    return Response.success(data=menu)
 
-@router.delete("/{menu_id}")
+@router.delete("/{menu_id}", response_model=Response)
 async def delete_menu(
     menu_id: int,
     db: AsyncSession = Depends(get_db)
@@ -117,9 +117,9 @@ async def delete_menu(
     await db.delete(menu)
     await db.commit()
 
-    return {"message": "菜单删除成功"}
+    return Response.success(msg="菜单删除成功")
 
-@router.put("/{menu_id}/status")
+@router.put("/{menu_id}/status", response_model=Response)
 async def update_menu_status(
     menu_id: int,
     is_active: bool,
@@ -135,9 +135,9 @@ async def update_menu_status(
     await db.commit()
     await db.refresh(menu)
     
-    return {"message": "菜单状态更新成功"}
+    return Response.success(msg="菜单状态更新成功")
 
-@router.get("/{menu_id}/children", response_model=List[MenuInDB])
+@router.get("/{menu_id}/children", response_model=Response[List[MenuInDB]])
 async def get_menu_children(
     menu_id: int,
     db: AsyncSession = Depends(get_db)
@@ -147,4 +147,4 @@ async def get_menu_children(
         select(Menu).where(Menu.parent_id == menu_id).order_by(Menu.id)
     )
     children = result.scalars().all()
-    return children
+    return Response.success(data=children)

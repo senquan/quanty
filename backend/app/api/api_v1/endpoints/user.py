@@ -7,13 +7,14 @@ from app.core.dependencies import get_current_user
 from app.models.role import Role
 from app.models.user import User
 from app.schemas.user_info import UserInfoResponse
+from app.schemas.response import Response
 
 router = APIRouter()
 
 DEFAULT_HOME_PATH = "/analytics"
 
 
-@router.get("/info", response_model=UserInfoResponse)
+@router.get("/info", response_model=Response[UserInfoResponse])
 async def get_user_info(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
@@ -29,7 +30,7 @@ async def get_user_info(
     if not roles:
         roles = ["user"]
 
-    return UserInfoResponse(
+    user_info = UserInfoResponse(
         avatar="",
         realName=current_user.realname or current_user.username,
         roles=roles,
@@ -39,3 +40,4 @@ async def get_user_info(
         homePath=DEFAULT_HOME_PATH,
         token="",
     )
+    return Response.success(data=user_info)

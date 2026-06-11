@@ -8,6 +8,7 @@ from app.core.dependencies import get_current_user
 from app.core.security import get_password_hash
 from app.models.role import Role
 from app.models.user import User
+from app.schemas.response import Response
 from app.schemas.user import (
     PaginatedUsers,
     UserCreate,
@@ -54,7 +55,7 @@ def _search_filter(query, search: str):
     )
 
 
-@router.get("/", response_model=PaginatedUsers)
+@router.get("/", response_model=Response[PaginatedUsers])
 async def get_users(
     skip: int = Query(0, ge=0),
     limit: int = Query(10, ge=1, le=100),
@@ -77,10 +78,10 @@ async def get_users(
     users = result.scalars().all()
 
     items = [await serialize_user(user, db) for user in users]
-    return PaginatedUsers(items=items, total=total)
+    return Response.success(data=PaginatedUsers(items=items, total=total))
 
 
-@router.get("/{user_id}", response_model=UserWithRole)
+@router.get("/{user_id}", response_model=Response[UserWithRole])
 async def get_user(
     user_id: int,
     db: AsyncSession = Depends(get_db),
@@ -92,10 +93,10 @@ async def get_user(
     if not user:
         raise HTTPException(status_code=404, detail="用户不存在")
 
-    return await serialize_user(user, db)
+    return Response.success(data=await serialize_user(user, db))
 
 
-@router.post("/", response_model=UserResponse)
+@router.post("/", response_model=Response[UserWithRole])
 async def create_user(
     user_data: UserCreate,
     db: AsyncSession = Depends(get_db),
@@ -130,10 +131,10 @@ async def create_user(
     await db.commit()
     await db.refresh(new_user)
 
-    return await serialize_user(new_user, db, include_role=False)
+    return Response.success(data=await serialize_user(new_user, db))
 
 
-@router.put("/{user_id}", response_model=UserResponse)
+@router.put("/{user_id}", response_model=Response[UserWithRole])
 async def update_user(
     user_id: int,
     user_data: UserUpdate,
@@ -172,10 +173,10 @@ async def update_user(
     await db.commit()
     await db.refresh(user)
 
-    return await serialize_user(user, db, include_role=False)
+    return Response.success(data=await serialize_user(user, db))
 
 
-@router.delete("/{user_id}")
+@router.delete("/{user_id}", response_model=Response)
 async def delete_user(
     user_id: int,
     db: AsyncSession = Depends(get_db),
@@ -190,10 +191,10 @@ async def delete_user(
     await db.delete(user)
     await db.commit()
 
-    return {"message": "用户删除成功"}
+    return Response.success(msg="用户删除成功")
 
 
-@router.put("/{user_id}/status")
+@router.put("/{user_id}/status", response_model=Response)
 async def update_user_status(
     user_id: int,
     is_active: bool,
@@ -210,4 +211,4 @@ async def update_user_status(
     await db.commit()
     await db.refresh(user)
 
-    return {"message": "用户状态更新成功"}
+    return Response.success(msg="用户状态更新成功")

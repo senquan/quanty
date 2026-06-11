@@ -19,6 +19,7 @@ from app.services.huatai_trading import (
 )
 from app.api.api_v1.endpoints.auth import get_current_user
 from app.models.user import User
+from app.schemas.response import Response
 
 router = APIRouter()
 
@@ -102,7 +103,7 @@ class DailyReportResponse(BaseModel):
 
 # ============ API接口 ============
 
-@router.get("/account", response_model=AccountResponse)
+@router.get("/account", response_model=Response[AccountResponse])
 async def get_account(
     current_user: User = Depends(get_current_user)
 ):
@@ -110,7 +111,7 @@ async def get_account(
     service = get_trading_service()
     account = service.get_account()
     
-    return AccountResponse(
+    data = AccountResponse(
         account_id=account.account_id,
         total_assets=account.total_assets,
         cash_balance=account.cash_balance,
@@ -129,8 +130,9 @@ async def get_account(
         daily_pnl=account.daily_pnl,
         daily_commission=account.daily_commission
     )
+    return Response.success(data=data)
 
-@router.get("/positions", response_model=List[PositionResponse])
+@router.get("/positions", response_model=Response[List[PositionResponse]])
 async def get_positions(
     current_user: User = Depends(get_current_user)
 ):
@@ -138,7 +140,7 @@ async def get_positions(
     service = get_trading_service()
     positions = service.get_positions()
     
-    return [
+    data = [
         PositionResponse(
             symbol=pos.symbol,
             side=pos.side.value,
@@ -149,8 +151,9 @@ async def get_positions(
         )
         for pos in positions
     ]
+    return Response.success(data=data)
 
-@router.post("/orders", response_model=OrderResponse)
+@router.post("/orders", response_model=Response[OrderResponse])
 async def place_order(
     order_request: OrderRequest,
     current_user: User = Depends(get_current_user)
@@ -175,7 +178,7 @@ async def place_order(
         # 下单
         filled_order = service.place_order(order)
         
-        return OrderResponse(
+        data = OrderResponse(
             order_id=filled_order.order_id,
             symbol=filled_order.symbol,
             order_type=filled_order.order_type.value,
@@ -188,6 +191,7 @@ async def place_order(
             filled_at=filled_order.filled_at.isoformat() if filled_order.filled_at else None,
             commission=filled_order.commission
         )
+        return Response.success(data=data)
         
     except ValueError as e:
         raise HTTPException(
@@ -195,7 +199,7 @@ async def place_order(
             detail=str(e)
         )
 
-@router.delete("/orders/{order_id}")
+@router.delete("/orders/{order_id}", response_model=Response)
 async def cancel_order(
     order_id: str,
     current_user: User = Depends(get_current_user)
@@ -206,14 +210,14 @@ async def cancel_order(
     success = service.cancel_order(order_id)
     
     if success:
-        return {"message": "撤单成功", "order_id": order_id}
+        return Response.success(msg="撤单成功")
     else:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="撤单失败，订单不存在或状态不允许撤单"
         )
 
-@router.get("/orders/{order_id}", response_model=OrderResponse)
+@router.get("/orders/{order_id}", response_model=Response[OrderResponse])
 async def get_order(
     order_id: str,
     current_user: User = Depends(get_current_user)
@@ -228,7 +232,7 @@ async def get_order(
             detail="订单不存在"
         )
     
-    return OrderResponse(
+    data = OrderResponse(
         order_id=order.order_id,
         symbol=order.symbol,
         order_type=order.order_type.value,
@@ -241,8 +245,9 @@ async def get_order(
         filled_at=order.filled_at.isoformat() if order.filled_at else None,
         commission=order.commission
     )
+    return Response.success(data=data)
 
-@router.get("/market/quotes", response_model=List[MarketDataResponse])
+@router.get("/market/quotes", response_model=Response[List[MarketDataResponse]])
 async def get_market_quotes(
     symbols: Optional[str] = None,
     current_user: User = Depends(get_current_user)
@@ -252,7 +257,7 @@ async def get_market_quotes(
     
     available_symbols = service.get_available_symbols()
     
-    return [
+    data = [
         MarketDataResponse(
             symbol=s['symbol'],
             name=s['name'],
@@ -262,8 +267,9 @@ async def get_market_quotes(
         )
         for s in available_symbols
     ]
+    return Response.success(data=data)
 
-@router.get("/market/price/{symbol}")
+@router.get("/market/price/{symbol}", response_model=Response)
 async def get_market_price(
     symbol: str,
     current_user: User = Depends(get_current_user)
@@ -278,9 +284,9 @@ async def get_market_price(
             detail=f"标的 {symbol} 不存在"
         )
     
-    return {"symbol": symbol, "price": price, "timestamp": datetime.now().isoformat()}
+    return Response.success(data={"symbol": symbol, "price": price, "timestamp": datetime.now().isoformat()})
 
-@router.get("/trade-history", response_model=List[TradeHistoryResponse])
+@router.get("/trade-history", response_model=Response[List[TradeHistoryResponse]])
 async def get_trade_history(
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
@@ -290,7 +296,7 @@ async def get_trade_history(
     service = get_trading_service()
     trades = service.get_trade_history(start_date, end_date)
     
-    return [
+    data = [
         TradeHistoryResponse(
             trade_id=trade['trade_id'],
             symbol=trade['symbol'],
@@ -303,8 +309,9 @@ async def get_trade_history(
         )
         for trade in trades
     ]
+    return Response.success(data=data)
 
-@router.get("/daily-report", response_model=DailyReportResponse)
+@router.get("/daily-report", response_model=Response[DailyReportResponse])
 async def get_daily_report(
     current_user: User = Depends(get_current_user)
 ):
@@ -312,7 +319,7 @@ async def get_daily_report(
     service = get_trading_service()
     report = service.get_daily_report()
     
-    return DailyReportResponse(
+    data = DailyReportResponse(
         date=report['date'],
         account_id=report['account_id'],
         opening_balance=report['opening_balance'],
@@ -323,8 +330,9 @@ async def get_daily_report(
         order_count=report['order_count'],
         filled_order_count=report['filled_order_count']
     )
+    return Response.success(data=data)
 
-@router.get("/available-symbols")
+@router.get("/available-symbols", response_model=Response)
 async def get_available_symbols(
     current_user: User = Depends(get_current_user)
 ):
@@ -332,18 +340,18 @@ async def get_available_symbols(
     service = get_trading_service()
     symbols = service.get_available_symbols()
     
-    return {"symbols": symbols, "total": len(symbols)}
+    return Response.success(data={"symbols": symbols, "total": len(symbols)})
 
-@router.get("/risk-settings")
+@router.get("/risk-settings", response_model=Response)
 async def get_risk_settings(
     current_user: User = Depends(get_current_user)
 ):
     """获取风险设置"""
     service = get_trading_service()
     
-    return {
+    return Response.success(data={
         "max_position_pct": service.risk_manager.max_position_pct,
         "max_order_value": service.risk_manager.max_order_value,
         "max_daily_loss": service.risk_manager.max_daily_loss,
         "min_cash_balance": service.risk_manager.min_cash_balance
-    }
+    })

@@ -110,3 +110,27 @@ async def get_current_user_info(current_user: User = Depends(get_current_user)):
     #     }
     
     return Response.success(data=user_data)
+
+@router.get("/codes", response_model=Response[list[str]])
+async def get_access_codes(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """获取当前用户权限码"""
+    from app.models.role_permission import RolePermission
+    from app.models.menu import Menu
+    
+    codes = []
+    
+    # 如果有角色，获取角色关联的菜单权限
+    if current_user.role_id:
+        result = await db.execute(
+            select(Menu.permission)
+            .join(RolePermission, Menu.id == RolePermission.menu_id)
+            .where(RolePermission.role_id == current_user.role_id)
+            .where(Menu.permission.isnot(None))
+            .where(Menu.permission != "")
+        )
+        codes = [row[0] for row in result.fetchall()]
+    
+    return Response.success(data=codes)

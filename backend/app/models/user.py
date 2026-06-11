@@ -20,4 +20,4 @@ class User(Base):
 
     # 关系
     # strategies = relationship("_strategy", back_populates="user")
-    user_roles = relationship("RolePermission", back_populates="user", uselist=False)
+    role = relationship("Role", foreign_keys=[role_id])
