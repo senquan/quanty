@@ -176,7 +176,7 @@ const weightOptions = [
           <div>
             <div class="flex items-center justify-between mb-2">
               <span class="text-xs font-bold text-gray-500">选择因子</span>
-              <div class="text-[10px] text-blue-500 font-semibold space-x-2">
+              <div class="text-[11px] text-blue-500 font-semibold space-x-2">
                 <span class="cursor-pointer hover:underline" @click="handleSelectAll">全选</span>
                 <span class="cursor-pointer hover:underline" @click="handleClearAll">清除</span>
               </div>
@@ -202,7 +202,7 @@ const weightOptions = [
                 <span class="text-[9px] text-gray-400 font-mono">{{ f.code }}</span>
               </label>
             </div>
-            <span class="text-[10px] text-gray-400 mt-1 block">
+            <span class="text-[11px] text-gray-400 mt-1 block">
               已选 <span class="font-bold text-blue-500">{{ selectedIds.length }}</span> 个因子
             </span>
           </div>
@@ -230,7 +230,7 @@ const weightOptions = [
                   />
                   {{ opt.title }}
                 </div>
-                <p class="text-[10px] text-gray-400 mt-1">{{ opt.desc }}</p>
+                <p class="text-[11px] text-gray-400 mt-1">{{ opt.desc }}</p>
               </label>
             </div>
           </div>
@@ -299,7 +299,7 @@ const weightOptions = [
           <div class="mb-4 text-4xl animate-spin">⚙️</div>
           <h4 class="text-sm font-bold text-blue-300">A 股仿真引擎运转中</h4>
           <div class="p-3 bg-gray-800 rounded-lg max-w-md w-full border border-gray-700 mt-4 text-center">
-            <span class="text-[10px] text-gray-400 block mb-1">正在执行</span>
+            <span class="text-[11px] text-gray-400 block mb-1">正在执行</span>
             <p class="text-xs font-mono font-bold text-emerald-400 animate-pulse">
               {{ stepMsg }}
             </p>
@@ -315,7 +315,7 @@ const weightOptions = [
 
           <!-- Weight Allocation -->
           <ElCard shadow="never" :body-style="{ padding: '16px' }">
-            <span class="text-[10px] text-gray-400 font-bold block mb-3">因子权重分配</span>
+            <span class="text-[11px] text-gray-400 font-bold block mb-3">因子权重分配</span>
             <div class="grid grid-cols-2 lg:grid-cols-4 gap-3">
               <div
                 v-for="(wt, code) in result.factorWeights"
@@ -347,7 +347,7 @@ const weightOptions = [
           <ElRow :gutter="16">
             <ElCol :span="6">
               <ElCard shadow="hover" :body-style="{ padding: '16px', textAlign: 'center' }">
-                <span class="text-[10px] text-gray-400 block">组合总收益率</span>
+                <span class="text-[11px] text-gray-400 block">组合总收益率</span>
                 <div class="text-xl font-mono font-bold text-emerald-500 mt-1">
                   +{{ result.metrics.totalReturn.toFixed(2) }}%
                 </div>
@@ -358,7 +358,7 @@ const weightOptions = [
             </ElCol>
             <ElCol :span="6">
               <ElCard shadow="hover" :body-style="{ padding: '16px', textAlign: 'center' }">
-                <span class="text-[10px] text-gray-400 block">夏普比率</span>
+                <span class="text-[11px] text-gray-400 block">夏普比率</span>
                 <div class="text-xl font-mono font-bold text-blue-500 mt-1">
                   {{ result.metrics.sharpeRatio.toFixed(2) }}
                 </div>
@@ -367,7 +367,7 @@ const weightOptions = [
             </ElCol>
             <ElCol :span="6">
               <ElCard shadow="hover" :body-style="{ padding: '16px', textAlign: 'center' }">
-                <span class="text-[10px] text-gray-400 block">最大回撤</span>
+                <span class="text-[11px] text-gray-400 block">最大回撤</span>
                 <div class="text-xl font-mono font-bold text-rose-500 mt-1">
                   -{{ result.metrics.maxDrawdown.toFixed(1) }}%
                 </div>
@@ -375,7 +375,7 @@ const weightOptions = [
             </ElCol>
             <ElCol :span="6">
               <ElCard shadow="hover" :body-style="{ padding: '16px', textAlign: 'center' }">
-                <span class="text-[10px] text-gray-400 block">信息比率 (IR)</span>
+                <span class="text-[11px] text-gray-400 block">信息比率 (IR)</span>
                 <div class="text-xl font-mono font-bold mt-1">
                   {{ result.metrics.informationRatio.toFixed(2) }}
                 </div>

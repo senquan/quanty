@@ -184,25 +184,25 @@ watch(() => props.selectedFactor, renderCharts);
                     </div>
                     <div class="grid grid-cols-2 gap-3 pt-3 border-t border-gray-100">
                       <div>
-                        <span class="text-[10px] text-gray-400">最大回撤</span>
+                        <span class="text-[11px] text-gray-400">最大回撤</span>
                         <div class="text-sm font-semibold font-mono text-rose-500 mt-0.5">
                           {{ (selectedFactor.maxDrawdown * 100).toFixed(1) }}%
                         </div>
                       </div>
                       <div>
-                        <span class="text-[10px] text-gray-400">夏普比率</span>
+                        <span class="text-[11px] text-gray-400">夏普比率</span>
                         <div class="text-sm font-semibold font-mono mt-0.5">
                           {{ selectedFactor.sharpeRatio.toFixed(2) }}
                         </div>
                       </div>
                       <div>
-                        <span class="text-[10px] text-gray-400">信息比率</span>
+                        <span class="text-[11px] text-gray-400">信息比率</span>
                         <div class="text-sm font-semibold font-mono mt-0.5">
                           {{ selectedFactor.ir.toFixed(2) }}
                         </div>
                       </div>
                       <div>
-                        <span class="text-[10px] text-gray-400">胜率</span>
+                        <span class="text-[11px] text-gray-400">胜率</span>
                         <div class="text-sm font-semibold font-mono mt-0.5">
                           {{ (selectedFactor.winRate * 100).toFixed(1) }}%
                         </div>
@@ -230,7 +230,7 @@ watch(() => props.selectedFactor, renderCharts);
                 >
                   {{ selectedFactor.icMean >= 0 ? '+' : '' }}{{ selectedFactor.icMean.toFixed(4) }}
                 </div>
-                <p class="text-[10px] text-gray-400 mt-2">
+                <p class="text-[11px] text-gray-400 mt-2">
                   绝对值越大，因子预测力越强。>0.02 为优质因子。
                 </p>
               </ElCard>
@@ -241,7 +241,7 @@ watch(() => props.selectedFactor, renderCharts);
                 <div class="text-2xl font-bold font-mono">
                   {{ selectedFactor.icStd.toFixed(4) }}
                 </div>
-                <p class="text-[10px] text-gray-400 mt-2">
+                <p class="text-[11px] text-gray-400 mt-2">
                   IC波动越小，因子定价效率越稳定。
                 </p>
               </ElCard>
@@ -252,7 +252,7 @@ watch(() => props.selectedFactor, renderCharts);
                 <div class="text-2xl font-bold font-mono text-blue-500">
                   {{ selectedFactor.ir.toFixed(3) }}
                 </div>
-                <p class="text-[10px] text-gray-400 mt-2">
+                <p class="text-[11px] text-gray-400 mt-2">
                   IC均值/IC标准差，衡量因子单位波动的超额效率。
                 </p>
               </ElCard>

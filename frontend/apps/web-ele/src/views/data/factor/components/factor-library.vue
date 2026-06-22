@@ -95,7 +95,7 @@ const aiTemplates: { label: string; category: FactorCategory }[] = [
               <Layers class="w-5 h-5" />
             </div>
             <div>
-              <span class="text-[10px] text-gray-400 font-bold block">在线因子数</span>
+              <span class="text-[11px] text-gray-400 font-bold block">在线因子数</span>
               <div class="text-xl font-bold font-mono mt-0.5">{{ totalCount }} 个</div>
               <span class="text-[9px] text-gray-400">系统 {{ systemCount }} | 自研 {{ userCount }}</span>
             </div>
@@ -109,7 +109,7 @@ const aiTemplates: { label: string; category: FactorCategory }[] = [
               <TrendingUp class="w-5 h-5" />
             </div>
             <div>
-              <span class="text-[10px] text-gray-400 font-bold block">平均信息系数 IC</span>
+              <span class="text-[11px] text-gray-400 font-bold block">平均信息系数 IC</span>
               <div class="text-xl font-bold font-mono mt-0.5">
                 {{ (meanIC * 100).toFixed(2) }}%
               </div>
@@ -125,7 +125,7 @@ const aiTemplates: { label: string; category: FactorCategory }[] = [
               <TrendingUp class="w-5 h-5" />
             </div>
             <div>
-              <span class="text-[10px] text-gray-400 font-bold block">最优单体因子</span>
+              <span class="text-[11px] text-gray-400 font-bold block">最优单体因子</span>
               <div class="text-sm font-bold font-mono mt-0.5 truncate max-w-[130px]">
                 {{ topFactor?.name || '无' }}
               </div>
@@ -143,7 +143,7 @@ const aiTemplates: { label: string; category: FactorCategory }[] = [
               <Wifi class="w-5 h-5" />
             </div>
             <div>
-              <span class="text-[10px] text-gray-400 font-bold block">实时清洗服务</span>
+              <span class="text-[11px] text-gray-400 font-bold block">实时清洗服务</span>
               <div class="text-sm font-bold mt-0.5 flex items-center gap-1">
                 上海 A机组
                 <span class="w-2 h-2 rounded-full bg-emerald-500 inline-block animate-pulse" />
@@ -216,7 +216,7 @@ const aiTemplates: { label: string; category: FactorCategory }[] = [
     <div class="p-4 rounded-2xl bg-gradient-to-r from-blue-50 to-indigo-50 border border-blue-100">
       <div class="flex items-center justify-between gap-4">
         <div>
-          <span class="text-[10px] text-blue-500 font-bold block">AI 因子量化灵感</span>
+          <span class="text-[11px] text-blue-500 font-bold block">AI 因子量化灵感</span>
           <p class="text-xs text-gray-500 mt-1">
             点击一键调用 AI 创意助手，智能合成包含高信息优势表达式的新型因子：
           </p>
