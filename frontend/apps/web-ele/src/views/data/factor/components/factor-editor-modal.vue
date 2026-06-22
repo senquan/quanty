@@ -220,7 +220,7 @@ const formulaSnippets = [
         <ElFormItem label="因子计算公式" required>
           <div class="w-full">
             <div class="flex flex-wrap gap-1 mb-2 p-2 bg-gray-50 rounded-lg border border-gray-100">
-              <span class="text-[10px] text-gray-400 mr-1 self-center">快速插入:</span>
+              <span class="text-[11px] text-gray-400 mr-1 self-center">快速插入:</span>
               <ElButton
                 v-for="snippet in formulaSnippets"
                 :key="snippet"

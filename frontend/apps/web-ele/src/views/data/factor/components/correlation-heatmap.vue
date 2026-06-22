@@ -230,7 +230,7 @@ watch(selectedCodes, renderChart, { deep: true });
 
         <div class="p-4 border border-gray-100 rounded-xl bg-gray-50 min-h-[200px]">
           <template v-if="hoveredCell">
-            <span class="text-[10px] text-blue-500 font-bold block mb-1">相关系数</span>
+            <span class="text-[11px] text-blue-500 font-bold block mb-1">相关系数</span>
             <div class="text-2xl font-bold font-mono mb-3">
               {{ hoveredCell.val >= 0 ? '+' : '' }}{{ hoveredCell.val.toFixed(3) }}
             </div>

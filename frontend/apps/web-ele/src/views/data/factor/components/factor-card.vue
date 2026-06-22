@@ -128,7 +128,7 @@ const frequencyLabel = computed(() => {
           />
         </svg>
         <div
-          class="text-[10px] text-right font-mono mt-0.5"
+          class="text-[11px] text-right font-mono mt-0.5"
           :class="isPositive ? 'text-emerald-500' : 'text-rose-500'"
         >
           1年多头 {{ isPositive ? '+' : '' }}{{ totalReturn.toFixed(1) }}%
@@ -152,7 +152,7 @@ const frequencyLabel = computed(() => {
     <!-- Metrics -->
     <div class="grid grid-cols-3 gap-1 border-t border-gray-100 pt-3">
       <div class="text-center">
-        <div class="text-[10px] text-gray-400 mb-0.5">IC 均值</div>
+        <div class="text-[11px] text-gray-400 mb-0.5">IC 均值</div>
         <div
           class="text-sm font-semibold font-mono"
           :class="factor.icMean >= 0 ? 'text-emerald-500' : 'text-rose-500'"
@@ -161,7 +161,7 @@ const frequencyLabel = computed(() => {
         </div>
       </div>
       <div class="text-center border-x border-gray-100">
-        <div class="text-[10px] text-gray-400 mb-0.5">信息比率(IR)</div>
+        <div class="text-[11px] text-gray-400 mb-0.5">信息比率(IR)</div>
         <div
           class="text-sm font-semibold font-mono"
           :class="factor.ir >= 0.8 ? 'text-blue-500' : 'text-gray-700'"
@@ -170,7 +170,7 @@ const frequencyLabel = computed(() => {
         </div>
       </div>
       <div class="text-center">
-        <div class="text-[10px] text-gray-400 mb-0.5">夏普比率</div>
+        <div class="text-[11px] text-gray-400 mb-0.5">夏普比率</div>
         <div class="text-sm font-semibold font-mono text-gray-700">
           {{ factor.sharpeRatio.toFixed(2) }}
         </div>
