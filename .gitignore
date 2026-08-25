@@ -12,6 +12,8 @@ dist/
 build/
 .pytest_cache/
 *.egg
+*.parquet
+*.csv
 
 # Node
 node_modules/
@@ -47,3 +49,7 @@ Thumbs.db
 
 # Documents
 docs/notes/
+
+# Test
+tests/
+test_*
