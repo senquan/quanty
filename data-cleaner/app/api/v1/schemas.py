@@ -70,6 +70,19 @@ class FactorEvaluateRequest(BaseModel):
     forwardReturns: list[float]
 
 
+class FactorBatchItem(BaseModel):
+    """批量评估中的单个因子"""
+    code: str
+    factorValues: list[float]
+    forwardReturns: list[float]
+
+
+class FactorBatchEvaluateRequest(BaseModel):
+    """批量因子效能评估请求"""
+    items: list[FactorBatchItem]
+    asOf: str | None = None  # 指定 as_of 日期(YYYY-MM-DD)，缺省用当天
+
+
 class CorrelationRequest(BaseModel):
     """因子相关性矩阵请求"""
     codes: list[str]

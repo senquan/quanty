@@ -1,4 +1,5 @@
 """流水线触发与状态查询（P0 接口，步骤5）"""
+import sys
 import time
 from datetime import datetime
 from pathlib import Path
@@ -119,7 +120,13 @@ async def run_default_pipeline(
     except Exception:
         metrics.record_pipeline(start_ts, ok=False, rows_out=0)
         # 失败保留输入快照
-        _save_quarantine(raw if "raw" in dir() else None, source, symbol, start, end, freq)
+        raw_df = raw if "raw" in dir() else None
+        ri = int(len(raw_df)) if raw_df is not None else 0
+        _save_quarantine(raw_df, source, symbol, start, end, freq)
+        try:
+            await log_pipeline_run(ri, 0, {"error": str(sys.exc_info()[1])[:500]}, status="failed")
+        except Exception as e:
+            logger.warning(f"写 pipeline_runs(failed) 失败: {e}")
         raise
 
 

@@ -14,6 +14,8 @@ build/
 *.egg
 *.parquet
 *.csv
+_tmp*
+_t.py
 
 # Node
 node_modules/
@@ -38,13 +40,16 @@ Thumbs.db
 .env
 .env.local
 *.local
+.token*
 
 # Database
 *.db
 *.sqlite
+quarantine*
 
 # Misc
 *.log
+*.err
 .cache/
 
 # Documents

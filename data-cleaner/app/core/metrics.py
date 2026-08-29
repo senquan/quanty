@@ -41,6 +41,17 @@ def set_gauge(name: str, value: float) -> None:
         _gauge[name] = value
 
 
+def uptime_seconds() -> float:
+    """当前进程已运行秒数（供 /qos 复用）"""
+    return time.time() - _gauge["uptime_start_ts"]
+
+
+def pipeline_totals() -> tuple[int, int]:
+    """返回 (总运行次数, 失败次数)，供 /qos 复用"""
+    with _lock:
+        return _counters["pipeline_runs_total"], _counters["pipeline_runs_failed_total"]
+
+
 def _quantiles(values: list, qs=(0.5, 0.9, 0.99)):
     if not values:
         return {f"p{int(q*100)}": 0.0 for q in qs}

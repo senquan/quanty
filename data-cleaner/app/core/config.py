@@ -5,6 +5,7 @@
 from functools import lru_cache
 from pathlib import Path
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -27,11 +28,28 @@ class Settings(BaseSettings):
     TUSHARE_TOKEN: str | None = None
     FUNDAMENTAL_PROVIDER: str = "tushare"  # tushare / akshare
 
+    # AlphaFeed 行情数据源（A股/美股/港股 K线，REST: X-API-Key 认证）
+    ALPHAFEED_KEY: str | None = None
+    ALPHAFEED_BASE_URL: str = "https://api.alphafeed.org"
+
     # Application
     DEBUG: bool = True
     HOST: str = "0.0.0.0"
     PORT: int = 8100
     TZ: str = "Asia/Shanghai"
+
+    # ---- 网关接入认证（阶段 A：供主后端 registry 管理）----
+    # 多个 key 用逗号分隔；主后端在 registry 中保存对应 key，用于 QoS 轮询 / 因子拉取。
+    # 留空表示关闭认证（开发期友好，生产务必配置）。
+    # 注：声明为 str（pydantic-settings 的 EnvSettingsSource 对 list[str] 会按 JSON 解析，
+    # 逗号分隔无法被 env 源正确读取），解析后的列表通过 property `api_keys` 暴露。
+    SERVICE_NAME: str = "cleaner-dev"
+    API_KEYS: str = ""                          # 例: "k_prod_xxx,k_staging_yyy"
+
+    @property
+    def api_keys(self) -> list[str]:
+        """解析后的 API key 列表"""
+        return [k.strip() for k in self.API_KEYS.split(",") if k.strip()] if self.API_KEYS else []
 
     model_config = SettingsConfigDict(
         env_file=".env",

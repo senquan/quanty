@@ -32,7 +32,8 @@ class ValidateTransformer(Transformer):
 
         # 时间单调递增（按 symbol）
         for sym, g in df.groupby("symbol"):
-            if not g["timestamp"].is_monotonic_increasing:
+            ts_vals = g["timestamp"].to_numpy()
+            if len(ts_vals) > 1 and not (ts_vals[1:] >= ts_vals[:-1]).all():
                 raise PipelineValidationError(f"{sym} 时间戳非单调递增")
 
         return df.reset_index(drop=True)

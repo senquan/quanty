@@ -6,6 +6,7 @@ from fastapi import APIRouter, HTTPException, Query
 import app.storage.db as db
 from app.api.v1.schemas import (
     AiGenerateRequest,
+    FactorBatchEvaluateRequest,
     FactorCreate,
     FactorEvaluateRequest,
     FactorUpdate,
@@ -33,7 +34,12 @@ async def list_factor(
     except Exception:
         db_items = None
 
-    items = db_items if db_items is not None else list_factors(category)
+    # DB 自定义因子优先（覆盖同名内置），并补充 registry 中 DB 未收录的内置因子
+    if db_items is not None:
+        db_codes = {i.get("code") for i in db_items}
+        items = db_items + [r for r in list_factors(category) if r.get("code") not in db_codes]
+    else:
+        items = list_factors(category)
     if category:
         items = [i for i in items if i.get("category") == category]
     if search:
@@ -97,19 +103,27 @@ async def create_factor(payload: FactorCreate):
 
 @router.put("/{code}")
 async def update_factor(code: str, payload: FactorUpdate):
-    """更新因子（仅自定义因子）"""
+    """更新因子（仅自定义因子）
+
+    未提供的字段保留原值（部分更新）。
+    """
     try:
-        await db.upsert_factor_definition(
-            {
-                "code": code,
-                "name": payload.name,
-                "category": payload.category,
-                "frequency": payload.frequency,
-                "formula": payload.formula,
-                "data_sources": payload.data_sources or [],
-            },
-            author="user",
-        )
+        existing = await db.get_factor_definition(code)
+    except Exception:
+        existing = None
+    if not existing:
+        raise HTTPException(status_code=404, detail=f"因子未注册: {code}")
+
+    meta = {
+        "code": code,
+        "name": payload.name if payload.name is not None else existing.get("name"),
+        "category": payload.category if payload.category is not None else existing.get("category"),
+        "frequency": payload.frequency if payload.frequency is not None else existing.get("frequency"),
+        "formula": payload.formula if payload.formula is not None else existing.get("formula"),
+        "data_sources": payload.data_sources if payload.data_sources is not None else existing.get("data_sources"),
+    }
+    try:
+        await db.upsert_factor_definition(meta, author="user")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"更新失败: {e}") from e
     return {"code": code, "status": "updated"}
@@ -138,10 +152,58 @@ async def evaluate_factor(code: str, payload: FactorEvaluateRequest):
     metrics = _evaluator.evaluate(pd.Series(payload.factorValues), pd.Series(payload.forwardReturns))
     as_of = datetime.now().strftime("%Y-%m-%d")
     try:
+        # 确保因子定义存在，满足 metrics 外键约束
+        await db.upsert_factor_definition(
+            {"code": code, "name": code, "category": "EVAL",
+             "frequency": "1d", "formula": "", "data_sources": ["eval"]},
+            author="eval",
+        )
         await db.save_factor_metrics(code, as_of, metrics)
     except Exception:
         pass  # 数据库不可用时仍返回计算结果
     return metrics
+
+
+@router.post("/batch-evaluate")
+async def batch_evaluate_factors(payload: FactorBatchEvaluateRequest):
+    """批量因子效能评估
+
+    接收多个因子（code + factorValues + forwardReturns），逐个计算 IC/IR/Sharpe/
+    回撤/胜率并落库，返回每项结果与整体汇总（均值/成功数）。
+    """
+    import pandas as pd
+
+    as_of = payload.asOf or datetime.now().strftime("%Y-%m-%d")
+    results = []
+    succeeded = 0
+    for item in payload.items:
+        try:
+            m = _evaluator.evaluate(pd.Series(item.factorValues), pd.Series(item.forwardReturns))
+            try:
+                # 确保因子定义存在，满足 metrics 外键约束
+                await db.upsert_factor_definition(
+                    {"code": item.code, "name": item.code, "category": "BATCH",
+                     "frequency": "1d", "formula": "", "data_sources": ["batch"]},
+                    author="batch",
+                )
+                await db.save_factor_metrics(item.code, as_of, m)
+            except Exception as e:
+                logger.warning(f"批量评估落库失败 {item.code}: {e}")
+            results.append({"code": item.code, "status": "ok", **m})
+            succeeded += 1
+        except Exception as e:
+            results.append({"code": item.code, "status": "error", "message": str(e)[:200]})
+
+    valid = [r for r in results if r["status"] == "ok"]
+    summary = {
+        "total": len(payload.items),
+        "succeeded": succeeded,
+        "failed": len(payload.items) - succeeded,
+        "asOf": as_of,
+        "avgIcMean": round(sum(r.get("icMean", 0.0) for r in valid) / succeeded, 4) if succeeded else 0.0,
+        "avgSharpe": round(sum(r.get("sharpeRatio", 0.0) for r in valid) / succeeded, 4) if succeeded else 0.0,
+    }
+    return {"summary": summary, "results": results}
 
 
 @router.post("/ai-generate")

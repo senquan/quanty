@@ -35,7 +35,7 @@ data-cleaner/
 │   ├── storage/                # parquet 存储 + Redis 缓存 + DB
 │   └── tasks/                  # APScheduler 定时任务
 ├── migrations/                 # 数据库迁移（因子定义/效能/运行日志表）
-├── tests/                      # pytest 套件（28 项）
+├── tests/                      # pytest 套件（32 项）
 ├── data/                       # 运行时产物：factors/ quarantine/（自动创建）
 ├── Dockerfile
 ├── docker-compose.yml
@@ -81,8 +81,11 @@ pip install -r requirements.txt
 
 cp .env.example .env        # 按需编辑
 uvicorn app.main:app --host 0.0.0.0 --port 8100
-# 开发热重载： uvicorn app.main:app --reload
+# 开发热重载（务必显式带 --port 8100，否则回退默认 8000 会与 backend 冲突）
+uvicorn app.main:app --host 0.0.0.0 --port 8100 --reload
 ```
+
+> ⚠️ **端口冲突警告**：data-cleaner **必须**使用 `:8100`，**严禁占用 `:8000`**。`:8000` 是主后端（`backend/`）的专用端口，二者同机部署时若 data-cleaner 落到 8000，会挤掉 backend 导致 `/api/v1/user/info` 等接口全部 404。即使使用 `.env` 中 `PORT=8100`，也请始终在 `uvicorn` 命令里显式写 `--port 8100`（`.env` 的 `PORT` 仅在某些启动方式下生效）。
 
 > 注意：当前因子实现均为纯 pandas/numpy，`requirements.txt` 默认不含 `TA-Lib`。若未来需接入 TA-Lib，需在镜像内安装其 C 库（`apt-get install -y libta-lib-dev` 或源码编译）后再取消 `requirements.txt` 中注释行。
 
@@ -100,8 +103,21 @@ uvicorn app.main:app --host 0.0.0.0 --port 8100
 | `DEBUG` | `true` | 生产置 `false` |
 | `HOST` / `PORT` | `0.0.0.0` / `8100` | 监听地址 |
 | `TZ` | `Asia/Shanghai` | 时区 |
+| `API_KEYS` | 空 | 允许访问的 API Key 列表（逗号分隔）。**为空则接口开放**，供主后端网关（`backend/:8000`）探测连通性。配置后受保护接口需带 `X-API-Key` 头。 |
 
 完整模板见 `.env.example`。
+
+### 3.4 被主后端网关纳管（多实例）
+
+data-cleaner 可作为**多个实例**被主后端（`:8000`）统一纳管，由 backend 的 `/api/v1/cleaner/*` 网关做注册、QoS 轮询、因子同步与聚合（详见 `docs/plans/2026-08-26.multi-cleaner-gateway.md` 与根 `README.md` §2.6）。
+
+网关依赖的本服务契约：
+
+- `GET /api/v1/health`：无需 Key，返回 `{"status":"healthy","service":"data-cleaner",...}`
+- `GET /api/v1/qos`：无需 Key，返回 `{status, factor_count, cpu/mem, version}`
+- `GET /api/v1/factor`：受保护（配置 `API_KEYS` 后需 `X-API-Key`），返回因子列表供网关 `sync` 入库
+
+> 因此本服务的 `:8100` 仅供 backend 网关访问即可；前端不直接连本服务。
 
 ---
 
@@ -118,14 +134,15 @@ uvicorn app.main:app --host 0.0.0.0 --port 8100
 | PUT | `/factor/{code}` | 更新因子 |
 | DELETE | `/factor/{code}` | 删除因子 |
 | POST | `/factor/ai-generate` | 自然语言生成因子（返回沙箱校验通过的 formula） |
-| POST | `/factor/evaluate` | 因子效能评估（IC/ICIR/分层收益） |
+| POST | `/factor/evaluate` | 单因子效能评估（IC/IR/Sharpe/回撤/胜率） |
+| POST | `/factor/batch-evaluate` | 批量因子效能评估（多个因子 + 整体汇总） |
 | POST | `/factor/combination` | 多因子等权组合 |
 | POST | `/factor/backtest` | 因子组合回测 |
 | GET | `/analytics/quality` | 数据质量报告（缺失/异常/范围） |
 | GET | `/data/symbols` | 已落地品种列表 |
 | POST | `/pipeline/run` | 手动触发清洗→因子流水线 |
 | GET | `/pipeline/last-report` | 最近一次运行报告 |
-| GET | `/metrics` | Prometheus 风格指标 |
+| GET | `/metrics` | Prometheus 风格指标（实际路径 `/api/v1/metrics`） |
 
 ### 示例：运行一次流水线
 
@@ -151,7 +168,7 @@ curl -X POST http://localhost:8100/api/v1/factor/ai-generate \
 ## 5. 调度与可观测
 
 - **调度**：服务启动时 `APScheduler` 注册三任务（日级因子、周六效能、30s 心跳）。日志含 `task` 字段便于追踪。
-- **指标**：`GET /api/v1/metrics` 暴露 `pipeline_runs_total`、`pipeline_runs_failed_total`、`pipeline_duration_seconds`、`factors_registered` 等，可直接被 Prometheus 抓取、Grafana 展示。
+- **指标**：`GET /api/v1/metrics`（注意含 v1 前缀）暴露 `pipeline_runs_total`、`pipeline_runs_failed_total`、`pipeline_duration_seconds`、`factors_registered` 等，可直接被 Prometheus 抓取、Grafana 展示。
 - **失败快照**：流水线异常时输入数据落入 `data/quarantine/`（parquet 或 `.empty` 标记），便于复现排查。
 - **结构校验**：清洗输出经 `pandera` 校验（列类型/范围/`high>=low`），缺失 pandera 时降级为手工校验。
 
@@ -161,7 +178,7 @@ curl -X POST http://localhost:8100/api/v1/factor/ai-generate \
 
 ```bash
 pytest tests/ -q
-# 28 passed（因子计算/清洗/校验/API/缓存降级）
+# 32 passed（因子计算/清洗/校验/API/缓存降级/失败隔离/批量评估）
 ```
 
 代码规范：`ruff check app/`（配置见 `pyproject.toml`，零错误）。

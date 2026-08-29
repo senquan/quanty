@@ -17,34 +17,38 @@ class FactorEvaluator:
     ) -> dict:
         """计算单个因子效能指标
 
-        factor_values / forward_returns 需为同索引 Series
+        factor_values / forward_returns 为同长度序列（按时间对齐）。
+        接口接收扁平列表，无截面日期维度，因此：
+          - IC 使用 factor 与 forward_return 的时序 Spearman 秩相关
+          - Sharpe / 回撤 / 胜率基于 forward_return 序列本身（因子预测收益）
         """
         df = pd.concat([factor_values, forward_returns], axis=1).dropna()
         df.columns = ["factor", "fwd"]
         if len(df) < 30:
             return self._empty()
 
-        # IC: 截面相关（按时间分组求 spearman）
-        ic_list = []
-        for _, g in df.groupby(df.index):
-            if len(g) > 2:
-                ic = g["factor"].corr(g["fwd"], method="spearman")
-                if pd.notna(ic):
-                    ic_list.append(ic)
-        ic_mean = float(np.mean(ic_list)) if ic_list else 0.0
-        ic_std = float(np.std(ic_list)) if ic_list else 0.0
-        ir = ic_mean / (ic_std + 1e-9)
+        fwd = df["fwd"].reset_index(drop=True)
+        factor = df["factor"].reset_index(drop=True)
 
-        # 分层回测: 按因子值十分位，多空净值
-        df["group"] = pd.qcut(df["factor"].rank(method="first"), 10, labels=False)
-        long_ret = df[df["group"] == 9]["fwd"].mean()
-        short_ret = df[df["group"] == 0]["fwd"].mean()
-        # 多空组合平均日收益，构造均值恒定序列以计算净值类指标（近似）
-        strat_mean = float(long_ret - short_ret)
-        strat_ret = pd.Series([strat_mean] * len(df))
-        sharpe = self._sharpe(strat_ret)
-        mdd = self._max_drawdown(strat_ret)
-        win = float((strat_ret > 0).mean())
+        # IC: factor 与未来收益的时序 Spearman 相关
+        ic = factor.corr(fwd, method="spearman")
+        ic_mean = float(ic) if pd.notna(ic) else 0.0
+        ic_std = 0.0  # 单序列无截面，IC 标准差置 0
+        ir = 0.0 if ic_std == 0 else ic_mean / ic_std
+
+        # 分层多空：十分位最高组 - 最低组的平均未来收益（单点估计）
+        try:
+            groups = pd.qcut(factor.rank(method="first"), 10, labels=False)
+            long_ret = fwd[groups == 9].mean()
+            short_ret = fwd[groups == 0].mean()
+            strat_mean = float(long_ret - short_ret)
+        except Exception:
+            strat_mean = 0.0
+
+        # Sharpe / 回撤 / 胜率基于 forward_return 序列（真实收益路径）
+        sharpe = self._sharpe(fwd)
+        mdd = self._max_drawdown(fwd)
+        win = float((fwd > 0).mean())
 
         return {
             "icMean": ic_mean,
@@ -59,7 +63,10 @@ class FactorEvaluator:
     def _sharpe(returns: pd.Series) -> float:
         if len(returns) < 2:
             return 0.0
-        return float(returns.mean() / (returns.std() + 1e-9) * (252 ** 0.5))
+        std = returns.std()
+        if std is None or std < 1e-12:
+            return 0.0
+        return float(returns.mean() / std * (252 ** 0.5))
 
     @staticmethod
     def _max_drawdown(returns: pd.Series) -> float:
@@ -67,7 +74,11 @@ class FactorEvaluator:
             return 0.0
         cum = (1 + returns).cumprod()
         peak = cum.cummax()
-        return float(((cum - peak) / peak).min())
+        # 保护：净值趋近 0 时（极端负收益）回撤无意义，钳制为 -1.0
+        if peak.iloc[-1] < 1e-9:
+            return -1.0
+        dd = ((cum - peak) / peak).min()
+        return float(dd)
 
     @staticmethod
     def _empty() -> dict:

@@ -11,7 +11,11 @@ scipy==1.17.0
 #   ta-lib C 库（apt 安装 libta-lib-dev 或源码编译）后再取消下行注释。
 # TA-Lib>=0.6.8
 yfinance==0.2.36
+tushare==1.4.6
+tqdm==4.70.0  # tushare 运行时依赖
 ccxt==4.2.25
+httpx==0.27.0  # alphafeed 行情源 REST 客户端
+psycopg2-binary==2.9.12  # raw_bars 历史库同步写入（与 asyncpg 并存）
 pandera>=0.20
 redis>=5.0
 apscheduler>=3.10

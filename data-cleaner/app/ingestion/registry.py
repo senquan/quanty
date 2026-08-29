@@ -3,7 +3,9 @@ from app.core.config import settings
 from app.ingestion.base import BaseSource
 from app.ingestion.ccxt_source import CcxtSource
 from app.ingestion.csv_source import CsvSource
+from app.ingestion.alphafeed_source import AlphafeedSource
 from app.ingestion.fundamental_source import FundamentalSource
+from app.ingestion.tushare_source import TushareSource
 from app.ingestion.yfinance_source import YFinanceSource
 
 _SOURCES: dict[str, BaseSource] = {
@@ -11,6 +13,8 @@ _SOURCES: dict[str, BaseSource] = {
     "ccxt": CcxtSource(),
     "csv": CsvSource(),
     "fundamental": FundamentalSource(token=getattr(settings, "TUSHARE_TOKEN", None)),
+    "tushare": TushareSource(),
+    "alphafeed": AlphafeedSource(),
 }
 
 

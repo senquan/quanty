@@ -1,15 +1,17 @@
 <script lang="ts" setup>
+import type { Factor, FactorCategory } from './types';
+
 import { onMounted, ref } from 'vue';
 
 import { ElMessage, ElMessageBox, ElTabPane, ElTabs } from 'element-plus';
 
-import type { Factor, FactorCategory } from './types';
-
 import BacktestStudio from './components/backtest-studio.vue';
+import CleanerService from './components/cleaner-service.vue';
 import CorrelationHeatmap from './components/correlation-heatmap.vue';
 import EfficacyDeepDive from './components/efficacy-deep-dive.vue';
 import FactorEditorModal from './components/factor-editor-modal.vue';
 import FactorLibrary from './components/factor-library.vue';
+import RegistryLibrary from './components/registry-library.vue';
 import { factorService } from './mock/factor-service';
 
 // Global state
@@ -56,11 +58,7 @@ async function handleDeleteFactor(id: string) {
 
 async function handleSaveFactor(factor: Factor) {
   const exists = factors.value.find((f) => f.code === factor.code);
-  if (exists) {
-    await factorService.updateFactor(exists.id, factor);
-  } else {
-    await factorService.createFactor(factor);
-  }
+  await (exists ? factorService.updateFactor(exists.id, factor) : factorService.createFactor(factor));
   await loadFactors();
   selectedFactor.value = factor;
   ElMessage.success('因子已保存');
@@ -105,6 +103,14 @@ onMounted(loadFactors);
 
       <ElTabPane label="一键组合回测" name="backtest">
         <BacktestStudio :factors="factors" />
+      </ElTabPane>
+
+      <ElTabPane label="聚合因子底册" name="registry">
+        <RegistryLibrary />
+      </ElTabPane>
+
+      <ElTabPane label="数据清洗服务" name="cleaner">
+        <CleanerService />
       </ElTabPane>
     </ElTabs>
 

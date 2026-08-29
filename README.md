@@ -81,6 +81,66 @@ python main.py
 
 后端服务将在 `http://localhost:8000` 启动。
 
+> **端口约定**：`backend` 独占 `:8000`，请勿让其他服务占用此端口。
+
+#### 2.5 数据清洗服务 data-cleaner（独立服务）
+
+data-cleaner 是独立的因子清洗/生产服务（因子库、清洗流水线），**独立占用 `:8100`**，与主后端 `:8000` 互不冲突，需单独启动：
+
+```bash
+cd data-cleaner
+python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
+pip install -r requirements.txt
+cp .env.example .env                                # 按需编辑（PORT 默认 8100）
+
+# 本地启动（务必显式带 --port 8100，避免回退 8000 与 backend 冲突）
+uvicorn app.main:app --host 0.0.0.0 --port 8100 --reload
+```
+
+- 服务地址：`http://localhost:8100`，健康检查 `GET /api/v1/health`
+- 详细部署（Docker / 环境变量）见 `data-cleaner/README.md`
+- ⚠️ 禁止让 data-cleaner 占用 `:8000`，否则会挤掉主后端导致接口 404
+
+#### 2.6 多清洗服务网关（backend ↔ data-cleaner）
+
+主后端（`:8000`）作为**多实例清洗服务网关**：可在 `factor_registry`/`cleaner_services` 两张表里登记多个 data-cleaner 实例，由 backend 统一做注册、健康/QoS 轮询、因子同步与聚合。
+
+**架构**
+
+```
+前端 web-ele (:5777)
+   │  /api/*  → vite 代理 → 主后端 :8000
+   ▼
+backend (:8000)   /api/v1/cleaner/*   ← 网关
+   │  httpx              ┌──────────────┐
+   ├──────────────────►  │ data-cleaner │ :8100  (实例 A)
+   └──────────────────►  │ data-cleaner │ :8100  (实例 B, 可不同机)
+```
+
+> 前端**不再直连**任何 data-cleaner（vite 直连代理已移除），所有清洗服务流量经 backend 网关转发，避免地址/鉴权冲突。
+
+**启动顺序**
+
+1. 启动 backend（`:8000`）：`cd backend && uvicorn main:app --port 8000`
+2. 启动一个或多个 data-cleaner（各 `:8100`，可不同机）：`cd data-cleaner && uvicorn app.main:app --port 8100`
+3. 启动前端（`:5777`）：`cd frontend && pnpm dev`
+
+**网关 API（主后端 `:8000` 提供，均需登录）**
+
+| 方法 & 路径 | 作用 |
+|---|---|
+| `GET/POST /api/v1/cleaner` | 服务列表 / 注册（注册时自动探测连通性） |
+| `GET/PUT/DELETE /api/v1/cleaner/{service_code}` | 服务详情 / 更新 / 删除（级联删其因子） |
+| `POST /api/v1/cleaner/{service_code}/test` | 连接测试（不落库） |
+| `POST /api/v1/cleaner/{service_code}/qos` | 手动触发 QoS 轮询 |
+| `POST /api/v1/cleaner/{service_code}/sync` | 拉取并入库该服务因子口径（幂等） |
+| `POST /api/v1/cleaner/{service_code}/factors/enable` | 勾选/取消某因子入库 |
+| `GET /api/v1/cleaner/factors/registry` | 聚合因子底册（跨服务，可按 `service_code`/`only_enabled` 过滤） |
+
+**前端入口**：`因子底册库` 页面 → 顶部 Tab「聚合因子底册」「清洗服务」。
+
+> 设计细节与端到端验证见 `docs/plans/2026-08-26.multi-cleaner-gateway.md`。
+
 #### 3. 前端启动
 
 ```bash
