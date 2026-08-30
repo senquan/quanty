@@ -1,12 +1,13 @@
 export type FactorCategory =
-  | 'momentum'
-  | 'volatility'
-  | 'value'
+  | 'custom'
   | 'growth'
+  | 'momentum'
   | 'sentiment'
-  | 'custom';
+  | 'technical'
+  | 'value'
+  | 'volatility';
 
-export type UpdateFrequency = 'Daily' | 'Weekly' | 'Monthly' | 'Quarterly';
+export type UpdateFrequency = 'Daily' | 'Monthly' | 'Quarterly' | 'Weekly';
 
 export interface Factor {
   id: string;
@@ -21,15 +22,20 @@ export interface Factor {
   author: 'system' | 'user';
   createdAt: string;
 
-  // Efficacy assessment metrics
+  // Efficacy assessment metrics（未评估的因子为 0）
   icMean: number;
   icStd: number;
   ir: number;
   winRate: number;
   maxDrawdown: number;
   sharpeRatio: number;
+  icRank: number;
+  irRank: number;
+  sharpeRank: number;
 
   // Series data
+  // 清洗服务目前只提供因子定义与效能指标，不提供时间序列；
+  // 接真实 API 后这些数组为空，相关图表会自动降级展示。
   dates: string[];
   icSeries: number[];
   longReturns: number[];
@@ -46,7 +52,7 @@ export interface BacktestParams {
   benchmark: 'CSI300' | 'CSI500' | 'SSE50';
   startDate: string;
   endDate: string;
-  rebalancePeriod: 'Weekly' | 'Monthly' | 'Quarterly';
+  rebalancePeriod: 'Monthly' | 'Quarterly' | 'Weekly';
   transactionFee: number;
 }
 

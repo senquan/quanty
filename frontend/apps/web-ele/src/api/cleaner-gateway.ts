@@ -73,6 +73,36 @@ export interface FactorEnablePayload {
   is_enabled?: boolean;
 }
 
+/** 清洗服务侧的因子条目（远端因子库 + 本地入库状态） */
+export interface RemoteFactorItem {
+  code: string;
+  name: string;
+  category: null | string;
+  frequency: null | string;
+  description: null | string;
+  formula: null | string;
+  data_source: null | string;
+  /** 是否已在本服务的 factor_registry 中 */
+  imported: boolean;
+  /** 是否已勾选入库 */
+  is_enabled: boolean;
+}
+
+/** 远端因子库分页结果 */
+export interface RemoteFactorPage {
+  items: RemoteFactorItem[];
+  total: number;
+  page: number;
+  page_size: number;
+}
+
+/** 勾选入库结果 */
+export interface FactorImportResult {
+  created: number;
+  updated: number;
+  total: number;
+}
+
 // ============ 服务管理 ============
 
 /** 注册清洗服务（注册时会测试连接） */
@@ -130,6 +160,33 @@ export async function pollCleanerQosApi(serviceCode: string) {
 export async function syncCleanerFactorsApi(serviceCode: string) {
   return requestClient.post<{ synced: number; status: string }>(
     `/cleaner/${encodeURIComponent(serviceCode)}/sync`,
+  );
+}
+
+/** 分页列出该清洗服务的因子库（远端，带本地入库状态） */
+export async function listCleanerServiceFactorsApi(
+  serviceCode: string,
+  params?: {
+    category?: string;
+    page?: number;
+    page_size?: number;
+    search?: string;
+  },
+) {
+  return requestClient.get<RemoteFactorPage>(
+    `/cleaner/${encodeURIComponent(serviceCode)}/factors`,
+    { params },
+  );
+}
+
+/** 勾选因子入库（factor_codes 为空表示全量导入） */
+export async function importCleanerFactorsApi(
+  serviceCode: string,
+  data: { factor_codes?: string[]; is_enabled?: boolean },
+) {
+  return requestClient.post<FactorImportResult>(
+    `/cleaner/${encodeURIComponent(serviceCode)}/factors/import`,
+    data,
   );
 }
 

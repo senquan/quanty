@@ -27,6 +27,9 @@ _evaluator = FactorEvaluator()
 async def list_factor(
     category: str | None = Query(None, description="按类别过滤"),
     search: str | None = Query(None, description="名称/代码模糊搜索"),
+    include_metrics: bool = Query(
+        False, description="挂载每个因子的最新一期效能指标（单次批量查询）"
+    ),
 ):
     # 优先返回数据库中的定义（含自定义因子），否则回退到注册表
     try:
@@ -45,6 +48,15 @@ async def list_factor(
     if search:
         kw = search.lower()
         items = [i for i in items if kw in str(i.get("code", "")).lower() or kw in str(i.get("name", "")).lower()]
+
+    if include_metrics:
+        try:
+            metrics_map = await db.list_latest_factor_metrics()
+        except Exception:
+            metrics_map = {}
+        for i in items:
+            i["metrics"] = metrics_map.get(i.get("code"))
+
     return items
 
 
@@ -93,6 +105,7 @@ async def create_factor(payload: FactorCreate):
         "frequency": payload.frequency,
         "formula": payload.formula,
         "data_sources": payload.data_sources or [],
+        "description": payload.description,
     }
     try:
         await db.upsert_factor_definition(meta, author="user")
@@ -121,6 +134,7 @@ async def update_factor(code: str, payload: FactorUpdate):
         "frequency": payload.frequency if payload.frequency is not None else existing.get("frequency"),
         "formula": payload.formula if payload.formula is not None else existing.get("formula"),
         "data_sources": payload.data_sources if payload.data_sources is not None else existing.get("data_sources"),
+        "description": payload.description if payload.description is not None else existing.get("description"),
     }
     try:
         await db.upsert_factor_definition(meta, author="user")

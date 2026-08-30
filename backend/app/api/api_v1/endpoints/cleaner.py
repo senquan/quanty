@@ -23,6 +23,7 @@ from app.schemas.cleaner import (
     CleanerServiceCreate,
     CleanerServiceOut,
     CleanerServiceUpdate,
+    FactorImportRequest,
     FactorListQuery,
     FactorRegistryOut,
 )
@@ -185,6 +186,54 @@ async def enable_factors(
         raise HTTPException(status_code=400, detail="路径 service_code 与 body 不一致")
     count = await gw.set_factor_enabled(db, service_code, payload.factor_codes, payload.is_enabled)
     return Response.success(data={"updated": count}, msg="更新成功")
+
+
+@router.get("/{service_code}/factors", summary="分页列出该清洗服务的因子库")
+async def list_service_factors(
+    service_code: str,
+    page: int = 1,
+    page_size: int = 10,
+    category: str | None = None,
+    search: str | None = None,
+    db: AsyncSession = Depends(get_db),
+    _: None = Depends(_ensure_tables),
+    _user: User = Depends(get_current_user),
+):
+    svc = await gw.get_service(db, service_code)
+    if not svc:
+        raise HTTPException(status_code=404, detail="服务不存在")
+    try:
+        data = await gw.list_remote_factors(
+            db, svc, category=category, search=search,
+            page=page, page_size=page_size,
+        )
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"读取清洗服务因子库失败：{e}")
+    return Response.success(data=data)
+
+
+@router.post("/{service_code}/factors/import", summary="勾选因子入库")
+async def import_service_factors(
+    service_code: str,
+    payload: FactorImportRequest,
+    db: AsyncSession = Depends(get_db),
+    _: None = Depends(_ensure_tables),
+    _user: User = Depends(get_current_user),
+):
+    svc = await gw.get_service(db, service_code)
+    if not svc:
+        raise HTTPException(status_code=404, detail="服务不存在")
+    try:
+        result = await gw.import_factors(
+            db, svc, payload.factor_codes, payload.is_enabled
+        )
+    except Exception as e:  # noqa: BLE001
+        await db.rollback()
+        raise HTTPException(status_code=502, detail=f"因子入库失败：{e}")
+    return Response.success(
+        data=result,
+        msg=f"入库完成：新增 {result['created']}，更新 {result['updated']}",
+    )
 
 
 @router.get("/factors/registry", summary="聚合因子底册")

@@ -15,48 +15,39 @@ logger = get_logger(__name__)
 scheduler = AsyncIOScheduler(timezone="Asia/Shanghai")
 
 
-async def _daily_pipeline_job() -> None:
-    """每日定时：拉取默认标的并跑清洗+因子计算。
+async def _daily_eod_pipeline_job() -> None:
+    """每日盘后流水线：增量拉取行情 → 因子库更新 → 因子效能评估。
 
-    实现复用 app.api.v1.pipeline 的 run 逻辑，避免重复。
-    """
-    from app.api.v1 import pipeline as pipeline_api
-
-    logger.info("定时任务启动: 日线清洗+因子计算", extra={"task": "scheduled_pipeline"})
-    try:
-        # 复用路由层的执行函数（同步封装）
-        await pipeline_api.run_default_pipeline()
-        logger.info("定时任务完成", extra={"task": "scheduled_pipeline"})
-    except Exception as e:  # 不阻断调度器
-        logger.error(f"定时任务失败: {e}", extra={"task": "scheduled_pipeline"})
-
-
-async def _daily_raw_backfill_job() -> None:
-    """每日定时：增量更新全 A 股日线历史（写入 factor.raw_bars / parquet）。
-
-    复用 app.tasks.backfill.backfill_universe（同步，包在 executor 里跑，避免阻塞事件循环）。
+    三个步骤在同一任务内**顺序执行**（原先是 18:30 拉数据、19:30 算因子两个独立
+    定时任务靠时间点错开，数据没拉完就可能开始算因子）。数据源延迟发布时会自动
+    等待重试若干轮。
     """
     from app.core.config import settings
-    from app.tasks import backfill as backfill_task
+    from app.tasks import daily_pipeline as daily_pipeline_task
 
     source = getattr(settings, "RAW_BACKFILL_SOURCE", "alphafeed")
     logger.info(
-        "定时任务启动: 全 A 股日线增量更新",
-        extra={"task": "scheduled_raw_backfill", "source": source},
+        "定时任务启动: 每日盘后流水线",
+        extra={"task": "scheduled_eod_pipeline", "source": source},
     )
     try:
         import asyncio
 
         summary = await asyncio.get_event_loop().run_in_executor(
-            None, lambda: backfill_task.backfill_universe(source=source, full=False)
+            None,
+            lambda: daily_pipeline_task.run_daily_pipeline(source=source),
         )
         logger.info(
-            f"定时任务完成 ok={summary.get('ok')} empty={summary.get('empty')} "
-            f"skip={summary.get('skip')} error={summary.get('error')} / total={summary.get('total')}",
-            extra={"task": "scheduled_raw_backfill", **summary},
+            f"定时任务完成 数据 {summary.get('latest_before')} -> {summary.get('latest_after')} "
+            f"(推进={summary.get('data_advanced')}) 步骤数={len(summary.get('steps', []))} "
+            f"{summary.get('duration_s')}s",
+            extra={
+                "task": "scheduled_eod_pipeline",
+                **{k: v for k, v in summary.items() if k != "steps"},
+            },
         )
     except Exception as e:  # 不阻断调度器
-        logger.error(f"定时任务失败: {e}", extra={"task": "scheduled_raw_backfill"})
+        logger.error(f"定时任务失败: {e}", extra={"task": "scheduled_eod_pipeline"})
 
 
 async def _daily_verify_backfill_job() -> None:
@@ -86,13 +77,51 @@ async def _daily_verify_backfill_job() -> None:
             f"repair={result.get('repair')}",
             extra={"task": "scheduled_verify_backfill", **result},
         )
+
+        # 若确实补了数据，因子库与评估要跟着刷新，否则补的数据要等到下一个
+        # 交易日盘后才反映到因子上
+        if result.get("repair"):
+            from app.tasks import factor_build as factor_build_task
+            from app.tasks import factor_evaluate as factor_evaluate_task
+
+            fb = await asyncio.get_event_loop().run_in_executor(
+                None, factor_build_task.build_factor_library
+            )
+            ev = await asyncio.get_event_loop().run_in_executor(
+                None, factor_evaluate_task.evaluate_all_factors
+            )
+            logger.info(
+                f"补齐后因子刷新完成 因子库={fb.get('files')} 文件 "
+                f"评估={ev.get('factors_evaluated')}/{ev.get('factors_total')}",
+                extra={
+                    "task": "scheduled_verify_backfill",
+                    "factor_build": fb.get("status"),
+                    "factor_evaluate": ev.get("status"),
+                },
+            )
     except Exception as e:  # 不阻断调度器
         logger.error(f"覆盖度校验失败: {e}", extra={"task": "scheduled_verify_backfill"})
 
 
 async def _weekly_metrics_job() -> None:
-    """每周定时：重算全部因子效能指标（示意，依赖因子值落库）"""
+    """每周定时：用已落库的因子值重算全部因子效能指标（IC/IR/Sharpe/回撤/胜率）"""
+    from app.tasks import factor_evaluate as factor_evaluate_task
+
     logger.info("定时任务启动: 因子效能重算", extra={"task": "scheduled_metrics"})
+    try:
+        import asyncio
+
+        summary = await asyncio.get_event_loop().run_in_executor(
+            None, factor_evaluate_task.evaluate_all_factors
+        )
+        logger.info(
+            f"因子效能重算完成 评估={summary.get('factors_evaluated')}"
+            f"/{summary.get('factors_total')} 跳过={summary.get('factors_skipped')} "
+            f"{summary.get('duration_s')}s",
+            extra={"task": "scheduled_metrics", **summary},
+        )
+    except Exception as e:  # 不阻断调度器
+        logger.error(f"因子效能重算失败: {e}", extra={"task": "scheduled_metrics"})
 
 
 async def _heartbeat_job() -> None:
@@ -103,24 +132,20 @@ async def _heartbeat_job() -> None:
 
 
 def register_jobs() -> None:
+    # 每日盘后流水线：拉数据 → 因子更新 → 效能评估（顺序执行）
+    # max_instances=1 + coalesce：任务耗时长（全市场增量可达数小时），
+    # 防止上一轮没跑完又被触发，堆积成并发请求打满数据源限频
     scheduler.add_job(
-        _daily_pipeline_job,
-        trigger="cron",
-        hour=18,
-        minute=0,
-        id="daily_pipeline",
-        misfire_grace_time=3600,
-        replace_existing=True,
-    )
-    scheduler.add_job(
-        _daily_raw_backfill_job,
+        _daily_eod_pipeline_job,
         trigger="cron",
         hour=18,
         minute=30,
         day_of_week="mon-fri",
-        id="daily_raw_backfill",
+        id="daily_eod_pipeline",
         # 服务晚启动（重启/宕机恢复）2 小时内仍补跑一次，避免整天漏数据
         misfire_grace_time=7200,
+        max_instances=1,
+        coalesce=True,
         replace_existing=True,
     )
     scheduler.add_job(
@@ -131,6 +156,8 @@ def register_jobs() -> None:
         day_of_week="mon-sat",
         id="daily_verify_backfill",
         misfire_grace_time=7200,
+        max_instances=1,
+        coalesce=True,
         replace_existing=True,
     )
     scheduler.add_job(
@@ -141,6 +168,8 @@ def register_jobs() -> None:
         minute=0,
         id="weekly_metrics",
         misfire_grace_time=3600,
+        max_instances=1,
+        coalesce=True,
         replace_existing=True,
     )
     scheduler.add_job(

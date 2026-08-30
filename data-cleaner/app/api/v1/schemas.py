@@ -54,6 +54,7 @@ class FactorCreate(BaseModel):
     frequency: str = "Daily"
     formula: str  # 沙箱表达式，见 app/factors/formula.py
     data_sources: list[str] | None = None
+    description: str | None = None
 
 
 class FactorUpdate(BaseModel):
@@ -63,6 +64,7 @@ class FactorUpdate(BaseModel):
     frequency: str | None = None
     formula: str | None = None
     data_sources: list[str] | None = None
+    description: str | None = None
 
 
 class FactorEvaluateRequest(BaseModel):

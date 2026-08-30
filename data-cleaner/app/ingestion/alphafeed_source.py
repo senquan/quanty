@@ -10,7 +10,7 @@
 文档：https://docs.alphafeed.org/zh-Hans
 依赖配置：ALPHAFEED_KEY（见 app.core.config.settings）
 """
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import httpx
 import pandas as pd
@@ -37,9 +37,17 @@ class AlphafeedSource(BaseSource):
         return key
 
     @staticmethod
-    def _to_ms(d: str) -> int:
-        """将 '2020-01-01' 转为毫秒时间戳（UTC）"""
-        dt = datetime.strptime(d, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+    def _to_ms(d: str, end_of_day: bool = False) -> int:
+        """将 '2020-01-01' 转为毫秒时间戳（Asia/Shanghai）。
+
+        A 股日线 bar 的时间戳是北京时间零点。若按 UTC 解析会相差 8 小时，
+        把当天的 bar 挤出 [start, end] 区间（表现为"最新一天永远拉不到"）。
+        因此统一按 UTC+8 解析；end 取当日 23:59:59.999 保证闭区间语义。
+        """
+        cst = timezone(timedelta(hours=8))
+        dt = datetime.strptime(d, "%Y-%m-%d").replace(tzinfo=cst)
+        if end_of_day:
+            dt = dt.replace(hour=23, minute=59, second=59, microsecond=999000)
         return int(dt.timestamp() * 1000)
 
     def fetch(
@@ -59,7 +67,7 @@ class AlphafeedSource(BaseSource):
             "symbol": symbol,
             "period": "1d",
             "start_time": self._to_ms(start),
-            "end_time": self._to_ms(end),
+            "end_time": self._to_ms(end, end_of_day=True),
             "adjust": "forward",  # 前复权，close 即前复权价
         }
         headers = {"X-API-Key": key}
@@ -89,7 +97,18 @@ class AlphafeedSource(BaseSource):
 
         data = payload.get("data") if isinstance(payload, dict) else None
         if not data or not data.get("timestamp"):
-            raise IngestionError(f"AlphaFeed 返回空数据: {symbol}")
+            # 停牌 / 退市 / 区间内无交易日属正常情况，返回空结果而非抛错，
+            # 否则每日增量会把停牌股统计成 error，淹没真实的网络失败
+            logger.info(
+                "AlphaFeed 区间内无数据",
+                extra={
+                    "task": "ingest",
+                    "symbol": symbol,
+                    "start": start,
+                    "end": end,
+                },
+            )
+            return self._to_dataframe([])
 
         n = len(data["timestamp"])
         rows: list[RawBar] = []
@@ -120,7 +139,11 @@ class AlphafeedSource(BaseSource):
             )
 
         if not rows:
-            raise IngestionError(f"AlphaFeed 有效数据为空: {symbol}")
+            logger.warning(
+                "AlphaFeed 返回数据全部被质量过滤剔除",
+                extra={"task": "ingest", "symbol": symbol},
+            )
+            return self._to_dataframe([])
 
         logger.info(
             "AlphaFeed 拉取完成",

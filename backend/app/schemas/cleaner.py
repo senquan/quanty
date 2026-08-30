@@ -54,6 +54,33 @@ class FactorListQuery(BaseModel):
     is_enabled: bool = True
 
 
+# ---------------- 远端因子库（分页选择入库） ----------------
+class FactorImportRequest(BaseModel):
+    """勾选入库请求体：factor_codes 为空表示全量导入"""
+    factor_codes: list[str] = Field(default_factory=list)
+    is_enabled: bool = True
+
+
+class RemoteFactorOut(BaseModel):
+    """清洗服务侧因子条目 + 本地入库状态"""
+    code: str
+    name: str = ""
+    category: str | None = None
+    frequency: str | None = None
+    description: str | None = None
+    formula: str | None = None
+    data_source: str | None = None
+    imported: bool = False          # 是否已在 factor_registry
+    is_enabled: bool = False        # 是否已勾选入库
+
+
+class RemoteFactorPage(BaseModel):
+    items: list[RemoteFactorOut]
+    total: int
+    page: int
+    page_size: int
+
+
 class ConnectionTestResult(BaseModel):
     ok: bool
     status: str | None = None                # data-cleaner 返回的 online/degraded

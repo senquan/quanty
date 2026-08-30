@@ -2,7 +2,10 @@
 
 复用主后端 PostgreSQL，使用独立 `factor` schema（见 migrations/001）。
 """
+import asyncio
 import json
+import threading
+from typing import Any
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -11,6 +14,27 @@ from app.core.config import settings
 
 engine = create_async_engine(settings.DATABASE_URL, echo=False, future=True)
 async_session = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+
+# asyncpg 的连接池绑定创建它的事件循环：若每次调用都新建 loop 再关闭，
+# 池里的连接会残留在已关闭的 loop 上，后续请求报
+# "another operation is in progress"。故按线程缓存并复用同一个 loop。
+_LOOPS: dict[int, asyncio.AbstractEventLoop] = {}
+_LOOPS_LOCK = threading.Lock()
+
+
+def run_async(coro) -> Any:
+    """在「本线程固定的事件循环」中执行协程。
+
+    同步任务（因子构建/评估等，常跑在线程池里）调用本模块的异步仓储时，
+    一律走这里，避免反复新建事件循环导致 asyncpg 连接失效。
+    """
+    tid = threading.get_ident()
+    with _LOOPS_LOCK:
+        loop = _LOOPS.get(tid)
+        if loop is None or loop.is_closed():
+            loop = asyncio.new_event_loop()
+            _LOOPS[tid] = loop
+    return loop.run_until_complete(coro)
 
 
 async def log_pipeline_run(
@@ -64,8 +88,12 @@ async def apply_migrations() -> None:
     """
     from pathlib import Path
 
-    mig_dir = Path(__file__).parents[3] / "migrations"
+    # db.py 位于 <root>/app/storage/db.py，故 migrations 在 parents[2]
+    # （原实现误用 parents[3]，指向仓库上级目录导致 glob 为空、迁移静默不执行）
+    mig_dir = Path(__file__).resolve().parents[2] / "migrations"
     sql_files = sorted(mig_dir.glob("*.sql"))
+    if not sql_files:
+        raise FileNotFoundError(f"未找到迁移文件: {mig_dir}")
     stmts: list[str] = []
     for f in sql_files:
         sql = f.read_text(encoding="utf-8")
@@ -111,14 +139,17 @@ async def upsert_factor_definition(meta: dict, author: str = "system") -> None:
             text(
                 """
                 INSERT INTO factor.definitions
-                    (code, name, category, frequency, formula, data_sources, author)
-                VALUES (:code, :name, :cat, :freq, :formula, :ds, :author)
+                    (code, name, category, frequency, formula, data_sources,
+                     author, description)
+                VALUES (:code, :name, :cat, :freq, :formula, :ds, :author, :desc)
                 ON CONFLICT (code) DO UPDATE SET
                     name = EXCLUDED.name,
                     category = EXCLUDED.category,
                     frequency = EXCLUDED.frequency,
                     formula = EXCLUDED.formula,
-                    data_sources = EXCLUDED.data_sources
+                    data_sources = EXCLUDED.data_sources,
+                    -- 未传 description 时保留原值，避免被清成空
+                    description = COALESCE(EXCLUDED.description, factor.definitions.description)
                 """
             ),
             {
@@ -129,6 +160,7 @@ async def upsert_factor_definition(meta: dict, author: str = "system") -> None:
                 "formula": meta.get("formula"),
                 "ds": json.dumps(meta.get("data_sources")),
                 "author": author,
+                "desc": meta.get("description"),
             },
         )
         await session.commit()
@@ -157,7 +189,7 @@ async def get_factor_definition(code: str) -> dict | None:
             text(
                 """
                 SELECT code, name, category, frequency, formula,
-                       data_sources, author, status, created_at
+                       data_sources, author, status, created_at, description
                 FROM factor.definitions WHERE code = :code
                 """
             ),
@@ -174,7 +206,7 @@ async def list_factor_definitions() -> list[dict]:
             text(
                 """
                 SELECT code, name, category, frequency, formula,
-                       data_sources, author, status, created_at
+                       data_sources, author, status, created_at, description
                 FROM factor.definitions ORDER BY category, code
                 """
             )
@@ -231,3 +263,24 @@ async def get_factor_metrics(code: str) -> list[dict]:
             {"code": code},
         )
         return [dict(r._mapping) for r in rows]
+
+
+async def list_latest_factor_metrics() -> dict[str, dict]:
+    """一次性读取全部因子的最新一期效能指标（按 factor_code 去重）。
+
+    供因子列表批量挂载指标使用，避免逐因子查询造成的 N+1 慢请求。
+    """
+    async with async_session() as session:
+        rows = await session.execute(
+            text(
+                """
+                SELECT DISTINCT ON (factor_code)
+                       factor_code, as_of_date, ic_mean, ic_std, ir,
+                       sharpe_ratio, max_drawdown, win_rate
+                FROM factor.metrics
+                ORDER BY factor_code, as_of_date DESC
+                """
+            )
+        )
+        # rows.mappings() 返回的已是 RowMapping，直接 dict(r) 即可
+        return {r["factor_code"]: dict(r) for r in rows.mappings()}

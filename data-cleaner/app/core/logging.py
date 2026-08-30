@@ -43,7 +43,19 @@ def setup_logging(level: str = "INFO") -> None:
     root.addHandler(handler)
 
     # 压低第三方库噪音
-    for noisy in ("uvicorn.access", "httpx", "urllib3"):
+    # - httpx/httpcore：DEBUG 会打印每个请求的连接、TLS、收发细节
+    # - redis：新版本客户端对旧版服务端报 MAINT_NOTIFICATIONS 未知子命令（无害）
+    for noisy in (
+        "uvicorn.access",
+        "httpx",
+        "httpcore",
+        "httpcore.http11",
+        "httpcore.connection",
+        "urllib3",
+        "redis",
+        "redis.asyncio",
+        "redis.asyncio.connection",
+    ):
         logging.getLogger(noisy).setLevel(logging.WARNING)
 
 

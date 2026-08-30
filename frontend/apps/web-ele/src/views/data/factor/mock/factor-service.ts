@@ -12,13 +12,13 @@ import {
   runMultiFactorBacktest,
 } from './factor-data';
 
-// In-memory store (replace with API calls when backend is ready)
-let factorPool: Factor[] = [...INITIAL_FACTORS];
-
 /**
- * Factor service layer — all methods return Promise<T> so swapping
- * to real HTTP calls (requestClient.get/post) requires zero UI changes.
+ * @deprecated 本地 mock 数据服务，已被 ../factor-service（真实 API）取代。
+ * 仅作回退参考保留，页面不再引用。
  */
+
+// In-memory store
+let factorPool: Factor[] = [...INITIAL_FACTORS];
 export const factorService = {
   async getFactors(): Promise<Factor[]> {
     return [...factorPool];
@@ -99,6 +99,11 @@ export const factorService = {
         name: '大单主力资金净换手流比率',
         code: `BIG_FLOW_${Math.floor(Math.random() * 100)}`,
         formula: '(volume - delay(volume, 1)) / mean(volume, 20)',
+      },
+      technical: {
+        name: '多周期均线乖离共振因子',
+        code: `MA_RESO_${Math.floor(Math.random() * 100)}`,
+        formula: '(close - mean(close, 20)) / std(close, 20)',
       },
       custom: {
         name: '阿尔法复合探索波动系数',

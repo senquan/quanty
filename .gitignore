@@ -53,7 +53,8 @@ quarantine*
 .cache/
 
 # Documents
-docs/notes/
+docs/notes
+docs/screen
 
 # Test
 tests/

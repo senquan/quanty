@@ -145,6 +145,53 @@ class RawBarRepository:
             return pd.to_datetime(df["timestamp"]).max().strftime("%Y-%m-%d")
         return None
 
+    def load_all(
+        self,
+        start: str | None = None,
+        end: str | None = None,
+        symbols: list[str] | None = None,
+        freq: str = "1d",
+    ) -> pd.DataFrame:
+        """一次性读取全市场区间行情（PG 优先），供因子库批量构建使用。
+
+        单条 SQL 拉取，避免逐标的查询（5551 只时逐条查询过慢）。
+        """
+        if self._engine is not None:
+            try:
+                from sqlalchemy import bindparam, text
+
+                sql = (
+                    "SELECT symbol,timestamp,open,high,low,close,volume,source,freq "
+                    "FROM factor.raw_bars WHERE freq=:f"
+                )
+                params: dict = {"f": freq}
+                if start:
+                    sql += " AND timestamp >= :st"
+                    params["st"] = start
+                if end:
+                    sql += " AND timestamp <= :en"
+                    params["en"] = end
+                if symbols:
+                    sql += " AND symbol = ANY(:syms)"
+                    params["syms"] = list(symbols)
+                sql += " ORDER BY symbol, timestamp"
+                with self._engine.connect() as conn:
+                    df = pd.read_sql(
+                        text(sql), conn,
+                        params=params,
+                        parse_dates=["timestamp"],
+                    )
+                # PG 的 timestamptz 返回带时区的 datetime64[ns, UTC]，
+                # 而清洗流水线/schema 要求朴素 datetime64[ns]（北京时间）
+                if not df.empty and str(df["timestamp"].dtype).endswith(", UTC]"):
+                    df["timestamp"] = (
+                        df["timestamp"].dt.tz_convert("Asia/Shanghai").dt.tz_localize(None)
+                    )
+                return df
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"PG load_all 失败: {e}")
+        return pd.DataFrame()
+
     def latest_day_coverage(
         self, freq: str = "1d", days: int = 2
     ) -> list[tuple[str, int]]:
@@ -189,6 +236,13 @@ class RawBarRepository:
                     df = pd.read_sql(text(sql), conn, params=params)
                 if df is not None and not df.empty:
                     df["timestamp"] = pd.to_datetime(df["timestamp"])
+                    # 与 load_all 一致：timestamptz -> 朴素北京时间
+                    if str(df["timestamp"].dtype).endswith(", UTC]"):
+                        df["timestamp"] = (
+                            df["timestamp"]
+                            .dt.tz_convert("Asia/Shanghai")
+                            .dt.tz_localize(None)
+                        )
                     return df
             except Exception as e:  # noqa: BLE001
                 logger.warning(f"PG load 失败，试 parquet: {e}")

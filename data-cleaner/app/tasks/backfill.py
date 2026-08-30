@@ -7,6 +7,8 @@
 from datetime import datetime, timedelta
 from time import sleep
 
+import re
+
 from app.core.logging import get_logger
 from app.ingestion.registry import get_source
 from app.ingestion.universe import get_a_share_universe
@@ -15,6 +17,32 @@ from app.storage.raw_store import repository
 logger = get_logger(__name__)
 
 _DEFAULT_FULL_START = "2010-01-01"
+
+# 单标的最大重试次数（限频 / 网络抖动共用）
+_MAX_RETRY = 3
+
+# 网络抖动特征：SSL 断连、chunked 读取中断、连接重置、超时等
+_TRANSIENT_MARKERS = (
+    "SSL",
+    "UNEXPECTED_EOF",
+    "incomplete chunked read",
+    "peer closed connection",
+    "Connection aborted",
+    "Connection reset",
+    "ConnectionReset",
+    "RemoteDisconnected",
+    "Server disconnected",
+    "timed out",
+    "Timeout",
+    "ReadTimeout",
+    "ConnectTimeout",
+    "ConnectionTimeout",
+)
+
+
+def _is_transient(msg: str) -> bool:
+    """判断是否为可重试的瞬时网络错误。"""
+    return any(m in msg for m in _TRANSIENT_MARKERS)
 
 
 def _today() -> str:
@@ -44,13 +72,20 @@ def backfill_symbol(
             break
         except Exception as e:  # noqa: BLE001
             msg = str(e)
-            if "限频" in msg and retry < 3:
+            if "限频" in msg and retry < _MAX_RETRY:
                 # 提取 retry_after 毫秒
-                import re
-
                 m = re.search(r"(\d+)ms", msg)
                 wait = int(m.group(1)) / 1000 if m else 2
                 logger.warning(f"{symbol} 限频，{wait}s 后重试")
+                sleep(wait)
+                retry += 1
+                continue
+            if _is_transient(msg) and retry < _MAX_RETRY:
+                # SSL 断连 / chunked 读取中断等属网络抖动，重试即可恢复
+                wait = 2**retry
+                logger.warning(
+                    f"{symbol} 网络抖动，{wait}s 后重试 ({retry + 1}/{_MAX_RETRY}): {msg[:60]}"
+                )
                 sleep(wait)
                 retry += 1
                 continue

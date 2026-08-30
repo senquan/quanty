@@ -10,6 +10,7 @@
 import asyncio
 from datetime import datetime
 from typing import Any
+from urllib.parse import urlencode
 
 import httpx
 from sqlalchemy import select
@@ -84,10 +85,132 @@ async def poll_qos(service: CleanerService) -> dict:
         return {"status": "offline", "error": str(e)}
 
 
-async def fetch_factors(service: CleanerService) -> list[dict]:
-    """从清洗服务拉取因子列表（受保护接口，需 key）"""
-    data = await _get_json(service.base_url, "/api/v1/factor", service.api_key)
+def _normalize_factor(item: dict) -> dict:
+    """把清洗服务返回的因子条目归一为注册表口径"""
+    sources = item.get("data_source") or item.get("data_sources")
+    if isinstance(sources, list):
+        sources = ",".join(str(s) for s in sources) or None
+    return {
+        "code": item.get("code") or item.get("factor_code"),
+        "name": item.get("name") or "",
+        "category": item.get("category"),
+        "frequency": item.get("frequency"),
+        "description": item.get("description"),
+        "formula": item.get("formula"),
+        "data_source": sources,
+    }
+
+
+async def fetch_factors(
+    service: CleanerService,
+    category: str | None = None,
+    search: str | None = None,
+) -> list[dict]:
+    """从清洗服务拉取因子列表（受保护接口，需 key）
+
+    data-cleaner 的 GET /api/v1/factor 支持 category / search 过滤，但不支持分页，
+    故过滤交由远端、分页在本层做。
+    """
+    query = urlencode({k: v for k, v in (("category", category), ("search", search)) if v})
+    path = f"/api/v1/factor?{query}" if query else "/api/v1/factor"
+    data = await _get_json(service.base_url, path, service.api_key)
     return data if isinstance(data, list) else []
+
+
+async def list_remote_factors(
+    db: AsyncSession,
+    service: CleanerService,
+    category: str | None = None,
+    search: str | None = None,
+    page: int = 1,
+    page_size: int = 10,
+) -> dict:
+    """分页列出清洗服务的因子库，并标注本地是否已入库。"""
+    remote = await fetch_factors(service, category=category, search=search)
+    items = [_normalize_factor(i) for i in remote]
+    items = [i for i in items if i["code"]]
+
+    # 叠加本地 factor_registry 状态，避免重复导入的困惑
+    reg = await list_factors(db, service_code=service.service_code)
+    state = {r.factor_code: r.is_enabled for r in reg}
+    for it in items:
+        it["imported"] = it["code"] in state
+        it["is_enabled"] = bool(state.get(it["code"]))
+
+    total = len(items)
+    page = max(page, 1)
+    start = (page - 1) * page_size
+    return {
+        "items": items[start : start + page_size],
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+    }
+
+
+async def import_factors(
+    db: AsyncSession,
+    service: CleanerService,
+    factor_codes: list[str] | None = None,
+    is_enabled: bool = True,
+) -> dict:
+    """把勾选的因子写入 factor_registry（幂等 upsert）。
+
+    factor_codes 为空表示全量导入。返回 { created, updated, total }。
+    """
+    remote = await fetch_factors(service)
+    pick = set(factor_codes or [])
+    chosen = []
+    for item in remote:
+        meta = _normalize_factor(item)
+        if not meta["code"]:
+            continue
+        if not pick or meta["code"] in pick:
+            chosen.append((meta, item))
+
+    now = datetime.now()
+    created = updated = 0
+    for meta, item in chosen:
+        existing = (
+            await db.execute(
+                select(FactorRegistry).where(
+                    FactorRegistry.service_code == service.service_code,
+                    FactorRegistry.factor_code == meta["code"],
+                )
+            )
+        ).scalar_one_or_none()
+
+        if existing:
+            existing.name = meta["name"] or existing.name
+            existing.category = meta["category"]
+            existing.frequency = meta["frequency"]
+            existing.description = meta["description"]
+            existing.formula = meta["formula"]
+            existing.data_source = meta["data_source"]
+            existing.is_enabled = is_enabled
+            existing.last_sync = now
+            existing.raw = item
+            updated += 1
+        else:
+            db.add(
+                FactorRegistry(
+                    service_code=service.service_code,
+                    factor_code=meta["code"],
+                    name=meta["name"] or meta["code"],
+                    category=meta["category"],
+                    frequency=meta["frequency"],
+                    description=meta["description"],
+                    formula=meta["formula"],
+                    data_source=meta["data_source"],
+                    is_enabled=is_enabled,
+                    last_sync=now,
+                    raw=item,
+                )
+            )
+            created += 1
+
+    await db.commit()
+    return {"created": created, "updated": updated, "total": created + updated}
 
 
 async def sync_factors(db: AsyncSession, service: CleanerService) -> int:

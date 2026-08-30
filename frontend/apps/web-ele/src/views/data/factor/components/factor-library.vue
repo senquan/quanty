@@ -74,6 +74,8 @@ const categoryOptions = [
   { key: 'value', label: '价值分红' },
   { key: 'growth', label: '财务成长' },
   { key: 'sentiment', label: '情绪资金' },
+  { key: 'technical', label: '技术指标' },
+  { key: 'custom', label: '自定义' },
 ];
 
 const aiTemplates: { label: string; category: FactorCategory }[] = [

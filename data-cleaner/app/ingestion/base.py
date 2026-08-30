@@ -26,4 +26,7 @@ class BaseSource(ABC):
         ...
 
     def _to_dataframe(self, rows: list[RawBar]) -> pd.DataFrame:
+        if not rows:
+            # 空结果也保持 schema 一致，便于下游 raw.empty 判断与列访问
+            return pd.DataFrame(columns=list(RawBar.model_fields))
         return pd.DataFrame([r.model_dump(mode="json") for r in rows])

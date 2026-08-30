@@ -33,6 +33,35 @@ def pg_symbols() -> set:
         return set(r[0] for r in c.execute(text("SELECT DISTINCT symbol FROM factor.raw_bars")))
 
 
+def gap_symbols(target_date: str) -> list[str]:
+    """返回最新日期早于 target_date 的标的（即缺某一天数据的）。"""
+    from sqlalchemy import text
+
+    from app.core.config import settings
+
+    url = settings.DATABASE_URL.replace("+asyncpg", "+psycopg2")
+    eng = create_engine(url, future=True)
+    sql = """
+        SELECT symbol FROM factor.raw_bars
+        GROUP BY symbol
+        HAVING MAX(timestamp)::date < DATE :d
+        ORDER BY symbol
+    """
+    with eng.connect() as c:
+        return [r[0] for r in c.execute(text(sql), {"d": target_date})]
+
+
+def market_latest_date() -> str:
+    from sqlalchemy import text
+
+    from app.core.config import settings
+
+    url = settings.DATABASE_URL.replace("+asyncpg", "+psycopg2")
+    eng = create_engine(url, future=True)
+    with eng.connect() as c:
+        return str(c.execute(text("SELECT MAX(timestamp)::date FROM factor.raw_bars")).scalar())
+
+
 def main():
     recompute = "--all" in sys.argv
     if recompute:
@@ -48,10 +77,19 @@ def main():
             logger.error("缺少 data/missing_symbols.json，请加 --all 重算")
             return
 
-    logger.info(f"=== 缺口补回填开始 {dt.datetime.now()} missing={len(missing)} ===")
+    # 1) 完全无数据的标的：全量补历史
+    logger.info(f"=== 缺史补回填开始 {dt.datetime.now()} missing={len(missing)} ===")
     summary = b.backfill_universe(source="alphafeed", symbols=missing, full=True)
-    logger.info(f"=== 缺口补回填结束 {dt.datetime.now()} ===")
+    logger.info(f"=== 缺史补回填结束 {dt.datetime.now()} ===")
     logger.info(str(summary))
+
+    # 2) 有历史但最新日期落后于市场最新交易日的标的：增量补齐
+    target = market_latest_date()
+    gap = gap_symbols(target)
+    logger.info(f"=== 日期缺口补齐开始 {dt.datetime.now()} target={target} gap={len(gap)} ===")
+    gap_summary = b.backfill_universe(source="alphafeed", symbols=gap, full=False)
+    logger.info(f"=== 日期缺口补齐结束 {dt.datetime.now()} ===")
+    logger.info(str(gap_summary))
 
     # 刷新缺口清单
     try:
@@ -59,7 +97,7 @@ def main():
         have = pg_symbols()
         rest = [s for s in uni if s not in have]
         json.dump(rest, open("data/missing_symbols.json", "w"))
-        logger.info(f"剩余缺口={len(rest)}")
+        logger.info(f"剩余缺史={len(rest)} | 剩余日期缺口={len(gap_symbols(market_latest_date()))}")
     except Exception as e:  # noqa: BLE001
         logger.warning(f"刷新缺口失败: {e}")
 

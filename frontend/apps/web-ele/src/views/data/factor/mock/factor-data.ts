@@ -4,6 +4,7 @@ import type {
   Factor,
   FactorCategory,
 } from '../types';
+import { gradeIC, gradeIR, gradeSharpe } from '../grading';
 
 // Standard 12-month dates
 export const GLOBAL_DATES = [
@@ -55,6 +56,7 @@ function getCategoryDescription(category: FactorCategory, name: string): string 
     value: `${name}因子利用长期经典的价值投资模型，评估股票估值性价比及高分红率，侧重确定性与估值安全边际。`,
     growth: `${name}因子反映企业基本面的扩张和成长潜力，利用核心财务数据同比/环比增速指标来寻找高成长型个股。`,
     sentiment: `${name}因子结合资金流入流出、多空比率及散户贴吧讨论情绪，追踪短线资金博弈热度并识别超买超卖情绪。`,
+    technical: `${name}因子基于均线、动量振荡与布林通道等技术形态刻画价格趋势强弱与超买超卖状态。`,
     custom: `${name}因子是研究员自定义编写的高级量化计算因子，旨在探索特殊市场结构下的非线性超额收益特征。`,
   };
   return map[category] || map.custom;
@@ -258,6 +260,10 @@ export function generateFactorPerformance(
     winRate: Number(winRate.toFixed(3)),
     maxDrawdown: Number(maxDrawdown.toFixed(3)),
     sharpeRatio: Number(sharpeRatio.toFixed(2)),
+    // 分级评分沿用与真实数据一致的规则（../grading）
+    icRank: gradeIC(icMean).score,
+    irRank: gradeIR(ir).score,
+    sharpeRank: gradeSharpe(sharpeRatio).score,
     dates: GLOBAL_DATES,
     icSeries,
     longReturns,

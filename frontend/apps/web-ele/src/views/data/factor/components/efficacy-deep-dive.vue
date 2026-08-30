@@ -3,7 +3,7 @@ import { computed, onMounted, ref, watch } from 'vue';
 
 import { EchartsUI, useEcharts } from '@vben/plugins/echarts';
 
-import { ElCard, ElCol, ElDescriptions, ElDescriptionsItem, ElOption, ElRow, ElSelect, ElTabPane, ElTabs, ElTag } from 'element-plus';
+import { ElCard, ElCol, ElDescriptions, ElDescriptionsItem, ElEmpty, ElOption, ElRow, ElSelect, ElTabPane, ElTabs, ElTag } from 'element-plus';
 
 import type { Factor } from '../types';
 
@@ -34,15 +34,20 @@ const selectedFactorId = computed({
   },
 });
 
+/** 真实接口目前只提供因子定义与效能指标，净值/IC 序列为空 */
+const hasSeries = computed(
+  () => (props.selectedFactor?.longReturns?.length ?? 0) > 0,
+);
+
 const totalLong = computed(() => {
-  if (!props.selectedFactor) return 0;
-  const arr = props.selectedFactor.longReturns;
-  return ((arr[arr.length - 1]! / 100) - 1) * 100;
+  const arr = props.selectedFactor?.longReturns ?? [];
+  if (arr.length === 0) return 0;
+  return (arr[arr.length - 1]! / 100 - 1) * 100;
 });
 const totalBench = computed(() => {
-  if (!props.selectedFactor) return 0;
-  const arr = props.selectedFactor.benchmarkReturns;
-  return ((arr[arr.length - 1]! / 100) - 1) * 100;
+  const arr = props.selectedFactor?.benchmarkReturns ?? [];
+  if (arr.length === 0) return 0;
+  return (arr[arr.length - 1]! / 100 - 1) * 100;
 });
 const totalExcess = computed(() => totalLong.value - totalBench.value);
 
@@ -126,6 +131,12 @@ function buildIcOptions(factor: Factor) {
 
 function renderCharts() {
   if (!props.selectedFactor) return;
+  // 无序列数据时清空图表，改由模板中的空状态提示承接
+  if (!hasSeries.value) {
+    renderReturns({ series: [] } as any);
+    renderIcHist({ series: [] } as any);
+    return;
+  }
   renderReturns(buildReturnsOptions(props.selectedFactor) as any);
   renderIcHist(buildIcOptions(props.selectedFactor) as any);
 }
@@ -163,7 +174,12 @@ watch(() => props.selectedFactor, renderCharts);
           <ElRow :gutter="16">
             <ElCol :span="17">
               <ElCard shadow="never" header="多头/空头/基准 累计收益曲线">
-                <EchartsUI ref="returnsChartRef" height="350px" />
+                <ElEmpty
+                  v-if="!hasSeries"
+                  description="清洗服务暂未提供净值时间序列，仅展示效能指标"
+                  :image-size="70"
+                />
+                <EchartsUI v-else ref="returnsChartRef" height="350px" />
               </ElCard>
             </ElCol>
             <ElCol :span="7">
@@ -260,7 +276,12 @@ watch(() => props.selectedFactor, renderCharts);
           </ElRow>
 
           <ElCard shadow="never" header="月度 IC 走势分布">
-            <EchartsUI ref="icHistChartRef" height="300px" />
+            <ElEmpty
+              v-if="!hasSeries"
+              description="暂无 IC 序列（需先在清洗服务侧完成因子评估）"
+              :image-size="70"
+            />
+            <EchartsUI v-else ref="icHistChartRef" height="300px" />
           </ElCard>
         </ElTabPane>
 

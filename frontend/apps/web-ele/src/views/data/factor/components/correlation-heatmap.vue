@@ -12,7 +12,7 @@ import {
 } from 'element-plus';
 
 import type { Factor } from '../types';
-import { calculateCorrelationMatrix } from '../mock/factor-data';
+import { factorService } from '../factor-service';
 
 const props = defineProps<{
   factors: Factor[];
@@ -24,12 +24,15 @@ const hoveredCell = ref<{ x: string; y: string; val: number } | null>(null);
 const heatmapChartRef = ref();
 const { renderEcharts: renderHeatmap } = useEcharts(heatmapChartRef);
 
-// Initialize with first 6 factors
+// 初始化：优先选标准类别因子（清洗服务的因子值库按类别落盘，
+// 未归类因子没有因子值，纳入会导致相关性计算失败）
 watch(
   () => props.factors,
   (factors) => {
     if (factors.length > 0 && selectedCodes.value.length === 0) {
-      selectedCodes.value = factors.slice(0, 6).map((f) => f.code);
+      const standard = factors.filter((f) => f.category !== 'custom');
+      const pool = standard.length >= 2 ? standard : factors;
+      selectedCodes.value = pool.slice(0, 6).map((f) => f.code);
     }
   },
   { immediate: true },
@@ -39,9 +42,35 @@ const activeFactors = computed(() =>
   props.factors.filter((f) => selectedCodes.value.includes(f.code)),
 );
 
-const correlationMatrix = computed(() =>
-  calculateCorrelationMatrix(activeFactors.value),
-);
+/** 相关性矩阵改为异步从清洗服务读取（基于已落库的因子值） */
+const correlationMatrix = ref<Record<string, Record<string, number>>>({});
+const corrLoading = ref(false);
+const corrError = ref('');
+/** 无因子值、已被服务端跳过的因子 */
+const missingCodes = ref<string[]>([]);
+
+async function loadCorrelation() {
+  const codes = activeFactors.value.map((f) => f.code);
+  if (codes.length < 2) {
+    correlationMatrix.value = {};
+    missingCodes.value = [];
+    corrError.value = '';
+    return;
+  }
+  corrLoading.value = true;
+  corrError.value = '';
+  try {
+    const { matrix, missing } = await factorService.getCorrelationMatrix(codes);
+    correlationMatrix.value = matrix;
+    missingCodes.value = missing;
+  } catch (e: any) {
+    correlationMatrix.value = {};
+    missingCodes.value = [];
+    corrError.value = `相关性计算失败：${e?.msg ?? e?.message ?? e}`;
+  } finally {
+    corrLoading.value = false;
+  }
+}
 
 const highCollPairs = computed(() => {
   const pairs: { f1: string; f2: string; val: number }[] = [];
@@ -133,8 +162,9 @@ function buildHeatmapOptions() {
   };
 }
 
-function renderChart() {
+async function renderChart() {
   if (activeFactors.value.length < 2) return;
+  await loadCorrelation();
   renderHeatmap(buildHeatmapOptions() as any);
 
   // Attach hover listener for diagnostics panel
@@ -221,7 +251,26 @@ watch(selectedCodes, renderChart, { deep: true });
 
       <!-- Center: heatmap -->
       <ElCol :span="12">
-        <EchartsUI ref="heatmapChartRef" height="420px" />
+        <ElAlert
+          v-if="corrError"
+          :title="corrError"
+          type="error"
+          :closable="false"
+          show-icon
+          class="mb-2"
+        />
+        <ElAlert
+          v-if="missingCodes.length > 0"
+          :title="`${missingCodes.length} 个因子尚无因子值，已跳过：${missingCodes.join('、')}`"
+          description="这些因子未参与因子库计算（多为新建的自定义因子），需先在清洗服务侧完成计算落盘。"
+          type="warning"
+          :closable="false"
+          show-icon
+          class="mb-2"
+        />
+        <div v-loading="corrLoading">
+          <EchartsUI ref="heatmapChartRef" height="420px" />
+        </div>
       </ElCol>
 
       <!-- Right: diagnostics -->

@@ -12,7 +12,7 @@ import EfficacyDeepDive from './components/efficacy-deep-dive.vue';
 import FactorEditorModal from './components/factor-editor-modal.vue';
 import FactorLibrary from './components/factor-library.vue';
 import RegistryLibrary from './components/registry-library.vue';
-import { factorService } from './mock/factor-service';
+import { factorService } from './factor-service';
 
 // Global state
 const factors = ref<Factor[]>([]);

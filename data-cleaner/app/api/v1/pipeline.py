@@ -80,11 +80,17 @@ async def run_default_pipeline(
         cleaned, report = _pipeline.run(raw)
 
         date = cleaned["timestamp"].max().strftime("%Y-%m-%d")
-        for category in {f["category"] for f in list_factors()}:
-            factor_df = cleaned[["symbol", "timestamp"]].copy()
-            for meta in list_factors(category):
-                factor_df[meta["code"]] = compute_factor(meta["code"], cleaned).values
-            parquet_store.save(category, date, factor_df.set_index("timestamp"))
+        # 只取最新一天：parquet 按「日期截面」组织（index=symbol），
+        # 用 save_cross_section 合并写入，避免覆盖同日其它标的
+        latest = cleaned[
+            pd.to_datetime(cleaned["timestamp"]).dt.strftime("%Y-%m-%d") == date
+        ]
+        categories = sorted({f["category"] for f in list_factors()})
+        for category in categories:
+            codes = [meta["code"] for meta in list_factors(category)]
+            xs = latest.set_index("symbol")[codes]
+            xs = xs[~xs.index.duplicated(keep="last")]
+            parquet_store.save_cross_section(category, date, xs)
 
         _last_report = {**report, "date": date}
 
@@ -93,18 +99,18 @@ async def run_default_pipeline(
             from app.storage import cache
 
             await cache.publish_status(_last_report)
-            for category in {f["category"] for f in list_factors()}:
-                df = parquet_store.load(date, category)
-                if df is None:
+            for category in categories:
+                # 注意签名：load(category, date)；截面 index 为 symbol
+                df = parquet_store.load(category, date)
+                if df is None or symbol not in df.index:
                     continue
-                # 取最后一根 K 线的因子值（行索引是 timestamp，symbol 为列之一）
-                last_row = df.iloc[-1]
+                row = df.loc[symbol]
                 for code in df.columns:
-                    if code in ("symbol",):
-                        continue
-                    val = last_row[code]
+                    val = row[code]
                     if pd.notna(val):
-                        await cache.cache_factor_latest(code, [{"symbol": code, "value": float(val)}])
+                        await cache.cache_factor_latest(
+                            code, [{"symbol": symbol, "value": float(val)}]
+                        )
         except Exception as e:
             logger.warning(f"Redis 缓存刷新失败: {e}")
 
