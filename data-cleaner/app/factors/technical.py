@@ -78,6 +78,26 @@ class MacdHist(Factor):
 
 
 @register
+class MacdCross(Factor):
+    code = "TECH_MACD_CROSS"
+    name = "MACD 金叉"
+    category = "technical"
+    frequency = "Daily"
+    data_sources = ["adj_close"]
+
+    def compute(self, df):
+        def _cross(g):
+            ema12 = g["adj_close"].ewm(span=12, adjust=False).mean()
+            ema26 = g["adj_close"].ewm(span=26, adjust=False).mean()
+            dif = ema12 - ema26
+            dea = dif.ewm(span=9, adjust=False).mean()
+            cross = (dif > dea) & (dif.shift(1) <= dea.shift(1))
+            return cross.astype(float)
+
+        return group_apply(df, "symbol", _cross)
+
+
+@register
 class BollingerPosition(Factor):
     code = "TECH_BB_POS"
     name = "布林带位置"

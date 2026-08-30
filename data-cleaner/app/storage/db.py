@@ -15,6 +15,21 @@ from app.core.config import settings
 engine = create_async_engine(settings.DATABASE_URL, echo=False, future=True)
 async_session = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
+# 后台线程（流水线/定时任务/因子策略计算）使用的独立引擎。
+# 与主请求循环（engine）隔离，避免 asyncpg 连接池被绑到后台 loop 上，
+# 导致 API 请求报 "attached to a different loop"。
+engine_bg = create_async_engine(settings.DATABASE_URL, echo=False, future=True)
+async_session_bg = async_sessionmaker(engine_bg, class_=AsyncSession, expire_on_commit=False)
+
+# 当前 session 工厂：默认主引擎（API 请求循环）；run_async 执行期间临时切到后台引擎。
+_session_factory = async_session
+
+
+def current_session():
+    """返回当前生效的 session 实例（主循环 / 后台循环切换）。"""
+    return _session_factory()
+
+
 # asyncpg 的连接池绑定创建它的事件循环：若每次调用都新建 loop 再关闭，
 # 池里的连接会残留在已关闭的 loop 上，后续请求报
 # "another operation is in progress"。故按线程缓存并复用同一个 loop。
@@ -25,23 +40,29 @@ _LOOPS_LOCK = threading.Lock()
 def run_async(coro) -> Any:
     """在「本线程固定的事件循环」中执行协程。
 
-    同步任务（因子构建/评估等，常跑在线程池里）调用本模块的异步仓储时，
-    一律走这里，避免反复新建事件循环导致 asyncpg 连接失效。
+    同步任务（因子构建/评估/策略回测等，常跑在线程池里）调用本模块的异步仓储时，
+    一律走这里；执行期间把 session 工厂切到后台引擎，避免污染主请求循环。
     """
+    global _session_factory
     tid = threading.get_ident()
     with _LOOPS_LOCK:
         loop = _LOOPS.get(tid)
         if loop is None or loop.is_closed():
             loop = asyncio.new_event_loop()
             _LOOPS[tid] = loop
-    return loop.run_until_complete(coro)
+    prev = _session_factory
+    _session_factory = async_session_bg
+    try:
+        return loop.run_until_complete(coro)
+    finally:
+        _session_factory = prev
 
 
 async def log_pipeline_run(
     rows_in: int, rows_out: int, report: dict, status: str = "success"
 ) -> None:
     """写入一次流水线运行记录"""
-    async with async_session() as session:
+    async with current_session() as session:
         await session.execute(
             text(
                 """
@@ -57,7 +78,7 @@ async def log_pipeline_run(
 
 async def get_last_pipeline_run() -> dict | None:
     """返回最近一次流水线运行记录（供 /qos 使用），无记录返回 None"""
-    async with async_session() as session:
+    async with current_session() as session:
         row = (
             await session.execute(
                 text(
@@ -134,7 +155,7 @@ async def apply_migrations() -> None:
 
 async def upsert_factor_definition(meta: dict, author: str = "system") -> None:
     """插入或更新因子定义（按 code 去重）"""
-    async with async_session() as session:
+    async with current_session() as session:
         await session.execute(
             text(
                 """
@@ -168,7 +189,7 @@ async def upsert_factor_definition(meta: dict, author: str = "system") -> None:
 
 async def delete_factor_definition(code: str, author: str) -> bool:
     """删除因子定义；仅允许作者为 user 的自定义因子，返回是否删除成功"""
-    async with async_session() as session:
+    async with current_session() as session:
         res = await session.execute(
             text(
                 """
@@ -184,7 +205,7 @@ async def delete_factor_definition(code: str, author: str) -> bool:
 
 async def get_factor_definition(code: str) -> dict | None:
     """按 code 读取单个因子定义，不存在返回 None"""
-    async with async_session() as session:
+    async with current_session() as session:
         row = await session.execute(
             text(
                 """
@@ -201,7 +222,7 @@ async def get_factor_definition(code: str) -> dict | None:
 
 async def list_factor_definitions() -> list[dict]:
     """读取全部因子定义元数据"""
-    async with async_session() as session:
+    async with current_session() as session:
         rows = await session.execute(
             text(
                 """
@@ -226,7 +247,7 @@ async def save_factor_metrics(code: str, as_of: str, metrics: dict) -> None:
         as_of_date = as_of.date()
     else:
         as_of_date = as_of  # 已是 date
-    async with async_session() as session:
+    async with current_session() as session:
         await session.execute(
             text(
                 """
@@ -255,7 +276,7 @@ async def save_factor_metrics(code: str, as_of: str, metrics: dict) -> None:
 
 
 async def get_factor_metrics(code: str) -> list[dict]:
-    async with async_session() as session:
+    async with current_session() as session:
         rows = await session.execute(
             text(
                 "SELECT * FROM factor.metrics WHERE factor_code = :code ORDER BY as_of_date DESC"
@@ -270,7 +291,7 @@ async def list_latest_factor_metrics() -> dict[str, dict]:
 
     供因子列表批量挂载指标使用，避免逐因子查询造成的 N+1 慢请求。
     """
-    async with async_session() as session:
+    async with current_session() as session:
         rows = await session.execute(
             text(
                 """

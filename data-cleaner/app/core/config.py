@@ -38,6 +38,10 @@ class Settings(BaseSettings):
     PORT: int = 8100
     TZ: str = "Asia/Shanghai"
 
+    # 主后端地址与策略内部下单令牌（模拟盘调仓时调用主后端内部端点）
+    BACKEND_BASE_URL: str = "http://localhost:8000"
+    STRATEGY_INTERNAL_TOKEN: str = ""
+
     # ---- 网关接入认证（阶段 A：供主后端 registry 管理）----
     # 多个 key 用逗号分隔；主后端在 registry 中保存对应 key，用于 QoS 轮询 / 因子拉取。
     # 留空表示关闭认证（开发期友好，生产务必配置）。

@@ -59,3 +59,7 @@ docs/screen
 # Test
 tests/
 test_*
+
+# AI temp
+*.txt
+_t_*.py

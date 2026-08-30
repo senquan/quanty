@@ -131,6 +131,35 @@ async def _heartbeat_job() -> None:
     await cache.publish_status({"status": "alive", "ts": datetime.now().isoformat()})
 
 
+async def _industry_refresh_job() -> None:
+    """每周六刷新行业分类缓存（供行业中性化）。"""
+    from app.industry import store as industry_store
+
+    logger.info("定时任务启动: 行业分类刷新", extra={"task": "scheduled_industry"})
+    try:
+        import asyncio
+
+        summary = await asyncio.get_event_loop().run_in_executor(
+            None, industry_store.refresh_industries
+        )
+        logger.info(
+            f"行业分类刷新完成: {summary.get('count')} 条，来源 {summary.get('source')}",
+            extra={"task": "scheduled_industry", **summary},
+        )
+    except Exception as e:  # 不阻断调度器
+        logger.error(f"行业分类刷新失败: {e}", extra={"task": "scheduled_industry"})
+
+
+async def _strategy_rebalance_job() -> None:
+    """交易时段每 15 分钟扫描启用策略，到点则调仓（模拟盘自动下单）。"""
+    from app.strategy import rebalance as rebalance_task
+
+    try:
+        await rebalance_task.scan_and_rebalance()
+    except Exception as e:  # 不阻断调度器
+        logger.error(f"策略调仓扫描失败: {e}", extra={"task": "scheduled_rebalance"})
+
+
 def register_jobs() -> None:
     # 每日盘后流水线：拉数据 → 因子更新 → 效能评估（顺序执行）
     # max_instances=1 + coalesce：任务耗时长（全市场增量可达数小时），
@@ -179,6 +208,44 @@ def register_jobs() -> None:
         id="heartbeat",
         replace_existing=True,
     )
+    scheduler.add_job(
+        _industry_refresh_job,
+        trigger="cron",
+        day_of_week="sat",
+        hour=9,
+        minute=30,
+        id="industry_refresh",
+        misfire_grace_time=3600,
+        max_instances=1,
+        coalesce=True,
+        replace_existing=True,
+    )
+    scheduler.add_job(
+        _strategy_rebalance_job,
+        trigger="cron",
+        hour="9-15",
+        minute="*/15",
+        day_of_week="mon-fri",
+        id="strategy_rebalance",
+        misfire_grace_time=600,
+        max_instances=1,
+        coalesce=True,
+        replace_existing=True,
+    )
+    # 启动后若行业表为空，立即补刷一次（避免中性化退化/无数据）
+    try:
+        from datetime import timedelta
+
+        from apscheduler.triggers.date import DateTrigger
+
+        scheduler.add_job(
+            _industry_refresh_job,
+            trigger=DateTrigger(run_date=datetime.now() + timedelta(seconds=20)),
+            id="industry_refresh_bootstrap",
+            replace_existing=True,
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"行业刷新启动任务注册失败（可忽略）: {e}")
 
 
 def start_scheduler() -> None:

@@ -18,6 +18,9 @@ class Settings(BaseSettings):
     
     # CORS
     ALLOWED_ORIGINS: str = "http://localhost:3000,http://localhost:5173"
+
+    # 策略内部下单令牌（data-cleaner 调仓任务携带 X-Internal-Token 调用 /trading/orders/internal）
+    STRATEGY_INTERNAL_TOKEN: str = ""
     
     @property
     def allowed_origins_list(self) -> List[str]:

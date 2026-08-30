@@ -239,6 +239,19 @@ ON CONFLICT (code) DO UPDATE SET description = EXCLUDED.description;
 
 INSERT INTO factor.definitions (code, name, category, frequency, formula, data_sources, author, description)
 VALUES (
+    'TECH_MACD_CROSS',
+    'MACD 金叉',
+    'technical',
+    'Daily',
+    '',
+    '["adj_close"]'::jsonb,
+    'system',
+    'MACD金叉：DIF自下而上穿越DEA的当日记为1、其余为0的布尔信号，是经典的短线买入/择时触发点。'
+)
+ON CONFLICT (code) DO UPDATE SET description = EXCLUDED.description;
+
+INSERT INTO factor.definitions (code, name, category, frequency, formula, data_sources, author, description)
+VALUES (
     'TECH_MA_BIAS_20',
     '20日均线乖离率',
     'technical',

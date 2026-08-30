@@ -16,8 +16,11 @@ import {
   ElRow,
   ElTable,
   ElTableColumn,
+  ElTabPane,
+  ElTabs,
 } from 'element-plus';
 
+import FactorStrategyList from './factor/factor-strategy-list.vue';
 import { deleteStrategyApi, getStrategiesApi } from '#/api/quant';
 
 const router = useRouter();
@@ -91,67 +94,80 @@ const handleDelete = (row: Strategy) => {
 </script>
 
 <template>
-  <div class="strategy-list p-4">
-    <ElCard shadow="never">
-      <template #header>
-        <ElRow justify="space-between" align="middle">
-          <ElCol>
-            <ElInput
-              v-model="searchKeyword"
-              placeholder="搜索策略名称或描述..."
-              clearable
-              style="width: 280px"
-            >
-              <template #prefix>
-                <Search class="w-4 h-4" />
-              </template>
-            </ElInput>
-            <ElButton type="primary" class="ml-2" @click="handleCreate">
-              <Plus class="w-4 h-4 mr-1" />
-              新建策略
-            </ElButton>
-          </ElCol>
-        </ElRow>
-      </template>
+  <div class="strategy-page p-4">
+    <ElTabs class="quant-strategy-tabs">
+      <!-- 代码策略 -->
+      <ElTabPane label="代码策略">
+        <ElCard shadow="never">
+          <template #header>
+            <ElRow justify="space-between" align="middle">
+              <ElCol>
+                <ElInput
+                  v-model="searchKeyword"
+                  placeholder="搜索策略名称或描述..."
+                  clearable
+                  style="width: 280px"
+                >
+                  <template #prefix>
+                    <Search class="w-4 h-4" />
+                  </template>
+                </ElInput>
+                <ElButton type="primary" class="ml-2" @click="handleCreate">
+                  <Plus class="w-4 h-4 mr-1" />
+                  新建策略
+                </ElButton>
+              </ElCol>
+            </ElRow>
+          </template>
 
-      <ElTable v-loading="loading" :data="strategies" stripe empty-text="暂无策略，点击「新建策略」创建">
-        <ElTableColumn prop="name" label="策略名称" min-width="200">
-          <template #default="{ row }">
-            <div>
-              <div class="font-medium">{{ row.name }}</div>
-              <div v-if="row.description" class="text-xs text-gray-400 mt-1">
-                {{ row.description }}
-              </div>
-            </div>
-          </template>
-        </ElTableColumn>
-        <ElTableColumn prop="created_at" label="创建时间" width="170">
-          <template #default="{ row }">
-            {{ formatDateTime(row.created_at) }}
-          </template>
-        </ElTableColumn>
-        <ElTableColumn prop="updated_at" label="更新时间" width="170">
-          <template #default="{ row }">
-            {{ formatDateTime(row.updated_at) }}
-          </template>
-        </ElTableColumn>
-        <ElTableColumn label="操作" width="160" fixed="right">
-          <template #default="{ row }">
-            <ElButton link type="primary" size="small" @click="handleEdit(row)">
-              <Edit class="w-4 h-4 mr-1" />编辑
-            </ElButton>
-            <ElButton link type="danger" size="small" @click="handleDelete(row)">
-              <Trash2 class="w-4 h-4" />
-            </ElButton>
-          </template>
-        </ElTableColumn>
-      </ElTable>
-    </ElCard>
+          <ElTable v-loading="loading" :data="strategies" stripe empty-text="暂无策略，点击「新建策略」创建">
+            <ElTableColumn prop="name" label="策略名称" min-width="200">
+              <template #default="{ row }">
+                <div>
+                  <div class="font-medium">{{ row.name }}</div>
+                  <div v-if="row.description" class="text-xs text-gray-400 mt-1">
+                    {{ row.description }}
+                  </div>
+                </div>
+              </template>
+            </ElTableColumn>
+            <ElTableColumn prop="created_at" label="创建时间" width="170">
+              <template #default="{ row }">
+                {{ formatDateTime(row.created_at) }}
+              </template>
+            </ElTableColumn>
+            <ElTableColumn prop="updated_at" label="更新时间" width="170">
+              <template #default="{ row }">
+                {{ formatDateTime(row.updated_at) }}
+              </template>
+            </ElTableColumn>
+            <ElTableColumn label="操作" width="160" fixed="right">
+              <template #default="{ row }">
+                <ElButton link type="primary" size="small" @click="handleEdit(row)">
+                  <Edit class="w-4 h-4 mr-1" />编辑
+                </ElButton>
+                <ElButton link type="danger" size="small" @click="handleDelete(row)">
+                  <Trash2 class="w-4 h-4" />
+                </ElButton>
+              </template>
+            </ElTableColumn>
+          </ElTable>
+        </ElCard>
+      </ElTabPane>
+
+      <!-- 因子策略 -->
+      <ElTabPane label="因子策略">
+        <FactorStrategyList />
+      </ElTabPane>
+    </ElTabs>
   </div>
 </template>
 
 <style scoped>
-.strategy-list {
+.strategy-page {
   min-height: 100%;
+}
+.quant-strategy-tabs :deep(.el-tabs__header) {
+  margin-bottom: 12px;
 }
 </style>

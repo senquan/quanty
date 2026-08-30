@@ -3,6 +3,10 @@ import type {
   BacktestResult,
   Factor,
   FactorCategory,
+  SelectedStock,
+  StockSelectionParams,
+  StockSelectionPeriod,
+  StockSelectionResult,
 } from '../types';
 import { gradeIC, gradeIR, gradeSharpe } from '../grading';
 
@@ -555,6 +559,268 @@ export function runMultiFactorBacktest(
       beta: Number(beta.toFixed(2)),
       alpha: Number((alphaVal * 100).toFixed(2)),
       turnoverRate: Number((turnoverRatio * 100).toFixed(1)),
+    },
+    factorWeights: weights,
+  };
+}
+
+// ============ 一键组合选股引擎（本地模拟，未接入真实 backend） ============
+/** 模拟股票池（runStockSelection 会按 universe 板块/自选股过滤） */
+export const STOCK_UNIVERSE: { code: string; name: string }[] = [
+  { code: '600519.SH', name: '贵州茅台' },
+  { code: '601318.SH', name: '中国平安' },
+  { code: '600036.SH', name: '招商银行' },
+  { code: '000858.SZ', name: '五粮液' },
+  { code: '601166.SH', name: '兴业银行' },
+  { code: '600276.SH', name: '恒瑞医药' },
+  { code: '000333.SZ', name: '美的集团' },
+  { code: '002594.SZ', name: '比亚迪' },
+  { code: '600900.SH', name: '长江电力' },
+  { code: '601899.SH', name: '紫金矿业' },
+  { code: '000651.SZ', name: '格力电器' },
+  { code: '600030.SH', name: '中信证券' },
+  { code: '601888.SH', name: '中国中免' },
+  { code: '603259.SH', name: '药明康德' },
+  { code: '000002.SZ', name: '万科A' },
+  { code: '600887.SH', name: '伊利股份' },
+  { code: '601012.SH', name: '隆基绿能' },
+  { code: '600309.SH', name: '万华化学' },
+  { code: '002415.SZ', name: '海康威视' },
+  { code: '600009.SH', name: '上海机场' },
+  { code: '601398.SH', name: '工商银行' },
+  { code: '601628.SH', name: '中国人寿' },
+  { code: '600000.SH', name: '浦发银行' },
+  { code: '000001.SZ', name: '平安银行' },
+  { code: '600585.SH', name: '海螺水泥' },
+  { code: '601857.SH', name: '中国石油' },
+  { code: '600028.SH', name: '中国石化' },
+  { code: '601988.SH', name: '中国银行' },
+  { code: '600104.SH', name: '上汽集团' },
+  { code: '000725.SZ', name: '京东方A' },
+  { code: '002475.SZ', name: '立讯精密' },
+  { code: '603288.SH', name: '海天味业' },
+  { code: '600690.SH', name: '海尔智家' },
+  { code: '601668.SH', name: '中国建筑' },
+  { code: '600048.SH', name: '保利发展' },
+  { code: '000063.SZ', name: '中兴通讯' },
+  { code: '601658.SH', name: '邮储银行' },
+  { code: '600438.SH', name: '通威股份' },
+  { code: '002714.SZ', name: '牧原股份' },
+  { code: '600031.SH', name: '三一重工' },
+  { code: '835185.BJ', name: '贝特瑞' },
+  { code: '835368.BJ', name: '连城数控' },
+  { code: '920002.BJ', name: '中科美菱' },
+];
+
+/** 确定性随机：基于字符串种子生成 [0,1) */
+function randFromKeys(...keys: string[]): number {
+  const s = hashString(keys.join('|'));
+  const r = Math.sin(s) * 10_000;
+  return r - Math.floor(r);
+}
+
+/** 个股在某因子上的标准化暴露，范围约 [-1, 1] */
+function stockFactorExposure(stockCode: string, factorCode: string): number {
+  return randFromKeys(stockCode, factorCode) * 2 - 1;
+}
+
+/** 板块 -> 代码前 3 位前缀（与 data-cleaner engine 一致的板块划分） */
+const MOCK_UNIVERSE_BOARDS: Record<string, string[]> = {
+  main: ['600', '601', '603', '605', '000', '001', '002', '003'],
+  cyb: ['300', '301'],
+  kcb: ['688', '689'],
+  bj: ['8', '920'],
+};
+
+function mockInUniverse(
+  code: string,
+  universe: string[],
+  customCodes: string[],
+): boolean {
+  const digits = code.replace(/\D/g, '');
+  // 自选股（跨板块，并集）
+  if (customCodes.length > 0) {
+    const set = new Set(customCodes.map((c) => c.replace(/\D/g, '').slice(0, 6)));
+    if (set.has(digits.slice(0, 6))) return true;
+  }
+  // 板块过滤：未选板块 => 全市场
+  if (!universe || universe.length === 0) return true;
+  let ok = false;
+  for (const u of universe) {
+    const prefixes = MOCK_UNIVERSE_BOARDS[u];
+    if (prefixes && prefixes.some((p) => digits.slice(0, p.length) === p)) {
+      ok = true;
+      break;
+    }
+  }
+  return ok;
+}
+
+export function runStockSelection(
+  params: StockSelectionParams,
+  allFactors: Factor[],
+): StockSelectionResult {
+  const selectedFactors = allFactors.filter((f) =>
+    params.selectedFactorIds.includes(f.id),
+  );
+
+  // 按标的股票池（板块/自选股）过滤候选标的
+  const pool = STOCK_UNIVERSE.filter((s) =>
+    mockInUniverse(s.code, params.universe, params.customCodes || []),
+  );
+
+  const emptyResult: StockSelectionResult = {
+    periods: GLOBAL_DATES.map((date) => ({
+      date,
+      stocks: [],
+      avgScore: 0,
+      avgExpectedReturn: 0,
+    })),
+    metrics: {
+      avgStocks: 0,
+      avgScore: 0,
+      avgExpectedReturn: 0,
+      hitRate: 0,
+      turnover: 0,
+    },
+    factorWeights: {},
+  };
+
+  if (selectedFactors.length === 0 || pool.length === 0) {
+    return emptyResult;
+  }
+
+  // 因子权重（与回测一致的三种加权模型）
+  const weights: Record<string, number> = {};
+  if (params.weightMethod === 'equal') {
+    const w = 1.0 / selectedFactors.length;
+    for (const f of selectedFactors) weights[f.code] = w;
+  } else if (params.weightMethod === 'ic_weighted') {
+    let totalAbsIC = 0;
+    for (const f of selectedFactors) totalAbsIC += Math.abs(f.icMean);
+    if (totalAbsIC === 0) {
+      const w = 1.0 / selectedFactors.length;
+      for (const f of selectedFactors) weights[f.code] = w;
+    } else {
+      for (const f of selectedFactors)
+        weights[f.code] = Math.abs(f.icMean) / totalAbsIC;
+    }
+  } else {
+    const corrMap = calculateCorrelationMatrix(selectedFactors);
+    const scores: Record<string, number> = {};
+    let totalScore = 0;
+    for (const f of selectedFactors) {
+      let penalty = 0;
+      for (const other of selectedFactors) {
+        if (other.code !== f.code) {
+          const correlation = corrMap[f.code]?.[other.code] || 0;
+          if (correlation > 0.4) penalty += correlation * 0.4;
+        }
+      }
+      const finalScore = Math.max(0.1, f.sharpeRatio - penalty);
+      scores[f.code] = finalScore;
+      totalScore += finalScore;
+    }
+    for (const f of selectedFactors) weights[f.code] = scores[f.code]! / totalScore;
+  }
+
+  const topN = Math.max(1, Math.min(params.topN, pool.length));
+  const benchmarkCurve = BENCHMARK_CURVES.CSI300!;
+
+  // 计算每个月的持仓
+  const periods: StockSelectionPeriod[] = [];
+  const selectedCodeSets: string[][] = [];
+
+  for (let i = 0; i < GLOBAL_DATES.length; i++) {
+    // 个股复合得分
+    const scored = pool.map((s) => {
+      let score = 0;
+      for (const f of selectedFactors) {
+        score += weights[f.code]! * stockFactorExposure(s.code, f.code);
+      }
+      return { ...s, score: Number(score.toFixed(4)) };
+    });
+
+    scored.sort((a, b) => b.score - a.score);
+
+    const pickLong = scored.slice(0, topN);
+    const pickShort =
+      params.mode === 'long_short'
+        ? scored.slice(scored.length - topN).reverse()
+        : [];
+
+    const buildStock = (
+      item: { code: string; name: string; score: number },
+      side: 'long' | 'short',
+    ): SelectedStock => {
+      const expectedReturn = Number(
+        (item.score * 2.5 * (side === 'long' ? 1 : -1)).toFixed(2),
+      );
+      return {
+        code: item.code,
+        name: item.name,
+        score: item.score,
+        weight: Number((1 / (side === 'long' ? topN : pickShort.length || 1)).toFixed(4)),
+        expectedReturn,
+        side,
+      };
+    };
+
+    const stocks = [
+      ...pickLong.map((s) => buildStock(s, 'long')),
+      ...pickShort.map((s) => buildStock(s, 'short')),
+    ];
+
+    const avgScore =
+      stocks.reduce((sum, s) => sum + s.score, 0) / (stocks.length || 1);
+    const avgExpectedReturn =
+      stocks.reduce((sum, s) => sum + s.expectedReturn, 0) /
+      (stocks.length || 1);
+
+    periods.push({
+      date: GLOBAL_DATES[i]!,
+      stocks,
+      avgScore: Number(avgScore.toFixed(3)),
+      avgExpectedReturn: Number(avgExpectedReturn.toFixed(2)),
+    });
+    selectedCodeSets.push(pickLong.map((s) => s.code));
+  }
+
+  // 汇总指标
+  const avgScore =
+    periods.reduce((sum, p) => sum + p.avgScore, 0) / periods.length;
+  const avgExpectedReturn =
+    periods.reduce((sum, p) => sum + p.avgExpectedReturn, 0) / periods.length;
+
+  let hitMonths = 0;
+  for (let i = 1; i < periods.length; i++) {
+    const benchMonthly =
+      benchmarkCurve[i]! / benchmarkCurve[i - 1]! - 1;
+    if (periods[i]!.avgExpectedReturn / 100 > benchMonthly) hitMonths++;
+  }
+  const hitRate = Number(((hitMonths / (periods.length - 1 || 1)) * 100).toFixed(1));
+
+  // 平均双边换手率（相邻月份持仓交集）
+  let turnoverSum = 0;
+  for (let i = 1; i < selectedCodeSets.length; i++) {
+    const prev = new Set(selectedCodeSets[i - 1]!);
+    const cur = selectedCodeSets[i]!;
+    let overlap = 0;
+    for (const c of cur) if (prev.has(c)) overlap++;
+    turnoverSum += (1 - overlap / topN) * 2 * 100;
+  }
+  const turnover = Number(
+    (turnoverSum / (selectedCodeSets.length - 1 || 1)).toFixed(1),
+  );
+
+  return {
+    periods,
+    metrics: {
+      avgStocks: params.mode === 'long_short' ? topN * 2 : topN,
+      avgScore: Number(avgScore.toFixed(3)),
+      avgExpectedReturn: Number(avgExpectedReturn.toFixed(2)),
+      hitRate,
+      turnover,
     },
     factorWeights: weights,
   };

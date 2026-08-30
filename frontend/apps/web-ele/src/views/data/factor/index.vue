@@ -12,6 +12,7 @@ import EfficacyDeepDive from './components/efficacy-deep-dive.vue';
 import FactorEditorModal from './components/factor-editor-modal.vue';
 import FactorLibrary from './components/factor-library.vue';
 import RegistryLibrary from './components/registry-library.vue';
+import StockSelectionStudio from './components/stock-selection-studio.vue';
 import { factorService } from './factor-service';
 
 // Global state
@@ -103,6 +104,10 @@ onMounted(loadFactors);
 
       <ElTabPane label="一键组合回测" name="backtest">
         <BacktestStudio :factors="factors" />
+      </ElTabPane>
+
+      <ElTabPane label="一键组合选股" name="selection">
+        <StockSelectionStudio :factors="factors" />
       </ElTabPane>
 
       <ElTabPane label="聚合因子底册" name="registry">

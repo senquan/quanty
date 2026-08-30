@@ -76,3 +76,55 @@ export interface BacktestResult {
   metrics: BacktestMetrics;
   factorWeights: Record<string, number>;
 }
+
+// ---- 一键组合选股 ----
+export interface SelectedStock {
+  code: string;
+  name: string;
+  /** 复合因子得分（加权因子暴露） */
+  score: number;
+  /** 组合内权重 */
+  weight: number;
+  /** 模型预测下期超额收益（%） */
+  expectedReturn: number;
+  side: 'long' | 'short';
+  /** 行业（真实接口返回，模拟引擎为空） */
+  industry?: string;
+}
+
+export interface StockSelectionPeriod {
+  date: string;
+  stocks: SelectedStock[];
+  avgScore: number;
+  avgExpectedReturn: number;
+}
+
+export interface StockSelectionMetrics {
+  avgStocks: number;
+  /** 平均复合得分 */
+  avgScore: number;
+  /** 平均预测月超额收益(%) */
+  avgExpectedReturn: number;
+  /** 命中率：组合预测跑赢基准的月份占比 */
+  hitRate: number;
+  /** 平均双边换手率(%) */
+  turnover: number;
+}
+
+export interface StockSelectionParams {
+  selectedFactorIds: string[];
+  weightMethod: 'equal' | 'ic_weighted' | 'max_sharpe';
+  /** 标的股票池（板块多选，空数组 = 全市场） */
+  universe: ('bj' | 'cyb' | 'kcb' | 'main')[];
+  /** 自选股代码列表（与所选板块取并集，跨板块生效） */
+  customCodes?: string[];
+  /** 多头精选 / 多空对冲 */
+  mode: 'long' | 'long_short';
+  topN: number;
+}
+
+export interface StockSelectionResult {
+  periods: StockSelectionPeriod[];
+  metrics: StockSelectionMetrics;
+  factorWeights: Record<string, number>;
+}

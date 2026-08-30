@@ -32,6 +32,17 @@ const routes: RouteRecordRaw[] = [
         },
       },
       {
+        name: 'QuantFactorStrategyDetail',
+        path: '/quant/strategy/factor-detail',
+        component: () =>
+          import('#/views/quant/strategy/factor/factor-strategy-detail.vue'),
+        meta: {
+          hideInMenu: true,
+          icon: 'lucide:layers',
+          title: $t('page.quant.factorStrategyDetail'),
+        },
+      },
+      {
         name: 'QuantStrategyEdit',
         path: '/quant/strategy/edit',
         component: () => import('#/views/quant/strategy/edit.vue'),

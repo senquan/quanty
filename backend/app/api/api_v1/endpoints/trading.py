@@ -9,7 +9,7 @@
 from typing import List, Optional
 from datetime import datetime
 from pydantic import BaseModel, Field
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Header
 from enum import Enum
 
 from app.services.huatai_trading import (
@@ -18,6 +18,7 @@ from app.services.huatai_trading import (
     get_trading_service, TradingService
 )
 from app.api.api_v1.endpoints.auth import get_current_user
+from app.core.config import settings
 from app.models.user import User
 from app.schemas.response import Response
 
@@ -355,3 +356,85 @@ async def get_risk_settings(
         "max_daily_loss": service.risk_manager.max_daily_loss,
         "min_cash_balance": service.risk_manager.min_cash_balance
     })
+
+
+# ---------------------------------------------------------------------------
+# 内部端点（策略调仓定时任务调用，经 X-Internal-Token 鉴权，不走用户 JWT）
+# ---------------------------------------------------------------------------
+async def verify_internal_token(x_internal_token: str = Header(None)) -> bool:
+    expected = getattr(settings, "STRATEGY_INTERNAL_TOKEN", "")
+    if not expected or x_internal_token != expected:
+        raise HTTPException(status_code=403, detail="内部令牌无效")
+    return True
+
+
+class InternalOrderRequest(BaseModel):
+    symbol: str
+    order_type: str
+    side: str
+    quantity: int
+    price: float | None = None
+    user_id: int | None = None
+
+
+@router.post("/orders/internal", summary="内部下单（策略调仓）")
+async def internal_place_order(
+    payload: InternalOrderRequest,
+    _: bool = Depends(verify_internal_token),
+):
+    """策略调仓专用下单入口：复用模拟撮合与风控，不校验用户会话。"""
+    order_type = OrderType(payload.order_type.upper())
+    side = OrderSide(payload.side.upper())
+    order = Order(
+        order_id=f"INT-{datetime.now().strftime('%Y%m%d%H%M%S%f')}",
+        symbol=payload.symbol,
+        order_type=order_type,
+        side=side,
+        quantity=payload.quantity,
+        price=payload.price,
+    )
+    filled = get_trading_service().place_order(order)
+    if filled is None:
+        return Response.error(code=400, msg=f"下单被拒或失败: {payload.symbol}")
+    symbol = filled.symbol.decode() if isinstance(filled.symbol, bytes) else str(filled.symbol)
+    return Response.success(data={
+        "symbol": symbol,
+        "side": getattr(filled.side, "value", str(filled.side)),
+        "quantity": filled.quantity,
+        "price": float(filled.price) if filled.price is not None else None,
+        "status": getattr(filled.status, "value", str(filled.status)),
+        "message": getattr(filled, "message", "") or "",
+    })
+
+
+@router.get("/account/internal", summary="内部账户查询")
+async def internal_account(_: bool = Depends(verify_internal_token)):
+    service = get_trading_service()
+    acct = service.get_account()
+    return Response.success(data={
+        "cash_balance": acct.cash_balance,
+        "total_asset": acct.total_assets,
+        "market_value": acct.total_assets - acct.cash_balance,
+        "realized_pnl": acct.daily_pnl,
+        "unrealized_pnl": 0.0,
+        "daily_pnl": acct.daily_pnl,
+    })
+
+
+@router.get("/positions/internal", summary="内部持仓查询")
+async def internal_positions(_: bool = Depends(verify_internal_token)):
+    service = get_trading_service()
+    positions = service.get_positions()
+    data = [
+        {
+            "symbol": p.symbol,
+            "side": p.side.value if isinstance(p.side, Enum) else p.side,
+            "quantity": p.quantity,
+            "avg_price": p.avg_price,
+            "market_price": p.market_price,
+            "market_value": p.market_value,
+            "unrealized_pnl": p.unrealized_pnl,
+        }
+        for p in positions
+    ]
+    return Response.success(data=data)
