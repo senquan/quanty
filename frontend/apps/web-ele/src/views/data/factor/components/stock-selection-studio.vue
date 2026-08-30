@@ -15,6 +15,7 @@ import { Play } from '@lucide/vue';
 import {
   ElButton,
   ElCard,
+  ElCheckbox,
   ElCol,
   ElEmpty,
   ElMessage,
@@ -436,12 +437,23 @@ const modeOptions = [
             <div class="col-span-2">
               <span class="text-xs font-bold text-gray-500 block mb-1.5">标的股票池（可多选，未选板块 = 全市场）</span>
               <div class="flex items-center gap-2 flex-wrap">
-                <ElCheckboxGroup v-model="stockPool" size="small" @change="result = null">
-                  <ElCheckbox value="main" border>沪深主板</ElCheckbox>
-                  <ElCheckbox value="cyb" border>创业板</ElCheckbox>
-                  <ElCheckbox value="kcb" border>科创板</ElCheckbox>
-                  <ElCheckbox value="bj" border>北交所</ElCheckbox>
-                </ElCheckboxGroup>
+                <ElSelect
+                  v-model="stockPool"
+                  multiple
+                  collapse-tags
+                  collapse-tags-tooltip
+                  :max-collapse-tags="3"
+                  size="small"
+                  clearable
+                  placeholder="未选板块 = 全市场"
+                  class="min-w-[240px]"
+                  @change="result = null"
+                >
+                  <ElOption value="main" label="沪深主板" />
+                  <ElOption value="cyb" label="创业板" />
+                  <ElOption value="kcb" label="科创板" />
+                  <ElOption value="bj" label="北交所" />
+                </ElSelect>
                 <ElCheckbox v-model="customEnabled" border @change="result = null">自选股</ElCheckbox>
                 <ElInput
                   v-if="customEnabled"

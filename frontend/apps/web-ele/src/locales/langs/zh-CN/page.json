@@ -23,7 +23,8 @@
     "strategy": "策略管理",
     "strategyEdit": "策略编辑",
     "backtest": "回测结果",
-    "trading": "交易管理"
+    "trading": "交易管理",
+    "watchlist": "自选股池"
   },
   "data": {
     "title": "数据中心",

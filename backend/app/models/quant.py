@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Text, DateTime, Float, ForeignKey
+from sqlalchemy import Column, Integer, String, Text, DateTime, Float, ForeignKey, UniqueConstraint
 from sqlalchemy.sql import func
 from sqlalchemy.orm import relationship
 from app.core.database import Base
@@ -34,4 +34,21 @@ class BacktestResult(Base):
     
     # 关系
     # strategy = relationship("Strategy", back_populates="backtest_results")
+
+
+class Watchlist(Base):
+    """用户自选股池（按用户隔离，code 唯一）"""
+
+    __tablename__ = "watchlist"
+    __table_args__ = (
+    UniqueConstraint("user_id", "code", name="uq_watchlist_user_code"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    code = Column(String(32), nullable=False)  # 股票代码，如 600519.SH
+    name = Column(String(128), nullable=True)  # 股票名称（可选）
+    note = Column(Text, nullable=True)  # 用户备注
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 

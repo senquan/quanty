@@ -4,21 +4,14 @@ import type {
   FactorStrategy,
   FactorStrategyConfig,
 } from '#/api/factor-strategy';
-import {
-  createFactorStrategyApi,
-  factorAvailabilityApi,
-  getFactorStrategyApi,
-  runBacktestApi,
-  updateFactorStrategyApi,
-} from '#/api/factor-strategy';
-import { listFactorsApi } from '#/api/factor-library';
 
-import { computed, reactive, ref, watch } from 'vue';
+import { computed, nextTick, reactive, ref, watch } from 'vue';
 import { useRouter } from 'vue-router';
 
-import { RefreshCw, Save, X } from '@lucide/vue';
+import { RefreshCw, Save, Search, X } from '@lucide/vue';
 import {
   ElButton,
+  ElCheckbox,
   ElDialog,
   ElInput,
   ElInputNumber,
@@ -30,27 +23,39 @@ import {
   ElSelect,
   ElSlider,
   ElSwitch,
+  ElTable,
+  ElTableColumn,
   ElTimePicker,
 } from 'element-plus';
+
+import { listFactorsApi } from '#/api/factor-library';
+import {
+  createFactorStrategyApi,
+  factorAvailabilityApi,
+  getFactorStrategyApi,
+  runBacktestApi,
+  updateFactorStrategyApi,
+} from '#/api/factor-strategy';
+import { getWatchlistApi, type WatchlistItem } from '#/api/watchlist';
 
 import {
   categoryTheme,
   defaultConfig,
   neutralizeLabels,
-  rebalanceLabel,
   normalizeUniverse,
+  rebalanceLabel,
   universeSummary,
   weightModeLabels,
 } from './theme';
 
 const props = defineProps<{
-  visible: boolean;
   strategy?: FactorStrategy | null;
+  visible: boolean;
 }>();
 
 const emit = defineEmits<{
-  'update:visible': [v: boolean];
   saved: [];
+  'update:visible': [v: boolean];
 }>();
 
 const router = useRouter();
@@ -62,9 +67,9 @@ const submitting = ref(false);
 const backtesting = ref(false);
 
 const form = reactive<{
-  name: string;
-  description: string;
   config: FactorStrategyConfig;
+  description: string;
+  name: string;
 }>({
   name: '',
   description: '',
@@ -82,7 +87,7 @@ const groupedFactors = computed(() => {
   return Object.entries(map).map(([cat, list]) => ({
     cat,
     theme: categoryTheme(cat),
-    list: list.sort((a, b) => a.code.localeCompare(b.code)),
+    list: list.toSorted((a, b) => a.code.localeCompare(b.code)),
   }));
 });
 
@@ -122,17 +127,69 @@ const customCodesText = computed({
 });
 
 /** 是否启用自选股（与板块取并集；取消勾选即清空 custom_codes） */
-const customEnabled = computed({
-  get: () => (form.config.custom_codes || []).length > 0,
-  set: (v: boolean) => {
-    if (!v) form.config.custom_codes = [];
-  },
+const customEnabled = ref(false);
+watch(customEnabled, (v) => {
+  if (!v) form.config.custom_codes = [];
 });
+
+// ============ 从自选股选择 ============
+const watchlistPickerVisible = ref(false);
+const watchlistLoading = ref(false);
+const watchlistItems = ref<WatchlistItem[]>([]);
+const watchlistSelection = ref<WatchlistItem[]>([]);
+const watchlistSearch = ref('');
+const watchlistTableRef = ref<InstanceType<typeof ElTable>>();
+
+const watchlistFiltered = computed(() => {
+  const kw = watchlistSearch.value.trim().toLowerCase();
+  if (!kw) return watchlistItems.value;
+  return watchlistItems.value.filter(
+    (i) =>
+      i.code.toLowerCase().includes(kw) ||
+      (i.name || '').toLowerCase().includes(kw),
+  );
+});
+
+function openWatchlistPicker() {
+  watchlistPickerVisible.value = true;
+}
+
+async function loadWatchlist() {
+  watchlistLoading.value = true;
+  try {
+    watchlistItems.value = await getWatchlistApi();
+    await nextTick();
+    const current = new Set(form.config.custom_codes || []);
+    for (const item of watchlistItems.value) {
+      if (current.has(item.code)) {
+        watchlistTableRef.value?.toggleRowSelection(item, true);
+      }
+    }
+  } catch {
+    ElMessage.error('加载自选股失败');
+  } finally {
+    watchlistLoading.value = false;
+  }
+}
+
+function onWatchlistSelection(rows: WatchlistItem[]) {
+  watchlistSelection.value = rows;
+}
+
+function applyWatchlistSelection() {
+  const codes = new Set(form.config.custom_codes || []);
+  for (const item of watchlistSelection.value) codes.add(item.code);
+  form.config.custom_codes = [...codes];
+  customEnabled.value = true;
+  watchlistPickerVisible.value = false;
+  ElMessage.success(`已加入 ${codes.size} 只自选股`);
+}
 
 function reset() {
   form.name = '';
   form.description = '';
   form.config = defaultConfig();
+  customEnabled.value = false;
 }
 
 async function loadFactors() {
@@ -162,6 +219,7 @@ async function loadForEdit() {
         ? s.config!.custom_codes
         : [],
     };
+    customEnabled.value = (form.config.custom_codes || []).length > 0;
   } catch {
     ElMessage.error('加载策略详情失败');
   }
@@ -171,7 +229,7 @@ watch(
   () => props.visible,
   async (v) => {
     if (!v) return;
-    if (!factors.value.length) await loadFactors();
+    if (factors.value.length === 0) await loadFactors();
     if (isEdit.value) await loadForEdit();
     else reset();
   },
@@ -179,7 +237,7 @@ watch(
 );
 
 function buildPayload() {
-  const cfg: FactorStrategyConfig = JSON.parse(JSON.stringify(form.config));
+  const cfg: FactorStrategyConfig = structuredClone(form.config);
   if (cfg.weight_mode === 'manual') {
     // 仅保留已选因子的权重，发送原始比例（后端会归一化）
     const w: Record<string, number> = {};
@@ -196,7 +254,7 @@ function buildPayload() {
   };
 }
 
-async function persist(): Promise<number | null> {
+async function persist(): Promise<null | number> {
   if (!form.name.trim()) {
     ElMessage.warning('请填写策略名称');
     return null;
@@ -351,7 +409,7 @@ function close() {
 
         <!-- 已选因子 + 权重 -->
         <div
-          v-if="selectedFactors.length"
+          v-if="selectedFactors.length > 0"
           class="mt-3 rounded-lg bg-gray-50 border border-gray-100 p-3 space-y-2"
         >
           <div class="flex items-center justify-between">
@@ -361,8 +419,9 @@ function close() {
                 v-for="(label, mode) in weightModeLabels"
                 :key="mode"
                 :value="mode"
-                >{{ label }}</ElRadio
-              >
+                >
+                {{ label }}
+            </ElRadio>
             </ElRadioGroup>
           </div>
           <div
@@ -399,16 +458,24 @@ function close() {
         <h3 class="text-sm font-semibold mb-3 text-gray-700">处理与过滤</h3>
         <div class="grid grid-cols-2 gap-3 items-center">
           <div class="col-span-2">
-            <label class="text-xs text-gray-400 whitespace-nowrap block mb-1.5"
-              >标的股票池（可多选，未选板块 = 全市场）</label
-            >
+            <label class="text-xs text-gray-400 whitespace-nowrap block mb-1.5">标的股票池（可多选，未选板块 = 全市场）</label>
             <div class="flex items-center gap-3 flex-wrap">
-              <ElCheckboxGroup v-model="form.config.universe" size="small">
-                <ElCheckbox value="main" border>沪深主板</ElCheckbox>
-                <ElCheckbox value="cyb" border>创业板</ElCheckbox>
-                <ElCheckbox value="kcb" border>科创板</ElCheckbox>
-                <ElCheckbox value="bj" border>北交所</ElCheckbox>
-              </ElCheckboxGroup>
+              <ElSelect
+                v-model="form.config.universe"
+                multiple
+                collapse-tags
+                collapse-tags-tooltip
+                :max-collapse-tags="3"
+                size="small"
+                clearable
+                placeholder="未选板块 = 全市场"
+                class="min-w-[240px]"
+              >
+                <ElOption value="main" label="沪深主板" />
+                <ElOption value="cyb" label="创业板" />
+                <ElOption value="kcb" label="科创板" />
+                <ElOption value="bj" label="北交所" />
+              </ElSelect>
               <ElCheckbox v-model="customEnabled" border>自选股</ElCheckbox>
               <ElInput
                 v-if="customEnabled"
@@ -417,6 +484,14 @@ function close() {
                 class="flex-1 min-w-[220px]"
                 placeholder="输入自选股代码，逗号或空格分隔，如 600519, 000001"
               />
+              <ElButton
+                v-if="customEnabled"
+                size="small"
+                @click="openWatchlistPicker"
+              >
+                <Search class="w-4 h-4 mr-1" />
+                从自选股选择
+              </ElButton>
             </div>
           </div>
           <div>
@@ -426,8 +501,9 @@ function close() {
                 v-for="(label, mode) in neutralizeLabels"
                 :key="mode"
                 :value="mode"
-                >{{ label }}</ElRadio
-              >
+                >
+                {{ label }}
+                </ElRadio>
             </ElRadioGroup>
           </div>
           <div class="flex items-center gap-3">
@@ -546,6 +622,47 @@ function close() {
           保存并回测
         </ElButton>
       </div>
+    </template>
+  </ElDialog>
+
+  <!-- 从自选股选择 -->
+  <ElDialog
+    v-model="watchlistPickerVisible"
+    title="从自选股选择"
+    width="560px"
+    @open="loadWatchlist"
+  >
+    <div class="space-y-2">
+      <ElInput
+        v-model="watchlistSearch"
+        size="small"
+        clearable
+        placeholder="搜索代码或名称"
+      >
+        <template #prefix>
+          <Search class="w-4 h-4" />
+        </template>
+      </ElInput>
+      <ElTable
+        ref="watchlistTableRef"
+        v-loading="watchlistLoading"
+        :data="watchlistFiltered"
+        row-key="id"
+        height="360"
+        @selection-change="onWatchlistSelection"
+      >
+        <ElTableColumn type="selection" width="48" :reserve-selection="true" />
+        <ElTableColumn prop="code" label="代码" width="140">
+          <template #default="{ row }">
+            <span class="font-mono">{{ row.code }}</span>
+          </template>
+        </ElTableColumn>
+        <ElTableColumn prop="name" label="名称" min-width="160" />
+      </ElTable>
+    </div>
+    <template #footer>
+      <ElButton @click="watchlistPickerVisible = false">取消</ElButton>
+      <ElButton type="primary" @click="applyWatchlistSelection">添加所选</ElButton>
     </template>
   </ElDialog>
 </template>

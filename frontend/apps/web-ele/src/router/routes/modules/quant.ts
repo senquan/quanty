@@ -70,6 +70,15 @@ const routes: RouteRecordRaw[] = [
           title: $t('page.quant.trading'),
         },
       },
+      {
+        name: 'QuantWatchlist',
+        path: '/quant/watchlist',
+        component: () => import('#/views/quant/watchlist/index.vue'),
+        meta: {
+          icon: 'lucide:star',
+          title: $t('page.quant.watchlist'),
+        },
+      },
     ],
   },
 ];

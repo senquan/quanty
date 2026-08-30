@@ -77,10 +77,14 @@ export function universeSummary(
 export function normalizeUniverse(u: unknown): UniverseType[] {
   if (Array.isArray(u)) {
     return u.filter(
-      (x): x is UniverseType => x === 'main' || x === 'cyb' || x === 'kcb',
+      (x): x is UniverseType =>
+        x === 'main' || x === 'cyb' || x === 'kcb' || x === 'bj',
     );
   }
-  if (typeof u === 'string' && (u === 'main' || u === 'cyb' || u === 'kcb')) {
+  if (
+    typeof u === 'string' &&
+    (u === 'main' || u === 'cyb' || u === 'kcb' || u === 'bj')
+  ) {
     return [u];
   }
   return [];

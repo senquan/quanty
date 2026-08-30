@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Optional, List, Dict, Any
 from datetime import datetime
 
@@ -60,3 +60,28 @@ class MarketDataResponse(BaseModel):
     data_source: str
     data: List[Dict[str, Any]]
     columns: List[str]
+
+# ============ 自选股 ============
+class WatchlistItemBase(BaseModel):
+    code: str = Field(..., description="股票代码，如 600519.SH")
+    name: Optional[str] = Field(None, description="股票名称（可选）")
+    note: Optional[str] = Field(None, description="用户备注（可选）")
+
+class WatchlistItemCreate(WatchlistItemBase):
+    """新增自选股"""
+
+class WatchlistItemUpdate(BaseModel):
+    name: Optional[str] = None
+    note: Optional[str] = None
+
+class WatchlistItemResponse(WatchlistItemBase):
+    id: int
+    user_id: int
+    created_at: datetime
+    updated_at: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True
+
+class WatchlistBulkCreate(BaseModel):
+    items: List[WatchlistItemBase]
