@@ -3,6 +3,7 @@ export type FactorCategory =
   | 'growth'
   | 'momentum'
   | 'sentiment'
+  | 'size'
   | 'technical'
   | 'value'
   | 'volatility';

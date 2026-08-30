@@ -153,7 +153,14 @@ function buildConfig(): FactorStrategyConfig {
     rebalance: { freq: 'weekly' },
     trade_time: '15:00',
     initial_capital: 1_000_000,
-    filters: { exclude_st: true, min_list_days: 60 },
+    filters: {
+      exclude_st: true,
+      min_list_days: 60,
+      exclude_suspended: true,
+      exclude_limit_up: true,
+      exclude_limit_down: false,
+      min_cap: null,
+    },
     lookback_days: 60,
     universe: stockPool.value,
     custom_codes: customEnabled.value

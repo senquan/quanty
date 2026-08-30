@@ -149,6 +149,7 @@ async def apply_migrations() -> None:
     async with engine.begin() as conn:
         for stmt in stmts:
             await conn.execute(text(stmt))
+    return sql_files
 
 
 # ---- 因子定义 (factor.definitions) ----

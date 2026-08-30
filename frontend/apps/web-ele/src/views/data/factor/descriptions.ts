@@ -61,11 +61,19 @@ export const FACTOR_DESCRIPTIONS: Record<string, string> = {
   INTRADAY_RANGE_20:
     '近20根K线振幅均值：单根K线（高-低）/收盘价 的均值，衡量日内价格波动幅度，与流动性密切相关。',
 
+  // ---------- 规模 size ----------
+  MKT_CAP:
+    '总市值(对数)：对 daily_basic.total_mv 取自然对数，缓解市值右偏，截面 z-score 后即规模因子。小市值溢价显著，常取负号使用。',
+  MKT_CAP_CIRC:
+    '流通市值(对数)：对 daily_basic.circ_mv 取自然对数，剔除限售股的影响，更贴近实际可交易盘子，比总市值更贴合A股真实规模效应。',
+
   // ---------- 情绪 sentiment ----------
   SENT_VOL_RATIO_5:
     '5日量比：5日均量与20日均量之比。大于1表示近期放量、资金关注度提升，是情绪升温的直接信号。',
-  SENT_TURNOVER_20:
-    '20日换手代理：当日成交量相对20日均量的倍数（以成交量近似换手率），放大说明交投活跃、筹码交换加快。',
+  TURNOVER_RATE:
+    '换手率(真实)：成交量/流通股本(%)，来自 daily_basic.turnover_rate，替代旧有的成交量近似代理。放大说明交投活跃、筹码交换加快。',
+  TURNOVER_RATE_F:
+    '自由流通换手率：成交量/自由流通股本(%)，来自 daily_basic.turnover_rate_f，比总换手率更贴近真实交易活跃度。',
   SENT_AMOUNT_RANK:
     '成交额市场分位：当日成交额（量×价）在全市场的百分比排名，越接近1越受资金追捧，常用于识别龙头。',
 

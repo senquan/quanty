@@ -38,5 +38,6 @@ from app.factors.fundamental import *  # noqa: F401,F403,E402
 from app.factors.intraday import *  # noqa: F401,F403,E402
 from app.factors.momentum import *  # noqa: F401,F403,E402
 from app.factors.sentiment import *  # noqa: F401,F403,E402
+from app.factors.size import *  # noqa: F401,F403,E402
 from app.factors.technical import *  # noqa: F401,F403,E402
 from app.factors.volatility import *  # noqa: F401,F403,E402

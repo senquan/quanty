@@ -24,6 +24,57 @@ from app.storage.raw_store import repository
 logger = get_logger(__name__)
 
 
+def _merge_fundamental(panel: pd.DataFrame) -> pd.DataFrame:
+    """把迁移 006 的基础数据合并进清洗后的 panel（symbol × timestamp）。
+
+    - daily_basic：估值/换手/市值，按 (symbol, date) 左连接
+    - finance_reports：成长（rev/eps 同比），按 ann_date 做 as-of 前向填充（防前视）
+    表为空时跳过，保持向后兼容（缺列因子照旧返回 NaN）。
+    """
+    from app.storage import fundamental_store
+
+    if panel.empty:
+        return panel
+    panel = panel.copy()
+    panel["_d"] = panel["timestamp"].dt.normalize()
+
+    start = panel["_d"].min().strftime("%Y-%m-%d")
+    end = panel["_d"].max().strftime("%Y-%m-%d")
+
+    # 1) daily_basic：估值 / 换手 / 市值
+    db = fundamental_store.load_daily_basic(start=start, end=end)
+    if not db.empty:
+        db = db.copy()
+        db["_d"] = pd.to_datetime(db["trade_date"])
+        db = db.rename(columns={"dv_ttm": "div_yield"}).drop(columns=["trade_date"])
+        keep = [
+            "symbol", "_d", "pe_ttm", "pb", "ps_ttm", "div_yield",
+            "turnover_rate", "turnover_rate_f", "total_mv", "circ_mv",
+        ]
+        db = db[[c for c in keep if c in db.columns]]
+        db = db.drop_duplicates(subset=["symbol", "_d"], keep="last")
+        panel = panel.merge(db, on=["symbol", "_d"], how="left")
+
+    # 2) finance_reports：成长同比，按披露日 as-of 前向填充
+    fr = fundamental_store.load_finance_reports()
+    if not fr.empty:
+        fr = fr.copy()
+        fr["ann_date"] = pd.to_datetime(fr["ann_date"])
+        fr = fr.dropna(subset=["ann_date"]).sort_values("ann_date")
+        right = fr[["symbol", "ann_date", "rev_growth_yoy", "eps_growth_yoy"]]
+        left = panel.sort_values("_d")
+        try:
+            panel = pd.merge_asof(
+                left, right, left_on="_d", right_on="ann_date",
+                by="symbol", direction="backward",
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"财报 as-of 合并失败: {e}")
+            panel = left
+
+    return panel.drop(columns=["_d", "ann_date"], errors="ignore")
+
+
 def load_custom_definitions() -> list[dict]:
     """读取 DB 里的自定义因子定义（factor.definitions，带 formula）。
 
@@ -97,6 +148,9 @@ def build_factor_library(
 
     panel = pd.concat(parts, ignore_index=True)
     panel["timestamp"] = pd.to_datetime(panel["timestamp"])
+
+    # 合并基础数据（估值/换手/市值/成长），供 VAL_/GRO_/换手/市值因子使用
+    panel = _merge_fundamental(panel)
 
     # 2) 计算内置因子（因子内部按 symbol 分组，全市场一起算即可）
     metas = list_factors()

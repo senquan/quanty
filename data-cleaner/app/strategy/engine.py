@@ -19,12 +19,20 @@ from app.core.config import settings
 from app.core.logging import get_logger
 from app.industry import store as industry_store
 from app.storage import db
+from app.storage import fundamental_store
 from app.storage.parquet_store import parquet_store
 from app.storage.raw_store import repository
 
 logger = get_logger(__name__)
 
 MIN_CROSS_SECTION = 50
+
+# 涨跌停判定浮点容差（价格近似比较）
+TOL = 1e-6
+
+# daily_basic.total_mv 单位（tushare 为千元）；min_cap 配置以"亿元"表达，
+# 故阈值 = min_cap * 1e5（千元）。若接入 akshare 路径且单位为元需同步调整。
+MV_UNIT_PER_YI = 1e5
 
 
 def _clean(v):
@@ -88,17 +96,48 @@ def load_factor_frames(
     return out
 
 
-def load_price_panel(start: str | None = None, end: str | None = None) -> pd.DataFrame:
-    """读取收盘价面板 DataFrame(index=date:str, columns=symbol)。"""
+def load_price_panel(start: str | None = None, end: str | None = None) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """读取收盘价面板。
+
+    返回 (prices, suspended_bar)：
+    - prices: 前向填充后的收盘价面板（index=date, columns=symbol），缺价补 0；
+      用于盯市，保证净值曲线 / 指标不因缺失而 NaN。
+    - suspended_bar: 与 prices 同形的布尔面板，True 表示该日该标"无 bar"，
+      即停牌 / 未上市（与 trading_status.suspended 合并构成停牌掩码）。
+    """
     raw = repository.load_all(start=start, end=end)
     if raw.empty:
-        return pd.DataFrame()
+        return pd.DataFrame(), pd.DataFrame()
     raw["timestamp"] = pd.to_datetime(raw["timestamp"])
     raw["date"] = raw["timestamp"].dt.strftime("%Y-%m-%d")
     panel = raw.pivot(index="date", columns="symbol", values="close")
+    # 无 bar 即视为停牌/未上市（align 前向填充价但标记停牌，避免"剔除即失踪"）
+    suspended_bar = panel.isna()
     # 前向填充缺失收盘价（某标的当日无数据则沿用上一可得价），再补 0，
     # 避免回测盯市时出现 NaN 导致净值曲线 / 指标异常。
-    return panel.sort_index().ffill().fillna(0.0)
+    prices = panel.sort_index().ffill().fillna(0.0)
+    suspended_bar = suspended_bar.reindex(index=prices.index, columns=prices.columns).fillna(False)
+    return prices, suspended_bar
+
+
+def _panel(
+    long_df: pd.DataFrame,
+    value: str,
+    dates: list[str],
+    symbols: list[str],
+    agg: str = "first",
+    fill_value=None,
+) -> pd.DataFrame:
+    """把 trading_status / daily_basic 长表按 (trade_date, symbol) 透视成宽面板并
+    对齐到给定 dates×symbols 网格。缺失填 fill_value（默认保留 NaN）。"""
+    if long_df is None or long_df.empty:
+        p = pd.DataFrame(index=dates, columns=symbols)
+    else:
+        p = long_df.pivot_table(index="trade_date", columns="symbol", values=value, aggfunc=agg)
+        p = p.reindex(index=dates, columns=symbols)
+    if fill_value is not None:
+        p = p.fillna(fill_value)
+    return p
 
 
 def factor_availability() -> dict[str, bool]:
@@ -279,13 +318,66 @@ def scores_at(
     return acc, z_map
 
 
+def normalize_filters(config: dict) -> dict:
+    """统一 filters 默认值与类型，集中化配置校验，避免调用方散落 .get 默认值。
+
+    接受的键：exclude_st, min_list_days, exclude_suspended, exclude_limit_up,
+    exclude_limit_down, min_cap（亿元）。
+    """
+    f = config.get("filters") or {} if isinstance(config, dict) else {}
+
+    def _bool(v, d):
+        return d if v is None else bool(v)
+
+    def _int(v, d):
+        try:
+            return int(v)
+        except (TypeError, ValueError):
+            return d
+
+    min_cap = f.get("min_cap")
+    if min_cap in (None, ""):
+        min_cap = None
+    else:
+        try:
+            min_cap = float(min_cap)
+        except (TypeError, ValueError):
+            min_cap = None
+    return {
+        "exclude_st": _bool(f.get("exclude_st"), True),
+        "min_list_days": _int(f.get("min_list_days"), 60),
+        "exclude_suspended": _bool(f.get("exclude_suspended"), True),
+        "exclude_limit_up": _bool(f.get("exclude_limit_up"), True),
+        "exclude_limit_down": _bool(f.get("exclude_limit_down"), False),
+        "min_cap": min_cap,
+    }
+
+
 def apply_filters(
     symbols: list[str],
     meta_map: dict,
     as_of: str,
+    prices: pd.Series | None = None,
+    suspended: dict | None = None,
+    limit_up: dict | None = None,
+    limit_down: dict | None = None,
+    total_mv: dict | None = None,
     exclude_st: bool = True,
     min_list_days: int = 60,
+    exclude_suspended: bool = True,
+    exclude_limit_up: bool = True,
+    exclude_limit_down: bool = False,
+    min_cap: float | None = None,
 ) -> list[str]:
+    """可配过滤：在候选标的（已按得分选出）上做交易性剔除。
+
+    - exclude_suspended: 停牌(suspended=True) 剔除
+    - exclude_limit_up:  买入侧，close >= limit_up（涨停）剔除，买不进
+    - exclude_limit_down: 卖出侧语义，close <= limit_down（跌停）剔除（避免接飞刀）
+    - min_cap:           总市值下限（亿元），total_mv < min_cap*1e5(千元) 剔除
+    prices/suspended/limit_up/limit_down/total_mv 均为 as_of 当日、{symbol: 值} 的映射；
+    缺失则该项不生效（兼容 trading_status / daily_basic 尚未刷新的标的）。
+    """
     out = []
     cutoff = None
     if min_list_days and min_list_days > 0:
@@ -295,6 +387,7 @@ def apply_filters(
             ).date()
         except Exception:  # noqa: BLE001
             cutoff = None
+    cap_thresh = (min_cap * MV_UNIT_PER_YI) if min_cap is not None else None
     for s in symbols:
         m = meta_map.get(s, {})
         name = (m.get("name") or "")
@@ -303,6 +396,24 @@ def apply_filters(
         if cutoff is not None:
             ld = m.get("list_date")
             if ld and ld > cutoff:
+                continue
+        if exclude_suspended and suspended and suspended.get(s):
+            continue
+        if exclude_limit_up and limit_up is not None and prices is not None:
+            lu = limit_up.get(s)
+            p = prices.get(s)
+            if lu is not None and p is not None and not pd.isna(lu) and not pd.isna(p) \
+                    and float(p) >= float(lu) - TOL:
+                continue
+        if exclude_limit_down and limit_down is not None and prices is not None:
+            ld = limit_down.get(s)
+            p = prices.get(s)
+            if ld is not None and p is not None and not pd.isna(ld) and not pd.isna(p) \
+                    and float(p) <= float(ld) + TOL:
+                continue
+        if cap_thresh is not None and total_mv is not None:
+            mv = total_mv.get(s)
+            if mv is None or pd.isna(mv) or float(mv) < cap_thresh:
                 continue
         out.append(s)
     return out
@@ -409,7 +520,7 @@ def run_backtest(
     manual_weights = config.get("weights") or {}
     initial_capital = float(config.get("initial_capital", 1_000_000))
     rebalance = config.get("rebalance") or {"freq": "weekly"}
-    filters = config.get("filters") or {}
+    filters = normalize_filters(config)
     lookback = int(config.get("lookback_days", 60))
     universe = _normalize_universe(config.get("universe"))
     custom_codes = config.get("custom_codes") or []
@@ -423,8 +534,8 @@ def run_backtest(
     if not factor_codes:
         return {"error": "所选因子均无因子值，无法回测"}
 
-    # 价格面板与未来收益
-    prices = load_price_panel(start, end)
+    # 价格面板与停牌掩码（缺 bar = 停牌）
+    prices, suspended_bar = load_price_panel(start, end)
     if prices.empty:
         return {"error": "行情为空，无法回测"}
 
@@ -442,6 +553,19 @@ def run_backtest(
 
     schedule = _schedule_dates(all_dates, rebalance)
 
+    # 交易状态 / 市值面板（供过滤与回测成交判定）
+    ts = fundamental_store.load_trading_status(start, end)
+    suspended_ts = _panel(ts, "suspended", all_dates, list(prices.columns), agg="max", fill_value=False).astype(bool)
+    limit_up_ts = _panel(ts, "limit_up", all_dates, list(prices.columns))
+    limit_down_ts = _panel(ts, "limit_down", all_dates, list(prices.columns))
+    db = fundamental_store.load_daily_basic(start, end)
+    mv_ts = _panel(db, "total_mv", all_dates, list(prices.columns))
+    # 停牌掩码：缺 bar（停牌/未上市）与 trading_status.suspended 取并集
+    suspended_all = (
+        suspended_bar.reindex(index=prices.index, columns=prices.columns).fillna(False)
+        | suspended_ts.fillna(False)
+    ).fillna(False)
+
     # 预计算每次调仓的目标持仓
     rebalances: list[dict] = []
     trade_map: dict[str, tuple[list[str], dict]] = {}
@@ -457,10 +581,23 @@ def run_backtest(
             warnings.append(f"{T} 无有效得分，跳过")
             continue
         picked = select_top_n(scores, top_n)
+        susp_row = suspended_all.loc[T] if T in suspended_all.index else None
+        up_row = limit_up_ts.loc[T] if T in limit_up_ts.index else None
+        dn_row = limit_down_ts.loc[T] if T in limit_down_ts.index else None
+        mv_row = mv_ts.loc[T] if T in mv_ts.index else None
         picked = apply_filters(
             picked, meta_map, T,
-            exclude_st=filters.get("exclude_st", True),
-            min_list_days=int(filters.get("min_list_days", 60) or 60),
+            prices=prices.loc[T],
+            suspended=(susp_row.to_dict() if susp_row is not None else {}),
+            limit_up=(up_row.to_dict() if up_row is not None else {}),
+            limit_down=(dn_row.to_dict() if dn_row is not None else {}),
+            total_mv=(mv_row.to_dict() if mv_row is not None else {}),
+            exclude_st=filters["exclude_st"],
+            min_list_days=filters["min_list_days"],
+            exclude_suspended=filters["exclude_suspended"],
+            exclude_limit_up=filters["exclude_limit_up"],
+            exclude_limit_down=filters["exclude_limit_down"],
+            min_cap=filters["min_cap"],
         )
         if not picked:
             warnings.append(f"{T} 过滤后无可用标的，跳过")
@@ -509,21 +646,40 @@ def run_backtest(
         row = prices.loc[d]
         if d in trade_map:
             target, _weights = trade_map[d]
-            # 卖出全部（用当日收盘价近似开盘成交）
-            for s, q in shares.items():
-                p = row.get(s)
-                if p and p > 0:
-                    cash += q * p
-            shares = {}
-            n = len(target)
-            per = cash / n if n else 0.0
-            for s in target:
-                p = row.get(s)
-                if p and p > 0:
-                    q = int(per / p / 100) * 100
-                    if q > 0:
-                        shares[s] = q
-                        cash -= q * p * 1.0003  # 手续费万三
+        up = limit_up_ts.loc[d] if d in limit_up_ts.index else None
+        dn = limit_down_ts.loc[d] if d in limit_down_ts.index else None
+        susp = suspended_all.loc[d] if d in suspended_all.index else None
+        up_d = up.to_dict() if up is not None else {}
+        dn_d = dn.to_dict() if dn is not None else {}
+        susp_d = susp.to_dict() if susp is not None else {}
+        # 卖出：跌停 / 停牌不可卖，保留持仓（提升成交真实度）
+        kept = {}
+        for s, q in shares.items():
+            p = row.get(s)
+            if p and p > 0:
+                ld = dn_d.get(s)
+                if (susp_d.get(s)) or (
+                    ld is not None and not pd.isna(ld) and float(p) <= float(ld) + TOL
+                ):
+                    kept[s] = q
+                    continue
+                cash += q * p
+        shares = kept
+        # 买入目标：涨停 / 停牌不可买，跳过（用当日收盘价近似开盘成交）
+        n = len(target)
+        per = cash / n if n else 0.0
+        for s in target:
+            if susp_d.get(s):
+                continue
+            p = row.get(s)
+            lu = up_d.get(s)
+            if p and p > 0 and not (
+                lu is not None and not pd.isna(lu) and float(p) >= float(lu) - TOL
+            ):
+                q = int(per / p / 100) * 100
+                if q > 0:
+                    shares[s] = shares.get(s, 0) + q
+                    cash -= q * p * 1.0003  # 手续费万三
             traded_value_total += cash + sum(
                 shares[s] * row.get(s, 0) for s in shares
             )
@@ -605,7 +761,7 @@ def compute_target(config: dict, as_of: str | None = None) -> dict:
     neutralize = config.get("neutralize", "industry")
     weight_mode = config.get("weight_mode", "auto_ir")
     manual_weights = config.get("weights") or {}
-    filters = config.get("filters") or {}
+    filters = normalize_filters(config)
     lookback = int(config.get("lookback_days", 60))
     universe = _normalize_universe(config.get("universe"))
     custom_codes = config.get("custom_codes") or []
@@ -638,11 +794,40 @@ def compute_target(config: dict, as_of: str | None = None) -> dict:
     scores, z_map = scores_at(as_of, frames, ind_map, weights, neutralize, universe, custom_codes)
     if scores.empty:
         return {"error": f"{as_of} 无有效得分", "date": as_of}
+
+    # as_of 当日交易状态 / 市值（供过滤）
+    ts = fundamental_store.load_trading_status(start=as_of, end=as_of)
+    suspended = dict(zip(ts["symbol"], ts["suspended"])) if not ts.empty else {}
+    limit_up = dict(zip(ts["symbol"], ts["limit_up"])) if not ts.empty else {}
+    limit_down = dict(zip(ts["symbol"], ts["limit_down"])) if not ts.empty else {}
+    db = fundamental_store.load_daily_basic(start=as_of, end=as_of)
+    total_mv = dict(zip(db["symbol"], db["total_mv"])) if not db.empty else {}
+    prices_asof, suspended_bar_asof = load_price_panel(start=as_of, end=as_of)
+    prices_row = (
+        prices_asof.loc[as_of]
+        if (not prices_asof.empty and as_of in prices_asof.index)
+        else pd.Series(dtype=float)
+    )
+    # 缺 bar 标的视为停牌（与 trading_status.suspended 合并）
+    if not suspended_bar_asof.empty:
+        for sym, is_susp in suspended_bar_asof.iloc[0].to_dict().items():
+            if is_susp and sym not in suspended:
+                suspended[sym] = True
+
     picked = apply_filters(
         select_top_n(scores, top_n),
         meta_map, as_of,
-        exclude_st=filters.get("exclude_st", True),
-        min_list_days=int(filters.get("min_list_days", 60) or 60),
+        prices=prices_row,
+        suspended=suspended,
+        limit_up=limit_up,
+        limit_down=limit_down,
+        total_mv=total_mv,
+        exclude_st=filters["exclude_st"],
+        min_list_days=filters["min_list_days"],
+        exclude_suspended=filters["exclude_suspended"],
+        exclude_limit_up=filters["exclude_limit_up"],
+        exclude_limit_down=filters["exclude_limit_down"],
+        min_cap=filters["min_cap"],
     )
     hold_w = round(1.0 / len(picked), 4) if picked else 0.0
     return _clean(

@@ -164,3 +164,48 @@ TA-Lib==0.4.28          # 技术分析库
 6. **云端部署**: 支持云服务和分布式计算
 
 这个量化交易系统现在具备了企业级的功能完整性，可以满足专业量化交易的需求。
+
+## 🧩 **因子选股策略（data-cleaner 因子引擎）**
+
+> 注：本章节为 `data-cleaner/app/strategy` 下的因子选股 / 回测引擎，与上文基于 `buy/sell` 脚本的
+> 回测引擎（`backend/app/services`）为两套独立实现。
+
+- **配置存储**：`strategy.config`（JSONB），由前端 `FactorStrategyConfig` 与引擎 `normalize_filters` 共同约束。
+- **过滤字段**（集中于 `config.filters`，详见 [`docs/strategy-config-example.md`](./strategy-config-example.md)）：
+
+  | 字段 | 默认 | 含义 |
+  | --- | --- | --- |
+  | `exclude_st` | `true` | 剔除 ST |
+  | `min_list_days` | `60` | 最小上市天数 |
+  | `exclude_suspended` | `true` | 排除停牌 |
+  | `exclude_limit_up` | `true` | 买入侧排除涨停（买不进） |
+  | `exclude_limit_down` | `false` | 卖出侧排除跌停（不接飞刀） |
+  | `min_cap` | `null` | 总市值下限（亿元），`null`=不限 |
+
+- **接口**：`POST /strategy/strategies`（建）、`POST /strategy/strategies/{id}/backtest`（回测）、
+  `POST /strategy/scores`（任意配置算目标持仓）。
+- **回测真实度**：成交以 `limit_up/limit_down` 判定可成交性；停牌不再「剔除即失踪」，价量表缺 bar 视为
+  停牌，前向填充价并标记 `suspended`。
+- **P1 新增因子**：真实换手 `TURNOVER_RATE` / `TURNOVER_RATE_F`（替代代理 `SENT_TURNOVER_20`）、
+  市值 `MKT_CAP` / `MKT_CAP_CIRC`（对总/流通市值取 `ln`）、成长 `GRO_REV_GROWTH_YOY` / `GRO_EPS_GROWTH_YOY`
+  （已 `clip(-1,5)` 稳健化，as-of 防前视）。代码目录与刷新/重建命令见
+  [`docs/strategy-config-example.md`](./strategy-config-example.md) 的「P1 新增因子代码目录」。
+
+## 🎯 **P2 精度 / 复权与行业增量刷新**
+
+- **复权入库**：`factor.raw_bars` 新增 `adj_factor`（复权因子）与 `hfq_close`（后复权收盘价）两列
+  （迁移 `data-cleaner/migrations/007_adj_factor.sql`）。
+- **全局一致前复权（qfq）**：接入层（tushare）拉取「全历史 `adj_factor`」，以全历史最新因子
+  `f_latest` 归一化，`close` 即全局一致的 qfq（旧实现按「窗口内最新一日」局部基准，多次增量后
+  跨窗口基准漂移，含权期收益/动量有偏）。`scale = f / f_latest`，`open/high/low/close` 同步归一化，
+  价格类因子（动量/波动/技术/情绪额）经 `adj_close=close` 自动修正。
+- **后复权（hfq）**：`hfq_close = close * f_latest / f_first`，下游亦可由 `close + adj_factor`
+  反推 `hfq = close * f_latest / f_first`。`alphafeed` 仅透出前复权价，`adj_factor`/`hfq_close` 置空
+  （hfq 不可用，qfq 仍可用）。
+- **降级**：tushare `adj_factor` 获取失败（1 次/分钟限频）时 `close` 退化为原始价，`adj_factor`/
+  `hfq_close` 置空，由日志告警。
+- **迁移注意**：部署后建议执行一次全量回填（`backfill --full`），把历史 `close` 重新键定为全局 qfq
+  基准；否则旧行仍为窗口局部基准，跨旧/新边界收益仍略有偏差。
+- **行业分类每日增量刷新**：`app/tasks/scheduler.py` 的 `_industry_refresh_job` 由「仅周六 09:30」
+  改为「交易日 18:40」每日执行；`refresh_industries` 本身为全量拉取 + upsert 幂等，等价每日增量，
+  新上市/退市与行业重分类次日即反映到中性化与上市天数过滤。

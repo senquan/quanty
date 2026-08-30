@@ -26,7 +26,7 @@ class Settings(BaseSettings):
 
     # 财务数据源（价值/成长因子）
     TUSHARE_TOKEN: str | None = None
-    FUNDAMENTAL_PROVIDER: str = "tushare"  # tushare / akshare
+    FUNDAMENTAL_PROVIDER: str = "auto"  # tushare / akshare / auto(优先tushare,缺权限兜底akshare)
 
     # AlphaFeed 行情数据源（A股/美股/港股 K线，REST: X-API-Key 认证）
     ALPHAFEED_KEY: str | None = None

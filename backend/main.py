@@ -7,6 +7,7 @@ import uvicorn
 from app.core.config import settings
 from app.api.api_v1.api import api_router
 from app.schemas.response import Response
+from app.services.factor_strategy_proxy import FactorStrategyProxyError
 
 app = FastAPI(
     title="Quant Backend API",
@@ -34,6 +35,16 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
             data=exc.errors()
         ).model_dump()
     )
+
+@app.exception_handler(FactorStrategyProxyError)
+async def factor_proxy_exception_handler(request: Request, exc: FactorStrategyProxyError):
+    # 因子策略代理到 data-cleaner 失败（连接不通 / 清洗服务 4xx5xx / 找不到可用实例）。
+    # 直接把真实原因透传给前端，避免「保存失败」黑盒。
+    return JSONResponse(
+        status_code=status.HTTP_502_BAD_GATEWAY,
+        content=Response.fail(code=502, msg=f"因子服务错误：{str(exc)}").model_dump(),
+    )
+
 
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):

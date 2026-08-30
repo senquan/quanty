@@ -102,7 +102,9 @@ class GrowthRevenueYoy(Factor):
     def compute(self, df):
         if "rev_growth_yoy" not in df.columns:
             return pd.Series(float("nan"), index=df.index)
-        return df["rev_growth_yoy"]
+        # 同比可能为极端值（低基数/一次性损益），clip 到 [-100%, +500%]
+        # 避免单只标的在截面 z-score 中 dominating；不改变排序方向。
+        return df["rev_growth_yoy"].clip(-1.0, 5.0)
 
 
 @register
@@ -116,7 +118,8 @@ class GrowthEpsYoy(Factor):
     def compute(self, df):
         if "eps_growth_yoy" not in df.columns:
             return pd.Series(float("nan"), index=df.index)
-        return df["eps_growth_yoy"]
+        # 同 GRO_REV_GROWTH_YOY：clip 到 [-100%, +500%] 稳健化（真正生效于截面）。
+        return df["eps_growth_yoy"].clip(-1.0, 5.0)
 
 
 @register

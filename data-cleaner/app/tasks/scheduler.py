@@ -132,7 +132,12 @@ async def _heartbeat_job() -> None:
 
 
 async def _industry_refresh_job() -> None:
-    """每周六刷新行业分类缓存（供行业中性化）。"""
+    """每日刷新行业分类缓存（供行业中性化）。
+
+    原仅周六刷新 —— 新上市/退市、行业重分类隔夜即生效，中性化与上市天数过滤
+    才能及时反映。refresh_industries 本身为「全量拉取 + upsert 幂等」，等价于
+    每日增量刷新（仅变化的行被更新）。
+    """
     from app.industry import store as industry_store
 
     logger.info("定时任务启动: 行业分类刷新", extra={"task": "scheduled_industry"})
@@ -211,11 +216,11 @@ def register_jobs() -> None:
     scheduler.add_job(
         _industry_refresh_job,
         trigger="cron",
-        day_of_week="sat",
-        hour=9,
-        minute=30,
+        day_of_week="mon-fri",
+        hour=18,
+        minute=40,
         id="industry_refresh",
-        misfire_grace_time=3600,
+        misfire_grace_time=7200,
         max_instances=1,
         coalesce=True,
         replace_existing=True,

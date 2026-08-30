@@ -56,7 +56,7 @@ class TushareSource(BaseSource):
         start_s = self._normalize_date(start)
         end_s = self._normalize_date(end)
 
-        # 主路径：基础日线接口（免费、稳定、不限频于 qfq），不复权
+        # 主路径：基础日线接口（免费、稳定、不限频于 qfq），不复权，拿原始 OHLC
         try:
             df = ts.pro_bar(
                 ts_code=symbol,
@@ -71,25 +71,45 @@ class TushareSource(BaseSource):
         if df is None or df.empty:
             raise IngestionError(f"Tushare 返回空数据: {symbol}")
 
-        # 尝试叠加前复权因子（adj_factor 有 1 次/分钟限频，失败则降级不复权）
+        # 复权因子：拉取「全历史」adj_factor，取全局 f_latest/f_first 作为归一化基准，
+        # 使 close 为全局一致的前复权价（qfq），避免多次增量窗口各自基准不一致导致
+        # 跨越分红/送转日的收益、动量误差。adj_factor 有 1 次/分钟限频，失败则降级
+        # 不复权（close 退化为原始价，adj_factor/hfq_close 置空）。
+        f_latest = 1.0
+        f_first = 1.0
+        f_map = None
         try:
             adj = ts.pro_api().query(
-                "adj_factor", ts_code=symbol, start_date=start_s, end_date=end_s
+                "adj_factor", ts_code=symbol, start_date="19900101", end_date=end_s
             )
             if adj is not None and not adj.empty:
-                df = df.merge(adj[["trade_date", "adj_factor"]], on="trade_date", how="left")
-                last_factor = df["adj_factor"].iloc[-1]
-                df["open"] = df["open"] * df["adj_factor"] / last_factor
-                df["high"] = df["high"] * df["adj_factor"] / last_factor
-                df["low"] = df["low"] * df["adj_factor"] / last_factor
-                df["close"] = df["close"] * df["adj_factor"] / last_factor
-                df["adj_factor"] = df["adj_factor"].astype(float)
-                logger.info("Tushare 前复权完成", extra={"symbol": symbol})
+                adj = adj.sort_values("trade_date")
+                f_latest = float(adj["adj_factor"].max())
+                f_first = float(adj["adj_factor"].min())
+                f_map = adj.set_index("trade_date")["adj_factor"].astype(float)
+                logger.info("Tushare adj_factor 获取完成", extra={"symbol": symbol})
         except Exception as e:
             logger.warning(
-                "Tushare adj_factor 降级为不复权（限频/权限），RSI 等相对类因子不受影响",
+                "Tushare adj_factor 获取失败（降级不复权基准=1，含权收益可能有偏）",
                 extra={"symbol": symbol, "reason": str(e)[:120]},
             )
+
+        df = df.copy()
+        if f_map is not None:
+            f = df["trade_date"].map(f_map).astype(float)
+        else:
+            f = pd.Series(1.0, index=df.index)
+        f = f.fillna(f_latest)
+        scale = f / f_latest  # qfq 相对基准（最新一日 = 原始价）
+        df["open"] = df["open"] * scale
+        df["high"] = df["high"] * scale
+        df["low"] = df["low"] * scale
+        df["close"] = df["close"] * scale
+        # 无复权因子（降级）时 adj_factor/hfq_close 置空，标记下游不可用
+        df["adj_factor"] = f if f_map is not None else pd.NA
+        df["hfq_close"] = (
+            (df["close"] * (f_latest / f_first)) if (f_map is not None and f_first) else pd.NA
+        )
 
         # 剔除关键价格为空的行（停牌等）
         df = df.dropna(subset=["open", "high", "low", "close"])
@@ -102,6 +122,8 @@ class TushareSource(BaseSource):
         rows: list[RawBar] = []
         for _, row in df.iterrows():
             ts_dt = datetime.strptime(str(row["trade_date"]), "%Y%m%d")
+            af = row.get("adj_factor")
+            hf = row.get("hfq_close")
             rows.append(
                 RawBar(
                     symbol=symbol,
@@ -113,6 +135,8 @@ class TushareSource(BaseSource):
                     volume=float(row.get("vol", row.get("volume", 0)) or 0),
                     source=self.name,
                     freq=freq,
+                    adj_factor=None if pd.isna(af) else float(af),
+                    hfq_close=None if pd.isna(hf) else float(hf),
                 )
             )
         logger.info(

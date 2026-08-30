@@ -161,14 +161,27 @@ ON CONFLICT (code) DO UPDATE SET description = EXCLUDED.description;
 
 INSERT INTO factor.definitions (code, name, category, frequency, formula, data_sources, author, description)
 VALUES (
-    'SENT_TURNOVER_20',
-    '20日换手率',
+    'TURNOVER_RATE',
+    '换手率(真实)',
     'sentiment',
     'Daily',
     '',
-    '["volume"]'::jsonb,
+    '["turnover_rate"]'::jsonb,
     'system',
-    '20日换手代理：当日成交量相对20日均量的倍数（以成交量近似换手率），放大说明交投活跃、筹码交换加快。'
+    '真实换手率：成交量/流通股本(%)，来自 daily_basic.turnover_rate，替代旧有的成交量近似代理。放大说明交投活跃、筹码交换加快。'
+)
+ON CONFLICT (code) DO UPDATE SET description = EXCLUDED.description;
+
+INSERT INTO factor.definitions (code, name, category, frequency, formula, data_sources, author, description)
+VALUES (
+    'TURNOVER_RATE_F',
+    '自由流通换手率',
+    'sentiment',
+    'Daily',
+    '',
+    '["turnover_rate_f"]'::jsonb,
+    'system',
+    '自由流通换手率：成交量/自由流通股本(%)，来自 daily_basic.turnover_rate_f，比总换手率更贴近真实交易活跃度。'
 )
 ON CONFLICT (code) DO UPDATE SET description = EXCLUDED.description;
 
@@ -182,6 +195,32 @@ VALUES (
     '["volume"]'::jsonb,
     'system',
     '5日量比：5日均量与20日均量之比。大于1表示近期放量、资金关注度提升，是情绪升温的直接信号。'
+)
+ON CONFLICT (code) DO UPDATE SET description = EXCLUDED.description;
+
+INSERT INTO factor.definitions (code, name, category, frequency, formula, data_sources, author, description)
+VALUES (
+    'MKT_CAP',
+    '总市值(对数)',
+    'size',
+    'Daily',
+    '',
+    '["total_mv"]'::jsonb,
+    'system',
+    '总市值(对数)：对 daily_basic.total_mv 取自然对数，缓解市值右偏，截面 z-score 后即规模因子。小市值溢价显著，常取负号使用。'
+)
+ON CONFLICT (code) DO UPDATE SET description = EXCLUDED.description;
+
+INSERT INTO factor.definitions (code, name, category, frequency, formula, data_sources, author, description)
+VALUES (
+    'MKT_CAP_CIRC',
+    '流通市值(对数)',
+    'size',
+    'Daily',
+    '',
+    '["circ_mv"]'::jsonb,
+    'system',
+    '流通市值(对数)：对 daily_basic.circ_mv 取自然对数，剔除限售股影响，比总市值更贴合A股真实规模效应。'
 )
 ON CONFLICT (code) DO UPDATE SET description = EXCLUDED.description;
 

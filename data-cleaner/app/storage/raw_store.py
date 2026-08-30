@@ -100,7 +100,7 @@ class RawBarRepository:
                         conn.execute(
                             text(
                                 "SELECT factor.upsert_raw_bars("
-                                ":s,:t,:o,:h,:l,:c,:v,:src,:f)"
+                                ":s,:t,:o,:h,:l,:c,:v,:src,:f,:af,:hf)"
                             ),
                             {
                                 "s": r.symbol,
@@ -112,6 +112,16 @@ class RawBarRepository:
                                 "v": float(getattr(r, "volume", 0) or 0),
                                 "src": r.source,
                                 "f": r.freq,
+                                "af": (
+                                    None
+                                    if getattr(r, "adj_factor", None) is None
+                                    else float(r.adj_factor)
+                                ),
+                                "hf": (
+                                    None
+                                    if getattr(r, "hfq_close", None) is None
+                                    else float(r.hfq_close)
+                                ),
                             },
                         )
             except Exception as e:  # noqa: BLE001
@@ -161,7 +171,8 @@ class RawBarRepository:
                 from sqlalchemy import bindparam, text
 
                 sql = (
-                    "SELECT symbol,timestamp,open,high,low,close,volume,source,freq "
+                    "SELECT symbol,timestamp,open,high,low,close,volume,source,freq,"
+                    "adj_factor,hfq_close "
                     "FROM factor.raw_bars WHERE freq=:f"
                 )
                 params: dict = {"f": freq}
@@ -221,7 +232,8 @@ class RawBarRepository:
                 from sqlalchemy import text
 
                 sql = (
-                    "SELECT symbol,timestamp,open,high,low,close,volume,source,freq "
+                    "SELECT symbol,timestamp,open,high,low,close,volume,source,freq,"
+                    "adj_factor,hfq_close "
                     "FROM factor.raw_bars WHERE symbol=:s"
                 )
                 params: dict = {"s": symbol}

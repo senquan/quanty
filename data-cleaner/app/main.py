@@ -23,6 +23,14 @@ async def lifespan(app: FastAPI):
     logger.info("data-cleaner 服务启动", extra={"status": "startup"})
     # 确保因子数据目录存在
     settings.factor_data_path.mkdir(parents=True, exist_ok=True)
+    # 幂等建表（因子库 / 行业 / 策略 / 执行记录等），避免策略等表缺失导致保存失败
+    from app.storage.db import apply_migrations
+
+    applied = await apply_migrations()
+    logger.info(
+        "因子库迁移完成",
+        extra={"status": "migrated", "count": len(applied)},
+    )
     # 启动定时调度（APScheduler）
     from app.tasks.scheduler import start_scheduler
 

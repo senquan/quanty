@@ -19,5 +19,9 @@ class RawBar(BaseModel):
     volume: float
     source: str  # 数据来源: yfinance / ccxt / csv
     freq: str = "1d"  # 频率: 1d / 1h / 1m
+    # P2 复权：close 为全局一致前复权价（qfq）；adj_factor 为复权因子，
+    # hfq_close 为后复权收盘价（= close * f_latest / f_first），下游可按需选用。
+    adj_factor: float | None = None
+    hfq_close: float | None = None
 
     model_config = {"ser_json_datetime": "iso"}

@@ -29,6 +29,14 @@ export interface RebalanceConfig {
 export interface FilterConfig {
   exclude_st?: boolean;
   min_list_days?: number;
+  /** 排除停牌（trading_status.suspended=1 或当日无 bar） */
+  exclude_suspended?: boolean;
+  /** 买入侧：排除涨停（close >= limit_up，买不进） */
+  exclude_limit_up?: boolean;
+  /** 卖出侧：排除跌停（close <= limit_down，避免接飞刀） */
+  exclude_limit_down?: boolean;
+  /** 总市值下限（亿元）；total_mv < min_cap×1e5(千元) 剔除 */
+  min_cap?: number | null;
 }
 
 /** 因子策略配置（存于 strategy.config JSONB） */

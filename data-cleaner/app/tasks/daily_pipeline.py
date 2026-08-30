@@ -106,6 +106,25 @@ def run_daily_pipeline(
 
     advanced = bool(data_after and data_after != before)
 
+    # ---- 1.5) 基础数据刷新（估值/换手/市值/财报/涨跌停/停牌）----
+    # 失败不阻断：factor_build 对缺列因子仍按旧逻辑给 NaN
+    try:
+        from app.tasks import fundamental_refresh as fundamental_refresh_task
+
+        fund = fundamental_refresh_task.refresh_fundamental(trade_date=data_after)
+        steps.append(
+            {
+                "step": "fundamental",
+                "status": fund.get("status"),
+                "daily_basic": (fund.get("daily") or {}).get("daily_basic"),
+                "trading_status": (fund.get("daily") or {}).get("trading_status"),
+                "finance_rows": (fund.get("growth") or {}).get("rows"),
+            }
+        )
+    except Exception as e:  # noqa: BLE001
+        steps.append({"step": "fundamental", "status": "error", "reason": str(e)[:120]})
+        logger.warning(f"基础数据刷新失败（不阻断）: {e}", extra={"task": "daily_pipeline"})
+
     # ---- 2) 因子库更新 ----
     fb = factor_build_task.build_factor_library()
     steps.append(

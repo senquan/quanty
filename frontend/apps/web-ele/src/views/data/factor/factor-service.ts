@@ -33,6 +33,7 @@ const VALID_CATEGORIES: FactorCategory[] = [
   'volatility',
   'value',
   'growth',
+  'size',
   'sentiment',
   'technical',
   'custom',
@@ -45,6 +46,7 @@ const CATEGORY_ALIAS: Record<string, FactorCategory> = {
   technical: 'technical',
   value: 'value',
   growth: 'growth',
+  size: 'size',
   sentiment: 'sentiment',
   custom: 'custom',
 };
@@ -145,6 +147,7 @@ const AI_DESCRIPTIONS: Record<FactorCategory, string> = {
   volatility: '刻画收益率波动的不对称性与尾部风险',
   value: '基于估值与账面资本的反向溢价度量',
   growth: '衡量盈利与营收的边际成长加速度',
+  size: '基于总/流通市值的规模溢价，小市值常具超额收益',
   sentiment: '反映资金流向与换手活跃度的情绪强度',
   technical: '结合趋势与超买超卖的技术形态指标',
   custom: '复合价量特征的自适应探索因子',

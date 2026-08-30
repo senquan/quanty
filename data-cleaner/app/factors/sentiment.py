@@ -1,4 +1,5 @@
 """情绪类因子 SENT_"""
+import pandas as pd
 
 from app.factors.base import Factor, group_apply
 from app.factors.registry import register
@@ -22,20 +23,32 @@ class VolumeRatio5(Factor):
 
 
 @register
-class Turnover20(Factor):
-    code = "SENT_TURNOVER_20"
-    name = "20日换手率"
+class TurnoverRate(Factor):
+    code = "TURNOVER_RATE"
+    name = "换手率(真实)"
     category = "sentiment"
     frequency = "Daily"
-    data_sources = ["volume"]
+    data_sources = ["turnover_rate"]
 
     def compute(self, df):
-        # 简化：以成交量相对20日均量的偏移作为换手代理指标
-        def _to(g):
-            v20 = g["volume"].rolling(20, min_periods=5).mean()
-            return g["volume"] / (v20 + 1e-9)
+        # 真实换手率 = 成交量/流通股本(%)，来自迁移 006 daily_basic。
+        if "turnover_rate" not in df.columns:
+            return pd.Series(float("nan"), index=df.index)
+        return df["turnover_rate"]
 
-        return group_apply(df, "symbol", _to)
+
+@register
+class TurnoverRateFree(Factor):
+    code = "TURNOVER_RATE_F"
+    name = "自由流通换手率"
+    category = "sentiment"
+    frequency = "Daily"
+    data_sources = ["turnover_rate_f"]
+
+    def compute(self, df):
+        if "turnover_rate_f" not in df.columns:
+            return pd.Series(float("nan"), index=df.index)
+        return df["turnover_rate_f"]
 
 
 @register

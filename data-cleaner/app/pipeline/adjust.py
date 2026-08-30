@@ -1,9 +1,12 @@
-"""步骤4：复权处理
+"""步骤4：复权处理（透传）
 
-加载分红拆股事件后生成前复权价 adj_* 列。
-无事件数据时 adj_* 等于原始值（简化实现：默认前复权=close）。
+前复权价（qfq）已在接入层按「全历史 adj_factor」归一化后写入 raw_bars.close，
+因此本步骤直接 `adj_* = *`（透传），并保留 adj_factor / hfq_close 列透传给下游。
 
-真实复权表（corporate actions）在 Phase 2 财务数据源接入后补全。
+- 价格类因子（动量/波动/技术/情绪额）均读 `adj_close`，即全局一致 qfq，
+  跨越分红/送转日的收益、动量误差已在接入层修正。
+- `hfq_close`（后复权）与 `adj_factor` 由 raw_bars 透传，下游可按需用
+  `hfq = close * f_latest / f_first` 反推，或直接使用落库的 hfq_close。
 """
 import pandas as pd
 

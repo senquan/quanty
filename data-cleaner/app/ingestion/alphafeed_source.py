@@ -131,10 +131,13 @@ class AlphafeedSource(BaseSource):
                     open=o,
                     high=h,
                     low=l,
-                    close=c,  # 前复权收盘价
+                    close=c,  # 前复权收盘价（AlphaFeed 已前复权，全局基准一致）
                     volume=float(data.get("volume", [0] * n)[i] or 0),
                     source=self.name,
                     freq=freq,
+                    # AlphaFeed 不透出复权因子，hfq/adj_factor 不可用（仅 qfq）
+                    adj_factor=None,
+                    hfq_close=None,
                 )
             )
 

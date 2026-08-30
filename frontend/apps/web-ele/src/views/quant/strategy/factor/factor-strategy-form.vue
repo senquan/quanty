@@ -214,6 +214,7 @@ async function loadForEdit() {
     form.config = {
       ...defaultConfig(),
       ...s.config,
+      filters: { ...defaultConfig().filters, ...(s.config?.filters || {}) },
       universe: normalizeUniverse(s.config?.universe),
       custom_codes: Array.isArray(s.config?.custom_codes)
         ? s.config!.custom_codes
@@ -237,7 +238,10 @@ watch(
 );
 
 function buildPayload() {
-  const cfg: FactorStrategyConfig = structuredClone(form.config);
+  // 注意：form.config 是 reactive 代理，structuredClone 无法克隆 Proxy（会抛 DataCloneError）。
+  // config 本就是要发成 JSON 的纯数据，用 JSON 深拷贝最稳妥。
+  // eslint-disable-next-line unicorn/prefer-structured-clone
+  const cfg: FactorStrategyConfig = JSON.parse(JSON.stringify(form.config));
   if (cfg.weight_mode === 'manual') {
     // 仅保留已选因子的权重，发送原始比例（后端会归一化）
     const w: Record<string, number> = {};
@@ -273,8 +277,15 @@ async function persist(): Promise<null | number> {
     const created = await createFactorStrategyApi(buildPayload());
     ElMessage.success('已创建');
     return created.id;
-  } catch {
-    ElMessage.error('保存失败');
+  } catch (error: any) {
+    // 直接展示后端透传的真实原因（含清洗服务报错），不再用写死的「保存失败」掩盖
+    const msg =
+      error?.response?.data?.msg ||
+      error?.response?.data?.message ||
+      error?.response?.data?.error ||
+      error?.message ||
+      '保存失败';
+    ElMessage.error(msg);
     return null;
   } finally {
     submitting.value = false;
@@ -528,6 +539,29 @@ function close() {
               :max="3650"
               :step="10"
               size="small"
+            />
+          </div>
+          <div class="flex items-center gap-3">
+            <span class="text-xs text-gray-400">排除停牌</span>
+            <ElSwitch v-model="form.config.filters.exclude_suspended" />
+          </div>
+          <div class="flex items-center gap-3">
+            <span class="text-xs text-gray-400">买入排除涨停</span>
+            <ElSwitch v-model="form.config.filters.exclude_limit_up" />
+          </div>
+          <div class="flex items-center gap-3">
+            <span class="text-xs text-gray-400">卖出排除跌停</span>
+            <ElSwitch v-model="form.config.filters.exclude_limit_down" />
+          </div>
+          <div class="flex items-center gap-3">
+            <label class="text-xs text-gray-400">市值下限（亿元）</label>
+            <ElInputNumber
+              v-model="form.config.filters.min_cap"
+              :min="0"
+              :max="10000"
+              :step="10"
+              size="small"
+              placeholder="不限"
             />
           </div>
         </div>
