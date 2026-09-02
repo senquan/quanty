@@ -14,6 +14,8 @@ import type { Component } from 'vue';
 
 import type {
   FactorStrategyConfig,
+  HardRuleOp,
+  HardRuleRole,
   NeutralizeMode,
   RebalanceConfig,
   UniverseType,
@@ -75,6 +77,26 @@ export function universeSummary(
   return parts.length > 0 ? parts.join('+') : '全市场';
 }
 
+/** hard_rules 比较算子展示 */
+export const hardRuleOpLabels: Record<HardRuleOp, string> = {
+  '<=': '≤',
+  '>=': '≥',
+  '<': '<',
+  '>': '>',
+  '==': '=',
+  '!=': '≠',
+};
+
+/** hard_rules 角色展示 */
+export const hardRuleRoleLabels: Record<HardRuleRole, string> = {
+  core: '核心',
+  liquidity: '流动性',
+  risk: '风险',
+};
+
+/** hard_rules 算子列表（供下拉） */
+export const hardRuleOps: HardRuleOp[] = ['<=', '>=', '<', '>', '==', '!='];
+
 /** 将配置中的 universe 规整为板块数组（兼容旧的单字符串配置） */
 export function normalizeUniverse(u: unknown): UniverseType[] {
   if (Array.isArray(u)) {
@@ -118,6 +140,7 @@ export function defaultConfig(): FactorStrategyConfig {
       exclude_limit_up: true,
       exclude_limit_down: false,
       min_cap: null,
+      hard_rules: [],
     },
     lookback_days: 60,
     universe: [],

@@ -1,4 +1,4 @@
-"""模拟盘适配器：包装现有内存撮合服务，行为保持不变。
+"""模拟盘适配器：包装独立的内存撮合引擎实例（每策略一份 = 独立资金池）。
 
 仅做委派，不修改撮合/风控语义；落库由 TradingCoordinator 负责。
 """
@@ -6,11 +6,11 @@ from app.models.trading import MODE_PAPER
 from app.services.broker.base import BrokerAdapter
 from app.services.huatai_trading import (
     Account,
+    HuataiSimulatorService,
     Order,
     OrderStatus,
     Position,
     PositionSide,
-    simulator_service,
 )
 
 
@@ -18,9 +18,11 @@ class SimulatedBroker(BrokerAdapter):
     mode = MODE_PAPER
     broker_code = "simulated"
 
-    def __init__(self) -> None:
-        # 复用既有全局模拟服务实例（initial_capital=1000000），保持与改造前一致
-        self._svc = simulator_service
+    def __init__(self, strategy_id: int | None = None) -> None:
+        # 每个策略持有一份独立的模拟撮合引擎实例，初始资金 1000000。
+        # 进程重启后由 TradingCoordinator.sync_state 从 DB 回灌该策略的现金与持仓。
+        self._svc = HuataiSimulatorService(initial_capital=1_000_000)
+        self.strategy_id = strategy_id
         # 是否已从 DB 回灌过。必须以此为准而非"内存是否为空"：
         # 清仓后内存同样为空，若按空判断会又把 DB 的旧持仓回灌回去。
         self.restored = False

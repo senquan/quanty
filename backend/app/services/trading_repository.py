@@ -6,13 +6,14 @@ import asyncio
 import json
 from datetime import date, datetime
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import Base, engine
 from app.models.trading import (
     MODE_PAPER,
     ORDER_FILLED,
+    PortfolioDailyValue,
     TradingAccount,
     TradingOrder,
     TradingPosition,
@@ -46,8 +47,22 @@ async def ensure_trading_tables() -> None:
                     TradingOrder.__table__,
                     TradingTrade.__table__,
                     TradingRebalanceRecord.__table__,
-                ],
+                    PortfolioDailyValue.__table__,
+                ]
             )
+            # 存量库迁移（幂等、失败忽略）：账户按 (mode, strategy_id) 唯一，
+            # 持仓 / 成交补 strategy_id 冗余列。
+            for ddl in (
+                "ALTER TABLE trading_accounts DROP CONSTRAINT IF EXISTS uq_trading_account_mode_broker",
+                "ALTER TABLE trading_accounts ADD COLUMN IF NOT EXISTS strategy_id INTEGER",
+                "ALTER TABLE trading_accounts ADD CONSTRAINT uq_trading_account_mode_strategy UNIQUE (mode, strategy_id)",
+                "ALTER TABLE trading_positions ADD COLUMN IF NOT EXISTS strategy_id INTEGER",
+                "ALTER TABLE trading_trades ADD COLUMN IF NOT EXISTS strategy_id INTEGER",
+            ):
+                try:
+                    await conn.execute(text(ddl))
+                except Exception:  # noqa: BLE001  已是最新结构时忽略
+                    pass
         _ENSURED = True
 
 
@@ -61,19 +76,26 @@ async def get_or_create_account(
     initial_capital: float,
     user_id: int | None = None,
     account_id: str | None = None,
+    strategy_id: int | None = None,
 ) -> TradingAccount:
-    """按 (mode, broker) 取账户，不存在则按初始资金创建。"""
-    stmt = select(TradingAccount).where(
-        TradingAccount.mode == mode, TradingAccount.broker == broker
-    )
+    """按 (mode, strategy_id) 取账户（每策略=一个独立资金池）；无 strategy_id 时取模式共享账户。
+
+    不存在则按初始资金创建；账户号由撮合器返回后回填。
+    """
+    stmt = select(TradingAccount).where(TradingAccount.mode == mode)
+    if strategy_id is not None:
+        stmt = stmt.where(TradingAccount.strategy_id == strategy_id)
+    else:
+        stmt = stmt.where(TradingAccount.strategy_id.is_(None))
     acct = (await session.execute(stmt)).scalars().first()
     if acct:
         return acct
     acct = TradingAccount(
         user_id=user_id,
+        strategy_id=strategy_id,
         mode=mode,
         broker=broker,
-        account_id=account_id or f"{broker.upper()}_{mode.upper()}",
+        account_id=account_id or f"{broker.upper()}_{mode.upper()}_{strategy_id or 'SHARED'}",
         initial_capital=initial_capital,
         cash_balance=initial_capital,
         frozen_cash=0.0,
@@ -94,17 +116,22 @@ async def update_account_balances(
 # ---------------------------- 持仓 ----------------------------
 
 async def list_positions(
-    session: AsyncSession, mode: str, account_id: int | None = None
+    session: AsyncSession,
+    mode: str,
+    account_id: int | None = None,
+    strategy_id: int | None = None,
 ) -> list[TradingPosition]:
-    """按模式列出持仓；传入 account_id 时进一步限定账户。
+    """按模式列出持仓；可进一步限定账户或策略。
 
     说明：原先只按 mode 过滤，同 mode 多账户（如多个模拟盘）时会互相干扰，
     尤其在 sync_state 的"删除内存不存在的持仓"环节可能误删他账户的行。
-    传入 account_id 可消除该风险；不传则保持原行为以兼容既有调用。
+    传入 account_id / strategy_id 可消除该风险。
     """
     stmt = select(TradingPosition).where(TradingPosition.mode == mode)
     if account_id is not None:
         stmt = stmt.where(TradingPosition.account_id == account_id)
+    if strategy_id is not None:
+        stmt = stmt.where(TradingPosition.strategy_id == strategy_id)
     stmt = stmt.order_by(TradingPosition.market_value.desc())
     return list((await session.execute(stmt)).scalars().all())
 
@@ -119,6 +146,7 @@ async def upsert_position(
     quantity: int,
     avg_price: float,
     last_price: float,
+    strategy_id: int | None = None,
 ) -> None:
     """写入/更新持仓；quantity<=0 视为清仓，删除该行。"""
     stmt = select(TradingPosition).where(
@@ -140,6 +168,7 @@ async def upsert_position(
         session.add(
             TradingPosition(
                 account_id=account_id,
+                strategy_id=strategy_id,
                 mode=mode,
                 symbol=symbol,
                 side=side,
@@ -246,10 +275,12 @@ async def add_trade(
     price: float,
     quantity: int,
     commission: float = 0.0,
+    strategy_id: int | None = None,
 ) -> TradingTrade:
     trade = TradingTrade(
         order_id=order_id,
         account_id=account_id,
+        strategy_id=strategy_id,
         mode=mode,
         symbol=symbol,
         side=side,

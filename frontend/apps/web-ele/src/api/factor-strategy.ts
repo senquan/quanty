@@ -37,6 +37,33 @@ export interface FilterConfig {
   exclude_limit_down?: boolean;
   /** 总市值下限（亿元）；total_mv < min_cap×1e5(千元) 剔除 */
   min_cap?: number | null;
+  /** 第一层硬性阈值筛选规则（配置驱动，见 three-layer-strategy-design §2） */
+  hard_rules?: HardRule[];
+}
+
+// ============ 第一层 hard_rules 类型 ============
+
+/** hard_rules 比较算子 */
+export type HardRuleOp = '<=' | '>=' | '<' | '>' | '==' | '!=';
+
+/** hard_rules 角色（均参与通过判定；role 仅决定计分归属，见设计 §2.1） */
+export type HardRuleRole = 'core' | 'liquidity' | 'risk';
+
+/** 动态阈值（一期仅 quantile：取全市场该因子分位作阈值） */
+export interface HardRuleDynamic {
+  mode: 'quantile';
+  quantile: number;
+}
+
+/** 第一层硬性阈值规则 */
+export interface HardRule {
+  factor: string;
+  op: HardRuleOp;
+  /** 固定阈值（与 dynamic 二选一） */
+  value?: number | null;
+  role: HardRuleRole;
+  /** 动态阈值；为空表示用固定 value */
+  dynamic?: HardRuleDynamic | null;
 }
 
 /** 因子策略配置（存于 strategy.config JSONB） */

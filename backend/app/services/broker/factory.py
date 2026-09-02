@@ -14,11 +14,16 @@ def normalize_mode(mode: str | None) -> str:
 
 
 @lru_cache(maxsize=None)
-def get_broker(mode: str = MODE_PAPER) -> BrokerAdapter:
+def get_broker(mode: str = MODE_PAPER, strategy_id: int | None = None) -> BrokerAdapter:
+    """按 (mode, strategy_id) 取撮合适配器。
+
+    模拟盘下每策略持有一份独立的 SimulatedBroker（各自独立的资金池引擎实例），
+    相当于一只基金产品；实盘下 strategy_id 忽略（单一券商账户）。
+    """
     mode = normalize_mode(mode)
     if mode == MODE_LIVE:
         return MxBroker()
-    return SimulatedBroker()
+    return SimulatedBroker(strategy_id=strategy_id)
 
 
 def describe_modes() -> list[dict]:

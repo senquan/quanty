@@ -9,13 +9,16 @@
 注意：BrokerAdapter 的查询/下单为同步接口（与既有 huatai_trading 一致），
 实盘适配器会发起 HTTP 请求；若后续实盘调用量增长，再统一改为 run_in_executor。
 """
+import json
 import logging
 from datetime import datetime
 from uuid import uuid4
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
+from app.models.quant import Strategy
 from app.models.trading import (
     MODE_PAPER,
     ORDER_CANCELLED,
@@ -39,18 +42,51 @@ def _new_client_order_id(mode: str) -> str:
 
 
 class TradingCoordinator:
-    def __init__(self, session: AsyncSession, mode: str | None = None):
+    def __init__(self, session: AsyncSession, mode: str | None = None, strategy_id: int | None = None):
         self.session = session
         self.mode = normalize_mode(mode or getattr(settings, "BROKER_MODE", MODE_PAPER))
-        self.broker = get_broker(self.mode)
+        self.strategy_id = strategy_id
+        self._strategy = None
+        self.broker = get_broker(self.mode, strategy_id)
 
     # ---------------- 账户与状态同步 ----------------
+    def _strategy_capital(self) -> float | None:
+        """从策略配置(config.capital / 兼容 initial_capital)读取该策略初始资金池规模。"""
+        if self._strategy is None or not self._strategy.code:
+            return None
+        try:
+            cfg = json.loads(self._strategy.code)
+        except (ValueError, TypeError):
+            return None
+        if not isinstance(cfg, dict):
+            return None
+        cap = cfg.get("capital")
+        if cap is None:
+            cap = cfg.get("initial_capital")
+        try:
+            return float(cap) if cap is not None else None
+        except (ValueError, TypeError):
+            return None
+
     async def _ensure_account(self) -> TradingAccount:
+        initial = float(getattr(settings, "TRADING_INITIAL_CAPITAL", 1000000))
+        if self.strategy_id is not None:
+            # 加载策略配置中的初始资金池规模（若有）
+            strat = (
+                await self.session.execute(
+                    select(Strategy).where(Strategy.id == self.strategy_id)
+                )
+            ).scalars().first()
+            self._strategy = strat
+            cap = self._strategy_capital()
+            if cap:
+                initial = cap
         return await repo.get_or_create_account(
             self.session,
             mode=self.mode,
             broker=self.broker.broker_code,
-            initial_capital=float(getattr(settings, "TRADING_INITIAL_CAPITAL", 1000000)),
+            initial_capital=initial,
+            strategy_id=self.strategy_id,
         )
 
     async def _restore_broker_state(self, account: TradingAccount) -> None:
@@ -65,7 +101,9 @@ class TradingCoordinator:
             return
         if self.broker.is_restore_valid():
             return  # 已回灌且底层撮合服务未被替换
-        rows = await repo.list_positions(self.session, self.mode, account_id=account.id)
+        rows = await repo.list_positions(
+            self.session, self.mode, account_id=account.id, strategy_id=self.strategy_id
+        )
         logger.info("模拟盘内存回灌: cash=%s, 持仓 %s 条", account.cash_balance, len(rows))
         self.broker.restore(
             cash=account.cash_balance,
@@ -98,6 +136,7 @@ class TradingCoordinator:
                 quantity=p.quantity,
                 avg_price=p.avg_price,
                 last_price=last_price,
+                strategy_id=self.strategy_id,
             )
             seen.add((p.symbol, side))
 
@@ -109,13 +148,15 @@ class TradingCoordinator:
             logger.warning("模拟盘内存状态不可信（未完成有效 DB 回灌），跳过持仓删除以免覆盖 DB")
         else:
             for row in await repo.list_positions(
-                self.session, self.mode, account_id=account.id
+                self.session, self.mode, account_id=account.id, strategy_id=self.strategy_id
             ):
                 if (row.symbol, row.side) not in seen:
                     await self.session.delete(row)
 
         await self.session.commit()
-        return account, await repo.list_positions(self.session, self.mode)
+        return account, await repo.list_positions(
+            self.session, self.mode, account_id=account.id, strategy_id=self.strategy_id
+        )
 
     # ---------------- 下单 / 撤单 ----------------
     async def place_order(
@@ -130,6 +171,7 @@ class TradingCoordinator:
         strategy_id: int | None = None,
         user_id: int | None = None,
     ):
+        strategy_id = strategy_id if strategy_id is not None else self.strategy_id
         account = await self._ensure_account()
         await self._restore_broker_state(account)
 
@@ -192,6 +234,7 @@ class TradingCoordinator:
                 price=float(getattr(result, "price", 0) or price or 0),
                 quantity=filled_qty,
                 commission=float(getattr(result, "commission", 0) or 0),
+                strategy_id=strategy_id,
             )
 
         await self.sync_state()  # 同步持仓与现金（内部 commit）

@@ -5,31 +5,35 @@ import {
   ElAlert,
   ElCard,
   ElCol,
-  ElEmpty,
-  ElProgress,
   ElRadioButton,
   ElRadioGroup,
   ElRow,
-  ElTable,
-  ElTableColumn,
   ElTag,
 } from 'element-plus';
-import { BarChart3, TrendingDown, TrendingUp, Wallet } from '@lucide/vue';
 
-import { listFactorStrategiesApi } from '#/api/factor-strategy';
 import {
+  getAvailableSymbolsApi,
   getOverviewApi,
+  getPortfolioValuesApi,
   getPositionsApi,
-  getRebalancesApi,
+  getTradesApi,
   getTradingModeApi,
 } from '#/api/core/trading';
 import type {
   ModeInfo,
+  PortfolioValuePoint,
   Position,
-  RebalanceRecord,
   TradeMode,
+  TradeRecord,
   TradingOverview,
 } from '#/api/core/trading';
+import MetricCards from './components/MetricCards.vue';
+import YieldCurveChart from './components/YieldCurveChart.vue';
+import type { YieldPoint } from './components/YieldCurveChart.vue';
+import PositionsTable from './components/PositionsTable.vue';
+import type { PositionRow } from './components/PositionsTable.vue';
+import RebalanceLogsTable from './components/RebalanceLogsTable.vue';
+import type { RebalanceRow } from './components/RebalanceLogsTable.vue';
 
 const loading = ref(false);
 const errorMsg = ref('');
@@ -38,65 +42,119 @@ const mode = ref<TradeMode>('paper');
 const modeInfo = ref<ModeInfo | null>(null);
 const overview = ref<TradingOverview | null>(null);
 const positions = ref<Position[]>([]);
-const rebalances = ref<RebalanceRecord[]>([]);
-const strategyCount = ref(0);
-const activeStrategyCount = ref(0);
+const trades = ref<TradeRecord[]>([]);
+const portfolioValues = ref<PortfolioValuePoint[]>([]);
+const symbolNameMap = ref<Record<string, string>>({});
 
 const currentMode = computed(() =>
   (modeInfo.value?.modes || []).find((m) => m.mode === mode.value),
 );
 
-function money(v?: number | null) {
-  if (v === null || v === undefined) return '--';
-  return `¥${v.toLocaleString('zh-CN', { maximumFractionDigits: 2 })}`;
+function diffDays(a: string, b: string): number {
+  const da = new Date(a).getTime();
+  const db = new Date(b).getTime();
+  return Math.max(0, Math.round((db - da) / 86_400_000));
 }
 
-const stats = computed(() => {
+/** 四张统计卡指标（真实数据 + 由组合收益快照派生） */
+const metrics = computed(() => {
   const ov = overview.value;
-  const pnl = ov?.total_pnl ?? 0;
-  return [
-    { label: '总资产', value: money(ov?.total_assets), color: '#409eff', icon: 'wallet' },
-    { label: '持仓市值', value: money(ov?.market_value), color: '#e6a23c', icon: 'chart' },
-    { label: '可用资金', value: money(ov?.cash_balance), color: '#909399', icon: 'wallet' },
-    {
-      label: '累计盈亏',
-      value: money(pnl),
-      suffix: ov ? `(${ov.total_pnl_pct}%)` : '',
-      color: pnl >= 0 ? '#67c23a' : '#f56c6c',
-      icon: pnl >= 0 ? 'up' : 'down',
-    },
-  ];
+  const pv = portfolioValues.value;
+  const totalAssets = ov?.total_assets ?? 0;
+  const marketValue = ov?.market_value ?? 0;
+  const prev = pv.length >= 2 ? pv[pv.length - 2] : null;
+  const latest = pv.length ? pv[pv.length - 1] : null;
+
+  const todayPnl = latest && prev ? latest.total_assets - prev.total_assets : 0;
+  const todayPnLPct = latest?.daily_return ?? 0;
+
+  let annualized = 0;
+  if (latest?.cumulative_return != null && pv.length >= 2) {
+    const days = diffDays(pv[0].value_date, latest.value_date);
+    if (days > 0) {
+      annualized = (Math.pow(1 + latest.cumulative_return / 100, 365 / days) - 1) * 100;
+    }
+  }
+
+  return {
+    totalAssets,
+    marketValue,
+    availableCash: ov?.cash_balance ?? 0,
+    frozenCash: ov?.frozen_cash ?? 0,
+    positionRatio: totalAssets ? Math.round((marketValue / totalAssets) * 10_000) / 100 : 0,
+    totalPnL: ov?.total_pnl ?? 0,
+    totalPnLPct: ov?.total_pnl_pct ?? 0,
+    todayPnL: todayPnl,
+    todayPnLPct: todayPnLPct,
+    annualizedReturn: Math.round(annualized * 100) / 100,
+  };
 });
 
-/** 持仓分布（占总资产比重） */
-const allocation = computed(() => {
-  const total = overview.value?.total_assets || 0;
+const chartPoints = computed<YieldPoint[]>(() =>
+  (portfolioValues.value || []).map((p) => ({
+    date: (p.value_date || '').slice(0, 10),
+    cumulativeReturn: p.cumulative_return ?? 0,
+    totalAssets: p.total_assets,
+  })),
+);
+
+/** 持仓列表（补名称 / 仓位占比 / 今日盈亏估算 / 累计浮盈） */
+const totalMarketValue = computed(() =>
+  (positions.value || []).reduce((s, p) => s + (p.market_value || 0), 0),
+);
+const todayPnlAccount = computed(() => {
+  const pv = portfolioValues.value;
+  return pv.length >= 2 ? pv[pv.length - 1].total_assets - pv[pv.length - 2].total_assets : 0;
+});
+const positionRows = computed<PositionRow[]>(() => {
+  const total = totalAssets.value;
+  const mv = totalMarketValue.value;
   return (positions.value || []).map((p) => ({
     symbol: p.symbol,
+    name: symbolNameMap.value[p.symbol] || p.symbol,
     quantity: p.quantity,
-    market_value: p.market_value,
-    pnl_percent: p.pnl_percent,
-    weight: total ? Math.round((p.market_value / total) * 10_000) / 100 : 0,
+    avgPrice: p.avg_price,
+    marketValue: p.market_value,
+    weightPct: total ? Math.round((p.market_value / total) * 10_000) / 100 : 0,
+    todayPnl: Math.round((mv ? todayPnlAccount.value * (p.market_value / mv) : 0) * 100) / 100,
+    totalPnl: p.unrealized_pnl,
   }));
 });
+
+const rebalanceRows = computed<RebalanceRow[]>(() =>
+  (trades.value || []).map((t) => ({
+    time: t.trade_time ? t.trade_time.replace('T', ' ').slice(0, 19) : '--',
+    symbol: t.symbol,
+    name: symbolNameMap.value[t.symbol] || t.symbol,
+    price: t.price,
+    quantity: t.quantity,
+    amount: t.amount,
+    commission: t.commission,
+  })),
+);
+
+const totalAssets = computed(() => overview.value?.total_assets ?? 0);
 
 async function load() {
   loading.value = true;
   errorMsg.value = '';
   try {
-    const [mi, ov, pos, reb, strats] = await Promise.all([
+    const [mi, ov, pos, tr, pv, syms] = await Promise.all([
       getTradingModeApi(),
       getOverviewApi(mode.value),
       getPositionsApi(mode.value),
-      getRebalancesApi(20),
-      listFactorStrategiesApi(),
+      getTradesApi(mode.value, { limit: 200 }),
+      getPortfolioValuesApi(mode.value, { limit: 180 }),
+      getAvailableSymbolsApi(),
     ]);
     modeInfo.value = mi;
     overview.value = ov;
     positions.value = pos || [];
-    rebalances.value = reb || [];
-    strategyCount.value = (strats || []).length;
-    activeStrategyCount.value = (strats || []).filter((s) => s.is_active).length;
+    trades.value = tr || [];
+    portfolioValues.value = pv || [];
+    symbolNameMap.value = Object.fromEntries(
+      (syms?.symbols || []).map((s) => [s.symbol, s.name]),
+    );
   } catch (e: any) {
     errorMsg.value = e?.message || '加载概览数据失败';
   } finally {
@@ -111,7 +169,7 @@ onMounted(load);
   <div class="quant-dashboard p-4">
     <ElAlert v-if="errorMsg" :title="errorMsg" type="error" show-icon class="mb-4" />
 
-    <!-- 模式切换 -->
+    <!-- 模式切换（保持不变） -->
     <ElCard shadow="never" class="mb-4">
       <div class="flex items-center justify-between">
         <div class="flex items-center gap-3">
@@ -127,67 +185,25 @@ onMounted(load);
       </div>
     </ElCard>
 
-    <!-- 统计卡片 -->
-    <ElRow :gutter="16" class="mb-4">
-      <ElCol v-for="s in stats" :key="s.label" :span="6">
-        <ElCard v-loading="loading" shadow="hover">
-          <div class="text-sm text-gray-500 mb-1 flex items-center gap-1">
-            <Wallet v-if="s.icon === 'wallet'" class="w-4 h-4" />
-            <BarChart3 v-if="s.icon === 'chart'" class="w-4 h-4" />
-            <TrendingUp v-if="s.icon === 'up'" class="w-4 h-4" />
-            <TrendingDown v-if="s.icon === 'down'" class="w-4 h-4" />
-            {{ s.label }}
-          </div>
-          <div class="text-xl font-bold" :style="{ color: s.color }">
-            {{ s.value }}
-            <span v-if="s.suffix" class="text-sm font-normal ml-1">{{ s.suffix }}</span>
-          </div>
-        </ElCard>
-      </ElCol>
-    </ElRow>
+    <!-- 四个统计卡片 -->
+    <MetricCards :metrics="metrics" :mode="mode" v-loading="loading" class="mb-4" />
 
-    <ElRow :gutter="16" class="mb-4">
-      <!-- 持仓分布 -->
-      <ElCol :span="10">
-        <ElCard v-loading="loading" shadow="hover" header="持仓分布">
-          <ElEmpty v-if="!allocation.length" description="暂无持仓" :image-size="60" />
-          <div v-else class="space-y-3">
-            <div v-for="p in allocation" :key="p.symbol">
-              <div class="flex justify-between text-sm mb-1">
-                <span>{{ p.symbol }}</span>
-                <span class="text-gray-500">{{ money(p.market_value) }} · {{ p.weight }}%</span>
-              </div>
-              <ElProgress :percentage="Math.min(p.weight, 100)" :stroke-width="8" :show-text="false" />
-            </div>
-          </div>
-        </ElCard>
-      </ElCol>
+    <!-- 实时收益率曲线 -->
+    <YieldCurveChart
+      :points="chartPoints"
+      :initial-capital="overview?.initial_capital"
+      :strategy-name="modeInfo ? (mode === 'live' ? '实盘组合' : '模拟组合') : undefined"
+      v-loading="loading"
+      class="mb-4"
+    />
 
-      <!-- 策略与调仓 -->
-      <ElCol :span="14">
-        <ElCard v-loading="loading" shadow="hover" header="策略与调仓">
-          <div class="flex gap-6 mb-3 text-sm">
-            <span class="text-gray-500">策略总数：<b class="text-gray-900">{{ strategyCount }}</b></span>
-            <span class="text-gray-500">启用中：<b class="text-green-600">{{ activeStrategyCount }}</b></span>
-            <span class="text-gray-500">持仓数：<b class="text-gray-900">{{ overview?.position_count ?? 0 }}</b></span>
-          </div>
-          <ElTable :data="rebalances" size="small" max-height="260">
-            <ElTableColumn prop="strategy_name" label="策略" min-width="120" show-overflow-tooltip />
-            <ElTableColumn prop="rebalance_date" label="调仓日" width="110" />
-            <ElTableColumn prop="target_count" label="目标数" width="80" align="right" />
-            <ElTableColumn prop="orders_placed" label="下单数" width="80" align="right" />
-            <ElTableColumn prop="status" label="状态" width="90" align="center">
-              <template #default="{ row }">
-                <ElTag :type="row.status === 'success' ? 'success' : row.status === 'error' ? 'danger' : 'info'" size="small">
-                  {{ row.status }}
-                </ElTag>
-              </template>
-            </ElTableColumn>
-            <template #empty>
-              <ElEmpty description="暂无调仓记录" :image-size="60" />
-            </template>
-          </ElTable>
-        </ElCard>
+    <!-- 下方两张等高、可卷动表格 -->
+    <ElRow :gutter="16">
+      <ElCol :xs="24" :lg="12" class="mb-4 lg:mb-0">
+        <PositionsTable :positions="positionRows" v-loading="loading" class="h-[480px]" />
+      </ElCol>
+      <ElCol :xs="24" :lg="12" class="mb-4 lg:mb-0">
+        <RebalanceLogsTable :logs="rebalanceRows" v-loading="loading" class="h-[480px]" />
       </ElCol>
     </ElRow>
   </div>

@@ -36,7 +36,7 @@ async def serialize_user(
         username=user.username,
         full_name=user.realname,
         phone=user.phone,
-        is_active=user.is_active == 1,
+        is_active=bool(user.is_active),
         role_id=user.role_id,
         created_at=user.created_at,
         updated_at=user.updated_at,
@@ -123,7 +123,7 @@ async def create_user(
         hashed_password=hashed_password,
         realname=user_data.full_name,
         phone=user_data.phone,
-        is_active=1 if user_data.is_active else 0,
+        is_active=bool(user_data.is_active),
         role_id=user_data.role_id,
     )
 
@@ -163,7 +163,7 @@ async def update_user(
 
     update_dict = user_data.model_dump(exclude_unset=True)
     if "is_active" in update_dict:
-        update_dict["is_active"] = 1 if update_dict["is_active"] else 0
+        update_dict["is_active"] = bool(update_dict["is_active"])
     if "full_name" in update_dict:
         update_dict["realname"] = update_dict.pop("full_name")
 
@@ -207,7 +207,7 @@ async def update_user_status(
     if not user:
         raise HTTPException(status_code=404, detail="用户不存在")
 
-    user.is_active = 1 if is_active else 0
+    user.is_active = bool(is_active)
     await db.commit()
     await db.refresh(user)
 

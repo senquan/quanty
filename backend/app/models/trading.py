@@ -30,19 +30,20 @@ ORDER_REJECTED = "REJECTED"
 
 
 class TradingAccount(Base):
-    """交易账户：按 (mode, broker) 唯一。
+    """交易账户（资金池）：按 (mode, strategy_id) 唯一。
 
-    本期沿用原模拟服务的"单例"语义（一个模式一个账户），user_id 仅作归属记录，
-    不做隔离过滤，避免对现有调仓链路造成破坏性变更。
+    每个策略对应一个独立资金池，相当于一只基金产品；strategy_id 为 NULL 表示
+    该模式下未绑定策略的共享账户（历史遗留 / 手动交易）。
     """
 
     __tablename__ = "trading_accounts"
     __table_args__ = (
-        UniqueConstraint("mode", "broker", name="uq_trading_account_mode_broker"),
+        UniqueConstraint("mode", "strategy_id", name="uq_trading_account_mode_strategy"),
     )
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     user_id = Column(Integer, nullable=True, index=True)
+    strategy_id = Column(Integer, nullable=True, index=True)
     mode = Column(String(16), nullable=False, default=MODE_PAPER, index=True)
     broker = Column(String(32), nullable=False, default="simulated")
     account_id = Column(String(64), nullable=False)  # 券商/模拟器返回的账户号
@@ -56,7 +57,10 @@ class TradingAccount(Base):
 
 
 class TradingPosition(Base):
-    """当前持仓（每账户每标的一行，卖清后删除）"""
+    """当前持仓（每账户每标的一行，卖清后删除）
+
+    strategy_id 冗余存储，便于按策略直接归因与查询，不必先经账户反查。
+    """
 
     __tablename__ = "trading_positions"
     __table_args__ = (
@@ -65,6 +69,7 @@ class TradingPosition(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     account_id = Column(Integer, nullable=False, index=True)
+    strategy_id = Column(Integer, nullable=True, index=True)
     mode = Column(String(16), nullable=False, default=MODE_PAPER, index=True)
     symbol = Column(String(32), nullable=False)
     side = Column(String(8), nullable=False, default="LONG")
@@ -107,13 +112,17 @@ class TradingOrder(Base):
 
 
 class TradingTrade(Base):
-    """成交明细（一笔订单可多笔成交）"""
+    """成交明细（一笔订单可多笔成交）
+
+    strategy_id 冗余存储，便于按策略归因。
+    """
 
     __tablename__ = "trading_trades"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     order_id = Column(Integer, nullable=False, index=True)
     account_id = Column(Integer, nullable=False, index=True)
+    strategy_id = Column(Integer, nullable=True, index=True)
     mode = Column(String(16), nullable=False, default=MODE_PAPER, index=True)
     symbol = Column(String(32), nullable=False)
     side = Column(String(8), nullable=False)
@@ -153,4 +162,33 @@ class TradingRebalanceRecord(Base):
     amount = Column(Float, nullable=True)
     status = Column(String(16), nullable=False, default="success")  # success/error/skipped
     detail = Column(Text, nullable=True)  # JSON 字符串：订单明细 / 错误信息
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class PortfolioDailyValue(Base):
+    """组合（账户 / 模式）每日盘后市值与收益快照
+
+    由 backend 定时任务（见 portfolio_valuation_service.run_eod_valuation）在
+    交易日盘后从 data-cleaner 拉最新价（market_proxy.latest_prices）后写入，
+    供 dashboard 直接读取市值曲线与收益率，无需实时重算。
+
+    `strategy_id` 预留：当前持仓按 mode 共享一个账户，组合 = 账户级；
+    若后续持仓按策略拆分，可按 strategy_id 记录每策略组合快照。
+    """
+
+    __tablename__ = "portfolio_daily_values"
+    __table_args__ = (
+        UniqueConstraint("mode", "strategy_id", "value_date", name="uq_portfolio_value"),
+        Index("ix_portfolio_value_date", "value_date"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    mode = Column(String(16), nullable=False, default=MODE_PAPER, index=True)
+    strategy_id = Column(Integer, nullable=True, index=True)  # NULL = 账户级组合
+    value_date = Column(Date, nullable=False)
+    cash_balance = Column(Float, nullable=False, default=0.0)
+    market_value = Column(Float, nullable=False, default=0.0)
+    total_assets = Column(Float, nullable=False, default=0.0)
+    daily_return = Column(Float, nullable=True)       # 相对前一交易日
+    cumulative_return = Column(Float, nullable=True)  # 相对初始资金
     created_at = Column(DateTime(timezone=True), server_default=func.now())

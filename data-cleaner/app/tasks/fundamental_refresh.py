@@ -9,6 +9,7 @@ from datetime import date, datetime
 from app.core.config import settings
 from app.core.logging import get_logger
 from app.ingestion.fundamental_source import FundamentalSource
+from app.ingestion.universe import get_a_share_universe
 from app.storage import fundamental_store
 from app.storage.raw_store import repository
 
@@ -123,14 +124,50 @@ def refresh_growth(periods: list[str] | None = None) -> dict:
     return {"status": "done", "provider": provider, "periods": periods, "rows": total}
 
 
+def refresh_financial_indicator(
+    symbols: list[str] | None = None, start_year: str = "2020", batch: int = 500
+) -> dict:
+    """刷新财报 ROE/负债率/总资产（akshare 财务指标），ann_date 与成长报表 COALESCE 合并。
+
+    全市场分块拉取并逐块 upsert（避免长事务、便于进度监控与断点续跑）。
+    symbols 为 None 时取宇宙（优先 tushare/akshare，降级 factor.raw_bars）；
+    start_year 控制回看起点。
+    """
+    src = _source()
+    if symbols is None:
+        try:
+            symbols = get_a_share_universe()
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"无法获取宇宙，跳过财务指标刷新: {e}")
+            return {"status": "skipped", "reason": str(e)}
+    total = 0
+    n = len(symbols)
+    for i in range(0, n, batch):
+        chunk = symbols[i : i + batch]
+        df = src.fetch_financial_indicator_akshare(symbols=chunk, start_year=start_year)
+        total += fundamental_store.upsert_finance_reports(_rows(df))
+        logger.info(
+            "财务指标刷新进度",
+            extra={"task": "fundamental_refresh", "done": min(i + batch, n),
+                   "total": n, "upserted": total, "start_year": start_year},
+        )
+    logger.info(
+        "财务指标刷新完成",
+        extra={"task": "fundamental_refresh", "rows": total, "start_year": start_year, "universe": n},
+    )
+    return {"status": "done", "rows": total, "start_year": start_year, "universe": n}
+
+
 def refresh_fundamental(trade_date: str | None = None) -> dict:
-    """每日基础数据刷新入口（daily_basic + trading_status + 财报）。"""
+    """每日基础数据刷新入口（daily_basic + trading_status + 财报 + 财务指标）。"""
     t0 = datetime.now()
     daily = refresh_daily_fundamental(trade_date)
     growth = refresh_growth()
+    indicator = refresh_financial_indicator()
     return {
         "status": "done",
         "daily": daily,
         "growth": growth,
+        "indicator": indicator,
         "duration_s": round((datetime.now() - t0).total_seconds(), 1),
     }

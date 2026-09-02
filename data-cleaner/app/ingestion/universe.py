@@ -32,6 +32,9 @@ def _from_akshare_code(code: str) -> str:
     return code
 
 
+_MIN_UNIVERSE = 1000  # 外部源返回少于此数视为受限/截断，不可信，降级下一源
+
+
 def get_a_share_universe(use_cache: bool = True) -> list[str]:
     """返回全 A 股代码列表（带交易所后缀）。失败时抛 RuntimeError。"""
     # 1) tushare
@@ -48,9 +51,10 @@ def get_a_share_universe(use_cache: bool = True) -> list[str]:
                 )
                 if df is not None and not df.empty:
                     out.extend(df["ts_code"].tolist())
-            if out:
+            if len(out) >= _MIN_UNIVERSE:
                 logger.info("universe from tushare", extra={"count": len(out)})
                 return out
+            logger.warning(f"tushare universe 过少({len(out)})，尝试 akshare")
         except Exception as e:  # noqa: BLE001
             logger.warning(f"tushare universe 失败，尝试 akshare: {e}")
 
@@ -61,14 +65,36 @@ def get_a_share_universe(use_cache: bool = True) -> list[str]:
         df = ak.stock_info_a_code_name()
         codes = df["code"].astype(str).tolist()
         out = [_from_akshare_code(c) for c in codes]
-        if out:
+        if len(out) >= _MIN_UNIVERSE:
             logger.info("universe from akshare", extra={"count": len(out)})
             return out
+        logger.warning(f"akshare universe 过少({len(out)})，降级 DB 兜底")
     except Exception as e:  # noqa: BLE001
         logger.warning(f"akshare universe 失败: {e}")
 
+    # 3) DB 兜底：外部源受限（如 akshare stock_basic 频率限制）时，
+    # 用已落库的价量代码池 factor.raw_bars 作为宇宙——价量回填后即为可靠全 A 名单。
+    try:
+        from sqlalchemy import create_engine, text as _text
+
+        url = getattr(settings, "DATABASE_URL", None)
+        if url:
+            if "+asyncpg" in url:
+                url = url.replace("+asyncpg", "+psycopg2")
+            elif url.startswith("postgresql") and not url.startswith("postgresql+psycopg2"):
+                url = url.replace("postgresql", "postgresql+psycopg2", 1)
+            eng = create_engine(url, pool_pre_ping=True, future=True)
+            with eng.connect() as c:
+                rows = c.execute(_text("SELECT DISTINCT symbol FROM factor.raw_bars")).fetchall()
+            out = [r[0] for r in rows if r[0]]
+            if out:
+                logger.info("universe from factor.raw_bars", extra={"count": len(out)})
+                return out
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"DB universe 兜底失败: {e}")
+
     raise RuntimeError(
-        "无法获取 A 股代码池：请配置 TUSHARE_TOKEN 或安装 akshare"
+        "无法获取 A 股代码池：tushare / akshare / factor.raw_bars 均不可用"
     )
 
 

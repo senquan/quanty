@@ -42,6 +42,7 @@ import {
 import FactorStrategyForm from './factor-strategy-form.vue';
 import {
   categoryTheme,
+  hardRuleOpLabels,
   pct,
   pnlClass,
   rebalanceLabel,
@@ -254,6 +255,26 @@ watch(
               <ElTag size="small" effect="plain" class="font-mono">
                 {{ strategy.config.trade_time }}
               </ElTag>
+              <template
+                v-if="(strategy.config.filters?.hard_rules || []).length"
+              >
+                <ElTag
+                  v-for="(r, i) in strategy.config.filters.hard_rules"
+                  :key="'hr' + i"
+                  size="small"
+                  effect="plain"
+                  type="warning"
+                  class="font-mono"
+                >
+                  {{
+                    r.factor +
+                    ' ' +
+                    hardRuleOpLabels[r.op] +
+                    ' ' +
+                    (r.dynamic ? '分位' + r.dynamic.quantile : r.value ?? '—')
+                  }}
+                </ElTag>
+              </template>
             </div>
           </div>
           <div class="flex items-center gap-2">

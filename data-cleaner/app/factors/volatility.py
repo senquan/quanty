@@ -23,6 +23,24 @@ class ReturnStd20(Factor):
 
 
 @register
+class AnnualizedVol20(Factor):
+    code = "VOL_STD_20_ANN"
+    name = "20日年化波动率"
+    category = "volatility"
+    frequency = "Daily"
+    data_sources = ["adj_close"]
+
+    def compute(self, df):
+        # 年化：日收益率标准差 × √年交易日(252)。与 VOL_STD_20 同口径，仅供
+        # 第一层硬过滤「波动率 ≤ 阈值」使用（阈值按年化口径，如 40%）。
+        def _ann(g):
+            ret = g["adj_close"].pct_change()
+            return ret.rolling(20, min_periods=5).std() * (252 ** 0.5)
+
+        return group_apply(df, "symbol", _ann)
+
+
+@register
 class Atr14(Factor):
     code = "VOL_ATR_14"
     name = "14日ATR"

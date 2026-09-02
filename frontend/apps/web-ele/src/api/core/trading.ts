@@ -90,6 +90,16 @@ export interface TradeRecord {
   trade_time: string | null;
 }
 
+/** 组合每日市值与收益快照（盘后估值，画收益率曲线用） */
+export interface PortfolioValuePoint {
+  value_date: string;
+  cash_balance: number;
+  market_value: number;
+  total_assets: number;
+  daily_return: number | null;
+  cumulative_return: number | null;
+}
+
 /** 调仓记录（聚合各因子策略执行记录） */
 export interface RebalanceRecord {
   strategy_id: number;
@@ -217,6 +227,16 @@ export async function getTradesApi(
 export async function getRebalancesApi(limit = 20) {
   return requestClient.get<RebalanceRecord[]>('/trading/rebalances', {
     params: { limit },
+  });
+}
+
+/** 组合每日市值与收益（盘后估值快照，画收益率曲线用） */
+export async function getPortfolioValuesApi(
+  mode: TradeMode = 'paper',
+  params?: { strategy_id?: number; limit?: number },
+) {
+  return requestClient.get<PortfolioValuePoint[]>('/trading/portfolio/values', {
+    params: { mode, ...(params || {}) },
   });
 }
 

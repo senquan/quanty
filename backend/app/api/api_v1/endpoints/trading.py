@@ -15,12 +15,14 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 from pydantic import BaseModel, Field
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.api_v1.endpoints.auth import get_current_user
 from app.core.config import settings
 from app.core.database import get_db
 from app.models.trading import (
+    PortfolioDailyValue,
     TradingOrder,
     TradingPosition,
     TradingRebalanceRecord,
@@ -134,12 +136,56 @@ async def get_mode(_: User = Depends(get_current_user)):
 @router.get("/overview", summary="量化概览")
 async def get_overview(
     mode: str = Query("paper", description="paper / live"),
+    strategy_id: Optional[int] = Query(None, description="策略ID；不传则返回模式共享账户概览"),
     db: AsyncSession = Depends(get_db),
     _: User = Depends(get_current_user),
 ):
     await ensure_tables()
-    overview = await TradingCoordinator(db, mode).get_overview()
+    overview = await TradingCoordinator(db, mode, strategy_id=strategy_id).get_overview()
     return Response.success(data=overview)
+
+
+@router.get("/portfolio/values", summary="组合每日市值与收益（盘后估值快照）")
+async def get_portfolio_values(
+    mode: str = Query("paper", description="paper / live"),
+    strategy_id: Optional[int] = Query(None, description="策略ID；不传返回模式级聚合快照"),
+    limit: int = Query(120, ge=1, le=500, description="返回最近 N 个交易日"),
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    """读 portfolio_daily_values，供 dashboard 直接画市值曲线 / 收益，无需实时算。
+
+    由 backend 盘后定时任务（portfolio_valuation_service.run_eod_valuation）
+    从 data-cleaner 拉行情后写入；传 strategy_id 返回该策略（独立资金池）序列，
+    不传返回模式级聚合；升序返回便于前端绘制时间序列。
+    """
+    await ensure_tables()
+    conditions = [PortfolioDailyValue.mode == mode]
+    if strategy_id is not None:
+        conditions.append(PortfolioDailyValue.strategy_id == strategy_id)
+    else:
+        conditions.append(PortfolioDailyValue.strategy_id.is_(None))
+    rows = (
+        await db.execute(
+            select(PortfolioDailyValue)
+            .where(*conditions)
+            .order_by(PortfolioDailyValue.value_date.desc())
+            .limit(limit)
+        )
+    ).scalars().all()
+    data = [
+        {
+            "strategy_id": r.strategy_id,
+            "value_date": r.value_date.isoformat(),
+            "cash_balance": r.cash_balance,
+            "market_value": r.market_value,
+            "total_assets": r.total_assets,
+            "daily_return": r.daily_return,
+            "cumulative_return": r.cumulative_return,
+        }
+        for r in reversed(rows)
+    ]
+    return Response.success(data=data)
 
 
 # ============ 账户 / 持仓 ============
@@ -147,11 +193,12 @@ async def get_overview(
 @router.get("/account", summary="账户信息")
 async def get_account(
     mode: str = Query("paper"),
+    strategy_id: Optional[int] = Query(None, description="策略ID；不传则返回模式共享账户"),
     db: AsyncSession = Depends(get_db),
     _: User = Depends(get_current_user),
 ):
     await ensure_tables()
-    detail = await TradingCoordinator(db, mode).get_account_detail()
+    detail = await TradingCoordinator(db, mode, strategy_id=strategy_id).get_account_detail()
     detail["positions"] = [_position_dict(p) for p in detail["positions"]]
     return Response.success(data=detail)
 
@@ -159,11 +206,12 @@ async def get_account(
 @router.get("/positions", summary="持仓列表")
 async def get_positions(
     mode: str = Query("paper"),
+    strategy_id: Optional[int] = Query(None, description="策略ID；不传则返回模式共享账户持仓"),
     db: AsyncSession = Depends(get_db),
     _: User = Depends(get_current_user),
 ):
     await ensure_tables()
-    positions = await TradingCoordinator(db, mode).list_positions()
+    positions = await TradingCoordinator(db, mode, strategy_id=strategy_id).list_positions()
     return Response.success(data=[_position_dict(p) for p in positions])
 
 

@@ -115,7 +115,7 @@ async def rebalance_one(
             ):
                 return {"strategy_id": sid, "status": "skipped", "reason": "今日已执行"}
 
-        coordinator = TradingCoordinator(db, mode)
+        coordinator = TradingCoordinator(db, mode, strategy_id=sid)
 
         # 2) 目标持仓（data-cleaner 只做计算）
         target = await proxy.scores(db, config)

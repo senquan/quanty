@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Text, DateTime, Float, ForeignKey, UniqueConstraint
+from sqlalchemy import Column, Integer, String, Text, DateTime, Float, ForeignKey, UniqueConstraint, JSON, Boolean
 from sqlalchemy.sql import func
 from sqlalchemy.orm import relationship
 from app.core.database import Base
@@ -9,8 +9,9 @@ class Strategy(Base):
     id = Column(Integer, primary_key=True, index=True, autoincrement=True)
     name = Column(String(255), nullable=False)
     description = Column(Text)
-    code = Column(Text, nullable=False)  # 策略代码
+    code = Column(Text, nullable=False)  # 策略配置 JSON（FactorStrategyConfig）
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    is_active = Column(Boolean, nullable=False, default=False)  # 是否启用（原 dc 侧字段）
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
     
@@ -19,10 +20,15 @@ class Strategy(Base):
     # backtest_results = relationship("BacktestResult", back_populates="strategy")
 
 class BacktestResult(Base):
+    """回测结果（backend 持有；dc 仅负责计算，算完回写此处）
+
+    指标列对齐前端 BacktestMetrics；nav / rebalances(逐期持仓快照) / warnings
+    为 dc 计算结果，落 JSON 以避免频繁改表结构。
+    """
     __tablename__ = "backtest_results"
     
     id = Column(Integer, primary_key=True, index=True)
-    strategy_id = Column(Integer, ForeignKey("strategies.id"), nullable=False)
+    strategy_id = Column(Integer, ForeignKey("strategies.id"), nullable=False, index=True)
     start_date = Column(DateTime, nullable=False)
     end_date = Column(DateTime, nullable=False)
     total_return: float = Column(Float)  # 总收益率
@@ -30,6 +36,10 @@ class BacktestResult(Base):
     max_drawdown: float = Column(Float)  # 最大回撤
     win_rate: float = Column(Float)  # 胜率
     trades_count = Column(Integer, nullable=True)  # 交易次数
+    # ---- dc 计算结果（JSON） ----
+    nav = Column(JSON, nullable=True)              # [{date, value}]
+    rebalances = Column(JSON, nullable=True)       # [{date, tradeDate, weights, holdings[]}]
+    warnings = Column(JSON, nullable=True)         # [str]
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     
     # 关系

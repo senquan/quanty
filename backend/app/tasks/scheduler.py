@@ -15,7 +15,9 @@ from apscheduler.triggers.interval import IntervalTrigger
 
 from app.core.config import settings
 from app.core.database import AsyncSessionLocal
+from app.models.trading import MODE_PAPER
 from app.services import cleaner_gateway as gw
+from app.services import portfolio_valuation_service
 from app.services import rebalance_service
 
 logger = logging.getLogger(__name__)
@@ -62,6 +64,20 @@ async def _poll_qos_job() -> None:
         logger.error("清洗服务状态轮询失败: %s", e)
 
 
+async def _portfolio_valuation_job() -> None:
+    """交易日盘后：从 dc 拉行情 → 更新持仓市值 → 记录组合日快照。"""
+    modes = [MODE_PAPER]
+    if getattr(settings, "ENABLE_LIVE_TRADING", False):
+        modes.append("live")
+    for mode in modes:
+        try:
+            async with AsyncSessionLocal() as db:
+                result = await portfolio_valuation_service.run_eod_valuation(db, mode=mode)
+            logger.info("盘后估值完成 mode=%s %s", mode, result)
+        except Exception as e:  # noqa: BLE001  不阻断调度器
+            logger.error("盘后估值失败 mode=%s: %s", mode, e)
+
+
 def register_jobs() -> None:
     # 各任务按独立开关注册；两个开关都关闭时调度器不启动
     if getattr(settings, "ENABLE_TRADING_SCHEDULER", False):
@@ -101,6 +117,21 @@ def register_jobs() -> None:
             trigger=IntervalTrigger(seconds=poll_sec, timezone="Asia/Shanghai"),
             id="cleaner_poll",
             misfire_grace_time=60,
+            max_instances=1,
+            coalesce=True,
+            replace_existing=True,
+        )
+
+    # 组合盘后估值：交易日 15:30 从 dc 拉行情、更新持仓市值、记录日快照。
+    # 默认开启；关闭 ENABLE_PORTFOLIO_VALUATION 可跳过。
+    if getattr(settings, "ENABLE_PORTFOLIO_VALUATION", True):
+        scheduler.add_job(
+            _portfolio_valuation_job,
+            trigger=CronTrigger(
+                day_of_week="mon-fri", hour=15, minute=30, timezone="Asia/Shanghai"
+            ),
+            id="portfolio_valuation",
+            misfire_grace_time=1800,
             max_instances=1,
             coalesce=True,
             replace_existing=True,

@@ -401,6 +401,89 @@ class FundamentalSource(BaseSource):
             return pd.DataFrame(columns=cols)
         return pd.concat(frames, ignore_index=True)[cols]
 
+    def fetch_financial_indicator_akshare(
+        self, symbols: list[str] | None = None, start_year: str = "2020"
+    ) -> "pd.DataFrame":
+        """akshare 实现：逐标的调财务指标(stock_financial_analysis_indicator)取 ROE/负债率/总资产。
+
+        一次性遍历全市场（成本集中在网络 IO，ThreadPool 并发加速），返回列与
+        finance_reports 对齐（仅含 roe/debt_ratio/total_assets，成长指标由 yjbb 路径负责）。
+        ann_date 取 report_period + 1 季（财报披露通常滞后一季，保守滞后避免前视；
+        upsert 时与成长报表真实公告日取 COALESCE，优先保留真实披露日）。
+        """
+        cols = ["symbol", "report_period", "ann_date", "roe", "debt_ratio",
+                "total_assets", "eps", "net_profit"]
+        try:
+            import akshare as ak
+        except ImportError:
+            logger.warning("未安装 akshare，财务指标降级为空")
+            return pd.DataFrame(columns=cols)
+        try:
+            universe = symbols or get_a_share_universe()
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"akshare 财务指标：无法获取代码池: {e}")
+            return pd.DataFrame(columns=cols)
+
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        # stock_financial_analysis_indicator 用纯 6 位代码（如 000001），不带交易所前缀
+        def _ak_code(ts_code: str) -> str:
+            return str(ts_code).split(".")[0]
+
+        def _one(ts_code: str) -> "pd.DataFrame | None":
+            ak_code = _ak_code(ts_code)
+            try:
+                buf = io.StringIO()
+                with redirect_stderr(buf):
+                    df = ak.stock_financial_analysis_indicator(symbol=ak_code, start_year=start_year)
+            except Exception as e:  # noqa: BLE001
+                return None
+            if df is None or df.empty:
+                return None
+            rep = df.get("日期")
+            if rep is None:
+                return None
+            rp = pd.to_datetime(rep, errors="coerce")
+            return pd.DataFrame(
+                {
+                    "symbol": ts_code,
+                    "report_period": rp.dt.date,
+                    # 披露日代理：期末 + 1 季（保守滞后，避免前视）
+                    "ann_date": (rp + pd.offsets.QuarterEnd(1)).dt.date,
+                    "roe": df.get("净资产收益率(%)"),
+                    "debt_ratio": df.get("资产负债率(%)"),
+                    "total_assets": df.get("总资产(元)"),
+                    # akshare 该接口无「基本每股收益」，用「摊薄每股收益(元)」(标准稀释 EPS)
+                    "eps": df.get("摊薄每股收益(元)"),
+                    "net_profit": df.get("扣除非经常性损益后的净利润(元)"),
+                }
+            )
+
+        frames: list[pd.DataFrame] = []
+        ok = fail = 0
+        with ThreadPoolExecutor(max_workers=8) as ex:
+            futs = {ex.submit(_one, s): s for s in universe}
+            for fut in as_completed(futs):
+                ts_code = futs[fut]
+                try:
+                    r = fut.result()
+                except Exception as e:  # noqa: BLE001
+                    r = None
+                    if fail < 5:
+                        logger.warning(f"akshare 财务指标失败({ts_code}): {e}")
+                if r is None or r.empty:
+                    fail += 1
+                    continue
+                frames.append(r)
+                ok += 1
+        logger.info(
+            "akshare 财务指标遍历完成",
+            extra={"task": "ingest", "ok": ok, "fail": fail, "start_year": start_year},
+        )
+        if not frames:
+            return pd.DataFrame(columns=cols)
+        return pd.concat(frames, ignore_index=True)[cols]
+
     def _fetch_growth(self, params: dict) -> "pd.DataFrame":
         """fina_indicator 统一抓取（营收/净利同比，含 ann_date，防前视）。
 

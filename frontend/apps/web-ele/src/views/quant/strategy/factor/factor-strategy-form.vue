@@ -3,12 +3,13 @@ import type {
   FactorDefinition,
   FactorStrategy,
   FactorStrategyConfig,
+  HardRule,
 } from '#/api/factor-strategy';
 
 import { computed, nextTick, reactive, ref, watch } from 'vue';
 import { useRouter } from 'vue-router';
 
-import { RefreshCw, Save, Search, X } from '@lucide/vue';
+import { Plus, RefreshCw, Save, Search, Trash2, X } from '@lucide/vue';
 import {
   ElButton,
   ElCheckbox,
@@ -41,6 +42,9 @@ import { getWatchlistApi, type WatchlistItem } from '#/api/watchlist';
 import {
   categoryTheme,
   defaultConfig,
+  hardRuleOpLabels,
+  hardRuleOps,
+  hardRuleRoleLabels,
   neutralizeLabels,
   normalizeUniverse,
   rebalanceLabel,
@@ -131,6 +135,34 @@ const customEnabled = ref(false);
 watch(customEnabled, (v) => {
   if (!v) form.config.custom_codes = [];
 });
+
+// ============ 第一层 hard_rules 编辑 ============
+const hardRules = computed<HardRule[]>({
+  get: () => form.config.filters.hard_rules || [],
+  set: (v) => {
+    form.config.filters.hard_rules = v;
+  },
+});
+
+function addHardRule() {
+  form.config.filters.hard_rules ||= [];
+  form.config.filters.hard_rules.push({
+    factor: '',
+    op: '<=',
+    value: null,
+    role: 'core',
+    dynamic: null,
+  });
+}
+
+function removeHardRule(idx: number) {
+  form.config.filters.hard_rules?.splice(idx, 1);
+}
+
+/** 固定阈值 <-> 动态(quantile) 阈值切换 */
+function setHardRuleDynamic(rule: HardRule, on: boolean) {
+  rule.dynamic = on ? { mode: 'quantile', quantile: 0.5 } : null;
+}
 
 // ============ 从自选股选择 ============
 const watchlistPickerVisible = ref(false);
@@ -249,6 +281,12 @@ function buildPayload() {
     cfg.weights = w;
   } else {
     cfg.weights = {};
+  }
+  // 清理硬性阈值规则：丢弃未选因子的空行
+  if (Array.isArray(cfg.filters?.hard_rules)) {
+    cfg.filters.hard_rules = cfg.filters.hard_rules.filter(
+      (r) => r && r.factor,
+    );
   }
   return {
     name: form.name.trim(),
@@ -563,6 +601,106 @@ function close() {
               size="small"
               placeholder="不限"
             />
+          </div>
+        </div>
+
+        <!-- 第一层：硬性阈值筛选 -->
+        <div class="col-span-2 mt-4 rounded-lg bg-gray-50 border border-gray-100 p-3">
+          <div class="flex items-center justify-between mb-2">
+            <span class="text-xs font-semibold text-gray-600">
+              第一层 · 硬性阈值筛选（hard_rules）
+            </span>
+            <ElButton size="small" :icon="Plus" @click="addHardRule">
+              添加规则
+            </ElButton>
+          </div>
+          <p class="text-[11px] text-gray-400 mb-2">
+            通过全部规则的标的才进入合格池（核心 / 流动性 / 风险三类均参与通过判定）。
+          </p>
+          <div
+            v-for="(rule, idx) in hardRules"
+            :key="idx"
+            class="flex items-center gap-2 mb-2 flex-wrap"
+          >
+            <ElSelect
+              v-model="rule.factor"
+              filterable
+              size="small"
+              clearable
+              placeholder="因子"
+              class="w-52"
+            >
+              <ElOptionGroup
+                v-for="g in groupedFactors"
+                :key="g.cat"
+                :label="g.theme.label"
+              >
+                <ElOption
+                  v-for="f in g.list"
+                  :key="f.code"
+                  :value="f.code"
+                  :label="`${f.name}（${f.code}）`"
+                />
+              </ElOptionGroup>
+            </ElSelect>
+            <ElSelect v-model="rule.op" size="small" class="w-20">
+              <ElOption
+                v-for="op in hardRuleOps"
+                :key="op"
+                :value="op"
+                :label="hardRuleOpLabels[op]"
+              />
+            </ElSelect>
+            <template v-if="rule.dynamic">
+              <ElInputNumber
+                v-model="rule.dynamic.quantile"
+                :min="0.01"
+                :max="0.99"
+                :step="0.05"
+                :precision="2"
+                size="small"
+                class="w-32"
+                placeholder="分位"
+              />
+              <span class="text-[11px] text-gray-400">分位</span>
+            </template>
+            <ElInputNumber
+              v-else
+              v-model="rule.value"
+              :step="1"
+              size="small"
+              class="w-32"
+              placeholder="阈值"
+            />
+            <ElSelect v-model="rule.role" size="small" class="w-24">
+              <ElOption
+                v-for="(label, r) in hardRuleRoleLabels"
+                :key="r"
+                :value="r"
+                :label="label"
+              />
+            </ElSelect>
+            <ElSwitch
+              :model-value="!!rule.dynamic"
+              size="small"
+              inline-prompt
+              active-text="动态"
+              inactive-text="固定"
+              @update:model-value="(v) => setHardRuleDynamic(rule, !!v)"
+            />
+            <ElButton
+              size="small"
+              text
+              type="danger"
+              :icon="Trash2"
+              @click="removeHardRule(idx)"
+            />
+          </div>
+          <div
+            v-if="hardRules.length === 0"
+            class="text-[11px] text-gray-400"
+          >
+            暂未设置硬性阈值，不对因子值做硬性过滤。
           </div>
         </div>
       </section>

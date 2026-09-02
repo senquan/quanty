@@ -17,12 +17,22 @@ class ValuePE(Factor):
     name = "市盈率(TTM)"
     category = "value"
     frequency = "Daily"
-    data_sources = ["pe_ttm"]
+    data_sources = ["adj_close", "eps_ttm"]
 
     def compute(self, df):
-        if "pe_ttm" not in df.columns:
-            return pd.Series(float("nan"), index=df.index)
-        return df["pe_ttm"]
+        # 优先用 价 / TTM每股收益 推导：全历史可用（daily_basic.pe_ttm 仅约 3 日历史）。
+        # 价用前复权 adj_close，得到横截面可比的「调整 PE」；亏损股(eps_ttm<=0) PE 无意义→NaN。
+        if ("eps_ttm" in df.columns and df["eps_ttm"].notna().any()
+                and "adj_close" in df.columns):
+            base = df["eps_ttm"].replace(0, pd.NA)
+            pe = df["adj_close"] / base
+            pe = pe.where(base > 0, other=pd.NA)
+            pe = pe.clip(lower=0, upper=1000)
+            if pe.notna().any():
+                return pe
+        if "pe_ttm" in df.columns:
+            return df["pe_ttm"]
+        return pd.Series(float("nan"), index=df.index)
 
 
 @register
@@ -59,12 +69,19 @@ class ValueDivYield(Factor):
     name = "股息率"
     category = "value"
     frequency = "Daily"
-    data_sources = ["div_yield"]
+    data_sources = ["dividend_ttm", "adj_close", "div_yield"]
 
     def compute(self, df):
-        if "div_yield" not in df.columns:
-            return pd.Series(float("nan"), index=df.index)
-        return df["div_yield"]
+        # 优先用 近12月每股分红 / 价 推导（全历史；daily_basic.dv_ttm 仅约 3 日历史）。
+        if ("dividend_ttm" in df.columns and df["dividend_ttm"].notna().any()
+                and "adj_close" in df.columns):
+            dy = df["dividend_ttm"] / df["adj_close"]
+            dy = dy.clip(lower=0, upper=0.2)  # 股息率 >20% 视为异常
+            if dy.notna().any():
+                return dy
+        if "div_yield" in df.columns:
+            return df["div_yield"]
+        return pd.Series(float("nan"), index=df.index)
 
 
 @register
@@ -138,3 +155,38 @@ class GrowthPriceMomentum(Factor):
             return r60 / (r250.abs() + 1e-9)
 
         return group_apply(df, "symbol", _g)
+
+
+# ---------- 基本面质量 FND_ ----------
+
+@register
+class FundamentalRoe(Factor):
+    code = "FND_ROE"
+    name = "净资产收益率(%)"
+    category = "fundamental"
+    frequency = "Daily"
+    data_sources = ["roe"]
+
+    def compute(self, df):
+        if "roe" not in df.columns:
+            return pd.Series(float("nan"), index=df.index)
+        # 单位：百分点（akshare 直供，如茅台 17.72 表示 17.72%）。
+        # 困境股净资产近零/为负会算出极端值（实测出现过 -80000%），
+        # 在截面 z-score 中会 dominate，clip 到 [-100, 100] 稳健化（不改排序方向）。
+        return df["roe"].clip(-100.0, 100.0)
+
+
+@register
+class FundamentalDebtRatio(Factor):
+    code = "FND_DEBT_RATIO"
+    name = "资产负债率(%)"
+    category = "fundamental"
+    frequency = "Daily"
+    data_sources = ["debt_ratio"]
+
+    def compute(self, df):
+        if "debt_ratio" not in df.columns:
+            return pd.Series(float("nan"), index=df.index)
+        # 单位：百分点（如茅台 15.19 表示 15.19%）。资不抵债（负资产）情形
+        # clip 到 100 仍标记为高杠杆，便于「低负债」硬过滤。
+        return df["debt_ratio"].clip(0.0, 100.0)

@@ -55,13 +55,22 @@ def _merge_fundamental(panel: pd.DataFrame) -> pd.DataFrame:
         db = db.drop_duplicates(subset=["symbol", "_d"], keep="last")
         panel = panel.merge(db, on=["symbol", "_d"], how="left")
 
-    # 2) finance_reports：成长同比，按披露日 as-of 前向填充
+    # 2) finance_reports：成长同比 + ROE/负债率 + TTM每股收益，按披露日 as-of 前向填充
     fr = fundamental_store.load_finance_reports()
     if not fr.empty:
         fr = fr.copy()
         fr["ann_date"] = pd.to_datetime(fr["ann_date"])
-        fr = fr.dropna(subset=["ann_date"]).sort_values("ann_date")
-        right = fr[["symbol", "ann_date", "rev_growth_yoy", "eps_growth_yoy"]]
+        fr["report_period"] = pd.to_datetime(fr["report_period"], errors="coerce")
+        fr = fr.dropna(subset=["ann_date"]).sort_values(["symbol", "ann_date"])
+        # TTM 每股收益：取最新「年报(report_period 月=12)」的 EPS 并向前填充。
+        # 注意 finance_reports.eps 是年初至今累计（季报 YTD），不能直接滚动 4 期求和
+        # （会重复累计，虚高 2~4 倍）；年报 EPS 即为 TTM，ffill 到下次年报前。
+        fr["_rp_month"] = fr["report_period"].dt.month
+        fr["eps_ttm"] = fr["eps"].where(fr["_rp_month"] == 12)
+        fr["eps_ttm"] = fr.groupby("symbol")["eps_ttm"].ffill()
+        fr = fr.drop(columns=["_rp_month"]).sort_values("ann_date")
+        right = fr[["symbol", "ann_date", "rev_growth_yoy", "eps_growth_yoy",
+                    "roe", "debt_ratio", "eps_ttm"]]
         left = panel.sort_values("_d")
         try:
             panel = pd.merge_asof(
@@ -71,6 +80,15 @@ def _merge_fundamental(panel: pd.DataFrame) -> pd.DataFrame:
         except Exception as e:  # noqa: BLE001
             logger.warning(f"财报 as-of 合并失败: {e}")
             panel = left
+
+    # 3) stock_info：行业 / 上市日期 / 近12月每股分红（静态，按 symbol 左连接）
+    si = fundamental_store.load_stock_info()
+    if not si.empty:
+        si = si.copy()
+        si["list_date"] = pd.to_datetime(si["list_date"], errors="coerce")
+        keep = ["symbol", "industry", "list_date", "dividend_ttm"]
+        keep = [c for c in keep if c in si.columns]
+        panel = panel.merge(si[keep], on="symbol", how="left")
 
     return panel.drop(columns=["_d", "ann_date"], errors="ignore")
 

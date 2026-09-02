@@ -148,12 +148,12 @@ class RawBarRepository:
         df = df.copy()
         if "freq" not in df.columns:
             df["freq"] = "1d"
-        for c in ("adj_factor", "hfq_close"):
+        for c in ("adj_factor", "hfq_close", "amount"):
             if c not in df.columns:
                 df[c] = None
 
         cols = ["symbol", "timestamp", "open", "high", "low", "close",
-                "volume", "source", "freq", "adj_factor", "hfq_close"]
+                "volume", "source", "freq", "adj_factor", "hfq_close", "amount"]
 
         def _clean(v):
             # NaN -> None（PG 用 NULL 表示缺失，避免写入 NaN::float8）
@@ -177,7 +177,7 @@ class RawBarRepository:
         sql = """
             INSERT INTO factor.raw_bars
                 (symbol, timestamp, open, high, low, close, volume, source, freq,
-                 adj_factor, hfq_close)
+                 adj_factor, hfq_close, amount)
             VALUES %s
             ON CONFLICT (symbol, timestamp, freq) DO UPDATE SET
                 open       = EXCLUDED.open,
@@ -187,7 +187,8 @@ class RawBarRepository:
                 volume     = EXCLUDED.volume,
                 source     = EXCLUDED.source,
                 adj_factor = EXCLUDED.adj_factor,
-                hfq_close  = EXCLUDED.hfq_close
+                hfq_close  = EXCLUDED.hfq_close,
+                amount     = EXCLUDED.amount
         """
         written = 0
         try:
@@ -207,6 +208,40 @@ class RawBarRepository:
             logger.error(f"bulk_upsert 失败，回退逐行 upsert: {e}")
             return self.upsert(df)
         return written
+
+    def update_amounts(self, rows: list[tuple]) -> int:
+        """仅回填成交额(amount)，不动 OHLCV/volume（避免改动既有量纲）。
+
+        rows: list[(symbol, timestamp, amount)]。使用批量 UPDATE ... FROM (VALUES)，
+        仅更新已存在行（raw_bars 主键 symbol+timestamp+freq），不产生新行。
+        """
+        if not rows:
+            return 0
+        if self._engine is None:
+            return 0
+        sql = """
+            UPDATE factor.raw_bars r
+            SET amount = v.amount
+            FROM (VALUES %s) AS v(symbol, ts, amount)
+            WHERE r.symbol = v.symbol AND r.timestamp = v.ts AND r.freq = '1d'
+        """
+        from psycopg2.extras import execute_values
+
+        raw = self._engine.raw_connection()
+        try:
+            with raw.cursor() as cur:
+                execute_values(cur, sql, list(rows), page_size=5000)
+                raw.commit()
+            return len(rows)
+        except Exception as e:  # noqa: BLE001
+            logger.error(f"update_amounts 失败: {e}")
+            try:
+                raw.rollback()
+            except Exception:  # noqa: BLE001
+                pass
+            return 0
+        finally:
+            raw.close()
 
     def get_latest_date(self, symbol: str, freq: str = "1d") -> str | None:
         if self._engine is not None:
@@ -248,7 +283,7 @@ class RawBarRepository:
 
                 sql = (
                     "SELECT symbol,timestamp,open,high,low,close,volume,source,freq,"
-                    "adj_factor,hfq_close "
+                    "adj_factor,hfq_close,amount "
                     "FROM factor.raw_bars WHERE freq=:f"
                 )
                 params: dict = {"f": freq}
@@ -348,7 +383,7 @@ class RawBarRepository:
 
                 sql = (
                     "SELECT symbol,timestamp,open,high,low,close,volume,source,freq,"
-                    "adj_factor,hfq_close "
+                    "adj_factor,hfq_close,amount "
                     "FROM factor.raw_bars WHERE symbol=:s"
                 )
                 params: dict = {"s": symbol}

@@ -36,6 +36,7 @@ def compute_factor(code: str, df: "pd.DataFrame") -> "pd.Series":
 # 注册内置因子
 from app.factors.fundamental import *  # noqa: F401,F403,E402
 from app.factors.intraday import *  # noqa: F401,F403,E402
+from app.factors.liquidity import *  # noqa: F401,F403,E402
 from app.factors.momentum import *  # noqa: F401,F403,E402
 from app.factors.sentiment import *  # noqa: F401,F403,E402
 from app.factors.size import *  # noqa: F401,F403,E402

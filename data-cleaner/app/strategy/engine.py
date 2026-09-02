@@ -11,6 +11,7 @@
 """
 from datetime import datetime, timedelta
 import math
+import operator
 
 import numpy as np
 import pandas as pd
@@ -285,6 +286,7 @@ def scores_at(
     neutralize: str,
     universe: object = None,
     custom_codes: list[str] | None = None,
+    restrict: set[str] | None = None,
 ) -> tuple[pd.Series, dict]:
     """计算某日各股票综合得分（index=symbol）。
 
@@ -315,6 +317,10 @@ def scores_at(
     if _normalize_universe(universe):
         mask = acc.index.map(lambda s: in_universe(s, universe, custom_codes))
         acc = acc[mask]
+    # 第一层硬阈值筛选：仅保留合格池标的（hard_rules 已在调用方算好）
+    if restrict is not None:
+        acc = acc[acc.index.isin(restrict)]
+        z_map = {s: v for s, v in z_map.items() if s in restrict}
     return acc, z_map
 
 
@@ -350,7 +356,163 @@ def normalize_filters(config: dict) -> dict:
         "exclude_limit_up": _bool(f.get("exclude_limit_up"), True),
         "exclude_limit_down": _bool(f.get("exclude_limit_down"), False),
         "min_cap": min_cap,
+        "hard_rules": normalize_hard_rules(f.get("hard_rules")),
     }
+
+
+# --------------------------------------------------------------------------- #
+# 第一层：硬性阈值筛选（hard_rules，配置驱动）
+# --------------------------------------------------------------------------- #
+# op 与 role 的白名单（与 docs/plans/2026-09-02.three-layer-strategy-design.md §2 对齐）
+_HARD_OPS = {
+    "<=": operator.le,
+    ">=": operator.ge,
+    "<": operator.lt,
+    ">": operator.gt,
+    "==": operator.eq,
+    "!=": operator.ne,
+}
+_HARD_ROLES = {"core", "liquidity", "risk"}
+
+
+def normalize_hard_rules(rules) -> list[dict]:
+    """统一 hard_rules 默认值与类型，集中配置校验；无效项以 warning 忽略。
+
+    接受的规则字段（见设计文档 §2.2）：
+    - factor: 因子 code（必须已在 registry 注册）
+    - op:     <= >= < > == !=
+    - value:  固定阈值（与 dynamic 二选一）
+    - role:   core | liquidity | risk（默认 core）
+    - dynamic: 动态阈值 {mode:"quantile", quantile:0.0~1.0}（一期仅 quantile）
+    """
+    if not rules:
+        return []
+    out: list[dict] = []
+    for r in rules:
+        if not isinstance(r, dict):
+            continue
+        factor = r.get("factor")
+        op = r.get("op")
+        if not factor or op not in _HARD_OPS:
+            logger.warning("忽略无效 hard_rule（缺 factor 或 op 不合法）: %s", r)
+            continue
+        try:
+            from app.factors.registry import get_factor
+
+            get_factor(factor)
+        except Exception:  # noqa: BLE001
+            logger.warning("hard_rule 因子未注册，已忽略: %s", factor)
+            continue
+        role = r.get("role") or "core"
+        if role not in _HARD_ROLES:
+            role = "core"
+        dyn = r.get("dynamic")
+        if dyn is not None:
+            # 一期仅支持 quantile；其它 mode 忽略降级为固定阈值
+            if not isinstance(dyn, dict) or dyn.get("mode") != "quantile":
+                dyn = None
+        rule: dict = {"factor": factor, "op": op, "role": role, "dynamic": dyn}
+        rule["value"] = r.get("value")
+        out.append(rule)
+    return out
+
+
+def _resolve_threshold(cross: pd.Series, rule: dict) -> float | None:
+    """解析单条规则的阈值：dynamic(quantile) 优先，否则用固定 value。"""
+    dyn = rule.get("dynamic")
+    if dyn:
+        q = dyn.get("quantile")
+        try:
+            q = float(q)
+        except (TypeError, ValueError):
+            return None
+        if not (0.0 < q < 1.0):
+            return None
+        if cross.empty:
+            return None
+        return float(cross.quantile(q))
+    val = rule.get("value")
+    if val is None:
+        return None
+    try:
+        return float(val)
+    except (TypeError, ValueError):
+        return None
+
+
+def apply_hard_rules(
+    as_of: str,
+    frames: dict[str, pd.DataFrame],
+    rules: list[dict],
+    restrict: set[str] | None = None,
+) -> tuple[set[str], dict]:
+    """第一层：对候选池逐标的判定，全部 hard_rules 通过才进入合格池。
+
+    返回 (qualified, info)：
+    - qualified: 通过全部规则的标的集合（restrict 给定时先缩到 restrict）
+    - info: {rules:[{factor,op,role,threshold,available,passed,total}],
+             detail:{symbol:{rule_index:bool}}} 供诊断/前端展示
+
+    设计文档 §2.1：core / liquidity / risk 三类角色**全部参与**通过性判定，
+    role 仅决定该规则是否计入「达标程度评分」（层三溢出逻辑用，本期未启用）。
+    固定值与动态阈值二选一（normalize_hard_rules 已校验）。
+    """
+    if not rules:
+        # 无硬规则：合格池 = 候选集（restrict 或全市场有因子值标的）
+        if restrict is not None:
+            return set(restrict), {"rules": [], "detail": {}}
+        candidates = set()
+        for f in frames.values():
+            if as_of in f.index:
+                candidates |= set(f.loc[as_of].dropna().index)
+        return candidates, {"rules": [], "detail": {}}
+
+    # 候选池：restrict 优先；否则取所有 hard_rule 因子在该日有值标的的并集
+    if restrict is not None:
+        candidates = set(restrict)
+    else:
+        candidates = set()
+        for r in rules:
+            f = frames.get(r["factor"])
+            if f is not None and as_of in f.index:
+                candidates |= set(f.loc[as_of].dropna().index)
+
+    qualified = set(candidates)
+    detail: dict[str, dict[int, bool]] = {s: {} for s in candidates}
+    rule_summary: list[dict] = []
+    for i, r in enumerate(rules):
+        factor, op, role = r["factor"], r["op"], r["role"]
+        frame = frames.get(factor)
+        if frame is None or as_of not in frame.index:
+            # 因子当日无数据 → 无人能通过该规则
+            qualified = set()
+            rule_summary.append(
+                {"factor": factor, "role": role, "op": op,
+                 "threshold": None, "available": False,
+                 "passed": 0, "total": len(candidates)}
+            )
+            continue
+        cross = frame.loc[as_of].dropna()
+        thr = _resolve_threshold(cross, r)
+        if thr is None:
+            qualified = set()
+            rule_summary.append(
+                {"factor": factor, "role": role, "op": op,
+                 "threshold": None, "available": True,
+                 "passed": 0, "total": len(candidates)}
+            )
+            continue
+        mask = _HARD_OPS[op](cross, thr)
+        passing = set(mask[mask].index)
+        qualified &= passing
+        for s in candidates:
+            detail[s][i] = s in passing
+        rule_summary.append(
+            {"factor": factor, "role": role, "op": op,
+             "threshold": round(thr, 6), "available": True,
+             "passed": len(passing), "total": len(candidates)}
+        )
+    return qualified, {"rules": rule_summary, "detail": detail}
 
 
 def apply_filters(
@@ -532,11 +694,14 @@ def run_backtest(
     initial_capital = float(config.get("initial_capital", 1_000_000))
     rebalance = config.get("rebalance") or {"freq": "weekly"}
     filters = normalize_filters(config)
+    hard_rules = filters.get("hard_rules") or []
     lookback = int(config.get("lookback_days", 60))
     universe = _normalize_universe(config.get("universe"))
     custom_codes = config.get("custom_codes") or []
 
-    frames = load_factor_frames(factor_codes, start, end)
+    # 第一层所需因子 = 打分因子 ∪ hard_rules 因子
+    all_codes = sorted(set(factor_codes) | {r["factor"] for r in hard_rules})
+    frames = load_factor_frames(all_codes, start, end)
     missing = [c for c in factor_codes if c not in frames]
     warnings: list[str] = []
     if missing:
@@ -587,9 +752,14 @@ def run_backtest(
             weights = resolve_weights_auto_backtest(
                 factor_codes, frames, fwd, T, lookback
             )
-        scores, z_map = scores_at(T, frames, ind_map, weights, neutralize, universe, custom_codes)
+        # 第一层：硬性阈值筛选 → 合格池（restrict 仅保留合格池中标的参与打分）
+        qualified, _ = apply_hard_rules(T, frames, hard_rules)
+        scores, z_map = scores_at(
+            T, frames, ind_map, weights, neutralize, universe, custom_codes,
+            restrict=qualified,
+        )
         if scores.empty:
-            warnings.append(f"{T} 无有效得分，跳过")
+            warnings.append(f"{T} 无有效得分（合格池 {len(qualified)} 只），跳过")
             continue
         picked = select_top_n(scores, top_n)
         susp_row = suspended_all.loc[T] if T in suspended_all.index else None
@@ -773,11 +943,14 @@ def compute_target(config: dict, as_of: str | None = None) -> dict:
     weight_mode = config.get("weight_mode", "auto_ir")
     manual_weights = config.get("weights") or {}
     filters = normalize_filters(config)
+    hard_rules = filters.get("hard_rules") or []
     lookback = int(config.get("lookback_days", 60))
     universe = _normalize_universe(config.get("universe"))
     custom_codes = config.get("custom_codes") or []
 
-    frames = load_factor_frames(factor_codes)
+    # 第一层所需因子 = 打分因子 ∪ hard_rules 因子（避免硬阈值因子未加载）
+    all_codes = sorted(set(factor_codes) | {r["factor"] for r in hard_rules})
+    frames = load_factor_frames(all_codes)
     factor_codes = [c for c in factor_codes if c in frames]
     if not factor_codes:
         return {"error": "无可用因子值"}
@@ -802,9 +975,19 @@ def compute_target(config: dict, as_of: str | None = None) -> dict:
     else:
         weights = industry_store._run(resolve_weights_auto_realtime, factor_codes)
 
-    scores, z_map = scores_at(as_of, frames, ind_map, weights, neutralize, universe, custom_codes)
+    # 第一层：硬性阈值筛选 → 合格池（restrict 仅保留合格池中标的参与打分）
+    qualified, hard_info = apply_hard_rules(as_of, frames, hard_rules)
+    hard_info["qualified"] = len(qualified)
+    scores, z_map = scores_at(
+        as_of, frames, ind_map, weights, neutralize, universe, custom_codes,
+        restrict=qualified,
+    )
     if scores.empty:
-        return {"error": f"{as_of} 无有效得分", "date": as_of}
+        return {
+            "error": f"{as_of} 无有效得分（合格池 {len(qualified)} 只）",
+            "date": as_of,
+            "hard_filter": _clean(hard_info),
+        }
 
     # as_of 当日交易状态 / 市值（供过滤）
     ts = fundamental_store.load_trading_status(start=as_of, end=as_of)
@@ -846,6 +1029,7 @@ def compute_target(config: dict, as_of: str | None = None) -> dict:
             "date": as_of,
             "weights": {c: round(w, 4) for c, w in weights.items()},
             "scores": {s: round(float(scores[s]), 4) for s in picked},
+            "hard_filter": hard_info,
             "holdings": [
                 {
                     "symbol": s,

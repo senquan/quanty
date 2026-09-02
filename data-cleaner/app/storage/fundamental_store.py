@@ -117,25 +117,37 @@ def upsert_finance_reports(rows: list[dict]) -> int:
         return 0
     from sqlalchemy import text
 
+    # 全列清单：成长路径与财务指标路径各自只带部分列，统一补齐为全列（缺省 None），
+    # 避免 SQLAlchemy 报 "bind parameter required"。COALESCE 保证两类写入互不覆盖。
+    _cols = [
+        "symbol", "report_period", "ann_date", "rev_growth_yoy", "eps_growth_yoy",
+        "revenue", "net_profit", "eps", "roe", "debt_ratio", "total_assets",
+    ]
     sql = text(
         """
         INSERT INTO factor.finance_reports
             (symbol, report_period, ann_date, rev_growth_yoy, eps_growth_yoy,
-             revenue, net_profit, eps, updated_at)
+             revenue, net_profit, eps, roe, debt_ratio, total_assets, updated_at)
         VALUES (:symbol, :report_period, :ann_date, :rev_growth_yoy, :eps_growth_yoy,
-                :revenue, :net_profit, :eps, now())
+                :revenue, :net_profit, :eps, :roe, :debt_ratio, :total_assets, now())
         ON CONFLICT (symbol, report_period) DO UPDATE SET
-            ann_date = EXCLUDED.ann_date,
-            rev_growth_yoy = EXCLUDED.rev_growth_yoy,
-            eps_growth_yoy = EXCLUDED.eps_growth_yoy,
-            revenue = EXCLUDED.revenue, net_profit = EXCLUDED.net_profit,
-            eps = EXCLUDED.eps, updated_at = now()
+            -- ann_date 优先保留已有真实披露日（成长报表路径），缺失才用财务指标代理
+            ann_date = COALESCE(finance_reports.ann_date, EXCLUDED.ann_date),
+            rev_growth_yoy = COALESCE(EXCLUDED.rev_growth_yoy, finance_reports.rev_growth_yoy),
+            eps_growth_yoy = COALESCE(EXCLUDED.eps_growth_yoy, finance_reports.eps_growth_yoy),
+            revenue = COALESCE(EXCLUDED.revenue, finance_reports.revenue),
+            net_profit = COALESCE(EXCLUDED.net_profit, finance_reports.net_profit),
+            eps = COALESCE(EXCLUDED.eps, finance_reports.eps),
+            roe = COALESCE(EXCLUDED.roe, finance_reports.roe),
+            debt_ratio = COALESCE(EXCLUDED.debt_ratio, finance_reports.debt_ratio),
+            total_assets = COALESCE(EXCLUDED.total_assets, finance_reports.total_assets),
+            updated_at = now()
         """
     )
     n = 0
     with eng.begin() as conn:
         for r in rows:
-            conn.execute(sql, r)
+            conn.execute(sql, {c: r.get(c) for c in _cols})
             n += 1
     return n
 
@@ -186,7 +198,8 @@ def load_finance_reports() -> pd.DataFrame:
 
     sql = (
         "SELECT symbol, report_period, ann_date, rev_growth_yoy, eps_growth_yoy, "
-        "revenue, net_profit, eps FROM factor.finance_reports"
+        "revenue, net_profit, eps, roe, debt_ratio, total_assets "
+        "FROM factor.finance_reports"
     )
     try:
         with eng.connect() as conn:
@@ -226,4 +239,56 @@ def load_trading_status(
             return pd.read_sql(text(sql), conn, params=params)
     except Exception as e:  # noqa: BLE001
         logger.warning(f"load_trading_status 失败: {e}")
+        return pd.DataFrame()
+
+
+# --------------------------------------------------------------------------- #
+# 股票元数据（行业 / 上市日期 / 近12月每股分红）
+# --------------------------------------------------------------------------- #
+def upsert_stock_info(rows: list[dict]) -> int:
+    """写入 stock_info（行业/上市日/股息）。rows 项含 symbol/name/industry/
+    list_date/dividend_ttm。COALESCE 保证分项刷新互不覆盖。"""
+    eng = _engine()
+    if eng is None or not rows:
+        return 0
+    from sqlalchemy import text
+
+    _cols = ["symbol", "name", "industry", "list_date", "dividend_ttm"]
+    sql = text(
+        """
+        INSERT INTO factor.stock_info
+            (symbol, name, industry, list_date, dividend_ttm, updated_at)
+        VALUES (:symbol, :name, :industry, :list_date, :dividend_ttm, now())
+        ON CONFLICT (symbol) DO UPDATE SET
+            name = EXCLUDED.name,
+            industry = COALESCE(EXCLUDED.industry, stock_info.industry),
+            list_date = COALESCE(EXCLUDED.list_date, stock_info.list_date),
+            dividend_ttm = COALESCE(EXCLUDED.dividend_ttm, stock_info.dividend_ttm),
+            updated_at = now()
+        """
+    )
+    n = 0
+    with eng.begin() as conn:
+        for r in rows:
+            conn.execute(sql, {c: r.get(c) for c in _cols})
+            n += 1
+    return n
+
+
+def load_stock_info() -> pd.DataFrame:
+    """读取全部 stock_info（symbol, name, industry, list_date, dividend_ttm）。"""
+    eng = _engine()
+    if eng is None:
+        return pd.DataFrame()
+    from sqlalchemy import text
+
+    sql = (
+        "SELECT symbol, name, industry, list_date, dividend_ttm "
+        "FROM factor.stock_info"
+    )
+    try:
+        with eng.connect() as conn:
+            return pd.read_sql(text(sql), conn)
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"load_stock_info 失败: {e}")
         return pd.DataFrame()

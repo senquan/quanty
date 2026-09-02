@@ -42,6 +42,9 @@ class Settings(BaseSettings):
     # 驱动因子可用性（available）随 dc 上下线自动刷新。多副本部署时仅一个实例开启。
     ENABLE_CLEANER_POLL: bool = True
     CLEANER_POLL_INTERVAL_SEC: int = 30
+    # 组合盘后估值：交易日 15:30 从 dc 拉行情、更新持仓市值、记录日快照。
+    # 多副本部署时仅一个实例开启；快照表另有唯一约束兜底幂等。
+    ENABLE_PORTFOLIO_VALUATION: bool = True
     REBALANCE_MODE: str = "paper"
     # 资金分配：可用资金使用率与整手股数（默认沿用原 data-cleaner 逻辑）
     REBALANCE_CASH_USAGE: float = 0.95
