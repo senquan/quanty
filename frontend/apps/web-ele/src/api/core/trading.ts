@@ -52,6 +52,7 @@ export interface Position {
   quantity: number;
   avg_price: number;
   last_price: number;
+  prev_close: number | null;
   market_value: number;
   unrealized_pnl: number;
   pnl_percent: number;
@@ -244,6 +245,22 @@ export async function getPortfolioValuesApi(
 export async function getAvailableSymbolsApi() {
   return requestClient.get<{ symbols: AvailableSymbol[]; total: number }>(
     '/trading/available-symbols',
+  );
+}
+
+/** 标的主数据（backend instruments 表，含中文名） */
+export interface SymbolMetadata {
+  symbol: string;
+  name: string;
+  exchange?: string | null;
+  industry?: string | null;
+}
+
+/** 代码 → 中文名等展示信息；symbols 缺省返回全部已缓存标的 */
+export async function getSymbolMetadataApi(symbols?: string[]) {
+  const qs = symbols && symbols.length ? `?symbols=${symbols.join(',')}` : '';
+  return requestClient.get<{ symbols: SymbolMetadata[]; total: number }>(
+    `/trading/symbols/metadata${qs}`,
   );
 }
 

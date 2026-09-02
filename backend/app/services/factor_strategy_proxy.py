@@ -148,6 +148,23 @@ async def refresh_industries(db, service_code=None) -> dict:
     return await _request(svc, "POST", "/api/v1/strategy/industries/refresh")
 
 
+async def instrument_metadata(
+    db, symbols: list[str] | None = None, service_code=None
+) -> dict:
+    """标的代码 → 基础信息（含中文名），数据源为 dc 只读元数据接口。
+
+    backend 的标的主数据表（instruments）以此为名字源，查询缺失时懒回填。
+    symbols 为 None 表示拉全量。
+    """
+    svc = await pick_service(db, service_code)
+    params = {}
+    if symbols:
+        params["symbols"] = ",".join(symbols)
+    return await _request(
+        svc, "GET", "/api/v1/strategy/instruments/metadata", params=params
+    )
+
+
 async def factor_availability(db, service_code=None) -> dict:
     """因子可用性：由**本地底册 + dc 连接状态**推导，不再回源 dc。
 

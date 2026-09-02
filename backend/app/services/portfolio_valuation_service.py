@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.quant import Strategy
 from app.models.trading import MODE_PAPER, PortfolioDailyValue, TradingAccount
 from app.services import trading_repository as repo
+from app.services.factor_strategy_proxy import instrument_metadata
 from app.services.market_proxy import MarketProxyError, latest_prices
 
 logger = logging.getLogger(__name__)
@@ -41,6 +42,30 @@ async def _value_one_strategy(
     )
     symbols = [p.symbol for p in positions if p.quantity and p.quantity > 0]
 
+    # 顺带回填标的主数据（代码→中文名）：名字源来自 dc 只读元数据接口，
+    # 在此「更新行情」的批量环节落库，不进 dashboard 加载路径（避免加载时查 dc）。
+    # 仅对主表中缺失的代码取名字，已存在的跳过。
+    if symbols:
+        try:
+            existing = await repo.get_instruments(db, symbols)
+            missing = [s for s in symbols if s not in existing]
+            if missing:
+                meta = await instrument_metadata(db, missing)
+                if meta:
+                    await repo.upsert_instruments(
+                        db,
+                        [
+                            {
+                                "symbol": s,
+                                "name": (m or {}).get("name") or s,
+                                "industry": (m or {}).get("industry"),
+                            }
+                            for s, m in meta.items()
+                        ],
+                    )
+        except Exception as e:  # noqa: BLE001  名字缺失不影响估值，仅告警
+            logger.warning("回填标的主数据失败 strategy=%s mode=%s: %s", strategy_id, mode, e)
+
     try:
         prices = await latest_prices(db, symbols) if symbols else {}
     except MarketProxyError as e:
@@ -48,9 +73,12 @@ async def _value_one_strategy(
         return {"strategy_id": strategy_id, "error": f"取价失败: {e}"}
 
     total_mv = 0.0
+    # 盘后重定价前，把当前 last_price（即上一交易日收盘）快照为 prev_close
+    old_close = {p.symbol: float(p.last_price or 0) for p in positions}
     for p in positions:
         price = prices.get(p.symbol)
         if price:
+            p.prev_close = old_close.get(p.symbol, 0.0)
             p.last_price = price
             p.market_value = p.quantity * price
             p.unrealized_pnl = (price - p.avg_price) * p.quantity

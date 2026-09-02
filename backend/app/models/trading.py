@@ -76,6 +76,7 @@ class TradingPosition(Base):
     quantity = Column(Integer, nullable=False, default=0)
     avg_price = Column(Float, nullable=False, default=0.0)
     last_price = Column(Float, nullable=False, default=0.0)
+    prev_close = Column(Float, nullable=False, default=0.0)  # 上一交易日收盘价；盘后估值重定价前快照
     market_value = Column(Float, nullable=False, default=0.0)
     unrealized_pnl = Column(Float, nullable=False, default=0.0)
     updated_at = Column(
@@ -192,3 +193,21 @@ class PortfolioDailyValue(Base):
     daily_return = Column(Float, nullable=True)       # 相对前一交易日
     cumulative_return = Column(Float, nullable=True)  # 相对初始资金
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class Instrument(Base):
+    """标的主数据（backend 自持）：代码 → 中文名等展示信息。
+
+    名字源来自 data-cleaner 的只读元数据接口（GET /strategy/instruments/metadata，
+    数据源自 factor.industries），首次缺失时由 backend /trading/symbols/metadata
+    懒回填并缓存到此表。与 market_proxy 取价同一边界：backend 存、dc 供。
+    """
+
+    __tablename__ = "instruments"
+    __table_args__ = (Index("ix_instruments_symbol", "symbol"),)
+
+    symbol = Column(String(32), primary_key=True)
+    name = Column(String(64), nullable=False, default="")
+    exchange = Column(String(8), nullable=True)        # SH / SZ / BJ，按 symbol 后缀推导
+    industry = Column(String(64), nullable=True)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())

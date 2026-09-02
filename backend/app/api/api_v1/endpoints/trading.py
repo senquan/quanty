@@ -10,6 +10,7 @@
 （下单成功 ≠ 成交，见 app/services/broker/mx.py）。
 """
 import json
+import logging
 from datetime import datetime
 from typing import Optional
 
@@ -37,6 +38,7 @@ from app.services.rebalance_service import scan_and_rebalance
 from app.services.trading_coordinator import TradingCoordinator, ensure_tables
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 # ============ 请求/响应模型 ============
@@ -82,6 +84,7 @@ def _position_dict(p: TradingPosition) -> dict:
         "quantity": p.quantity,
         "avg_price": round(p.avg_price, 4),
         "last_price": round(p.last_price, 4),
+        "prev_close": round(p.prev_close, 4) if p.prev_close else None,
         "market_value": round(p.market_value, 2),
         "unrealized_pnl": round(p.unrealized_pnl, 2),
         "pnl_percent": pnl_pct,
@@ -368,6 +371,26 @@ async def get_market_price(symbol: str, _: User = Depends(get_current_user)):
 async def get_available_symbols(_: User = Depends(get_current_user)):
     symbols = get_trading_service().get_available_symbols()
     return Response.success(data={"symbols": symbols, "total": len(symbols)})
+
+
+@router.get("/symbols/metadata", summary="标的主数据（代码→中文名）")
+async def get_symbols_metadata(
+    symbols: str | None = Query(None, description="逗号分隔的代码列表；缺省返回全量"),
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    """返回标的代码 → 中文名等展示信息（只读 backend 标的主数据表 instruments）。
+
+    本接口**不触发**对 data-cleaner 的查询 / 回填：名字由盘后估值
+    （portfolio_valuation_service.run_eod_valuation）在更新行情时顺带落库。
+    这里只做查询；查不到的代码前端回退成裸代码即可，不阻塞加载。
+    """
+    want = [s.strip() for s in symbols.split(",") if s.strip()] if symbols else None
+    await repo.ensure_trading_tables()
+    local = await repo.get_instruments(db, want)
+    return Response.success(
+        data={"symbols": list(local.values()), "total": len(local)}
+    )
 
 
 @router.get("/risk-settings", summary="风险设置")

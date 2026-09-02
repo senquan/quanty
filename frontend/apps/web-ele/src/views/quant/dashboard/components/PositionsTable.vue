@@ -9,6 +9,8 @@ export interface PositionRow {
   avgPrice: number;
   marketValue: number;
   weightPct: number;
+  lastPrice: number;
+  prevClose: number | null;
   todayPnl: number;
   totalPnl: number;
 }
@@ -65,7 +67,7 @@ const displayed = computed(() => {
             <th class="py-3 px-2 text-right">成本均价</th>
             <th class="py-3 px-2 text-right">持仓市值</th>
             <th class="py-3 px-2 text-right">仓位占比</th>
-            <th class="py-3 px-2 text-right" title="按组合当日收益按市值占比估算">今日盈亏</th>
+            <th class="py-3 px-2 text-right" title="（现价 − 昨收）× 持仓；无昨收记录时按组合当日收益按市值占比估算">今日盈亏</th>
             <th class="py-3 px-2 text-right">累计浮盈</th>
           </tr>
         </thead>

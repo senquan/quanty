@@ -171,6 +171,32 @@ async def executions(sid: int, limit: int = 50):
     return await strat_store.list_executions(sid, limit=limit)
 
 
+# ---------------- 标的基础信息（只读，供 backend 标的主数据回填） ---------------- #
+@router.get("/instruments/metadata")
+async def instruments_metadata(symbols: str | None = None):
+    """返回标的代码 → 基础信息（含中文名）。
+
+    只读元数据接口，无副作用：数据来自 factor.industries（tushare/akshare 刷新）。
+    backend 的 instruments 标的主数据表以此为名字源（与 market_proxy 取价同一边界：
+    backend 存、dc 供）。symbols 缺省返回全量。
+    """
+    try:
+        meta = await _run_sync(industry_store._sync_meta_map)
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=f"读取标的基础信息失败: {e}") from e
+    if symbols:
+        want = {s.strip() for s in symbols.split(",") if s.strip()}
+        meta = {k: v for k, v in meta.items() if k in want}
+    return {
+        s: {
+            "name": (m.get("name") or "") or s,
+            "industry": m.get("industry") or "未知",
+            "list_status": m.get("list_status"),
+        }
+        for s, m in meta.items()
+    }
+
+
 # ---------------- 行业刷新 ---------------- #
 @router.post("/industries/refresh")
 async def industries_refresh():

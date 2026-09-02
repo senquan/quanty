@@ -13,6 +13,7 @@ from app.core.database import Base, engine
 from app.models.trading import (
     MODE_PAPER,
     ORDER_FILLED,
+    Instrument,
     PortfolioDailyValue,
     TradingAccount,
     TradingOrder,
@@ -48,22 +49,129 @@ async def ensure_trading_tables() -> None:
                     TradingTrade.__table__,
                     TradingRebalanceRecord.__table__,
                     PortfolioDailyValue.__table__,
+                    Instrument.__table__,
                 ]
             )
-            # 存量库迁移（幂等、失败忽略）：账户按 (mode, strategy_id) 唯一，
-            # 持仓 / 成交补 strategy_id 冗余列。
-            for ddl in (
-                "ALTER TABLE trading_accounts DROP CONSTRAINT IF EXISTS uq_trading_account_mode_broker",
-                "ALTER TABLE trading_accounts ADD COLUMN IF NOT EXISTS strategy_id INTEGER",
-                "ALTER TABLE trading_accounts ADD CONSTRAINT uq_trading_account_mode_strategy UNIQUE (mode, strategy_id)",
-                "ALTER TABLE trading_positions ADD COLUMN IF NOT EXISTS strategy_id INTEGER",
-                "ALTER TABLE trading_trades ADD COLUMN IF NOT EXISTS strategy_id INTEGER",
-            ):
-                try:
-                    await conn.execute(text(ddl))
-                except Exception:  # noqa: BLE001  已是最新结构时忽略
-                    pass
+            # 标的主数据种子：对齐模拟撮合服务内置的 5 只演示标的，
+            # 避免概览页首次加载时这些代码仍无名（其余代码在查询时懒回填）。
+            await _seed_instruments(conn)
+        # 存量库迁移（幂等）：账户按 (mode, strategy_id) 唯一，
+        # 持仓 / 成交补 strategy_id 冗余列、持仓补 prev_close。
+        #
+        # 注意：每条 DDL 必须在**独立事务**中执行。PostgreSQL 一旦某条语句报错，
+        # 整个事务即被标记为中止，同事务内后续语句会全部静默失败（try/except 也兜不住）。
+        # 若 UNIQUE 约束因重复行创建失败，会连累其后本应成功的 prev_close 添加一起失败，
+        # 导致模型 SELECT 引用 prev_close 时报「字段不存在」。故逐条独立建连接执行。
+        for ddl in (
+            "ALTER TABLE trading_accounts DROP CONSTRAINT IF EXISTS uq_trading_account_mode_broker",
+            "ALTER TABLE trading_accounts ADD COLUMN IF NOT EXISTS strategy_id INTEGER",
+            "ALTER TABLE trading_positions ADD COLUMN IF NOT EXISTS strategy_id INTEGER",
+            "ALTER TABLE trading_positions ADD COLUMN IF NOT EXISTS prev_close DOUBLE PRECISION",
+            "ALTER TABLE trading_trades ADD COLUMN IF NOT EXISTS strategy_id INTEGER",
+            "ALTER TABLE trading_accounts ADD CONSTRAINT uq_trading_account_mode_strategy UNIQUE (mode, strategy_id)",
+        ):
+            try:
+                async with engine.begin() as c:
+                    await c.execute(text(ddl))
+            except Exception:  # noqa: BLE001  已是最新结构 / 重复行等，忽略
+                pass
         _ENSURED = True
+
+
+# ---------------------------- 标的主数据（instruments） ----------------------------
+
+def _exchange_of(symbol: str) -> str | None:
+    """由代码后缀推导交易所：.SH→SH / .SZ→SZ / .BJ→BJ。"""
+    if symbol.endswith(".SH"):
+        return "SH"
+    if symbol.endswith(".SZ"):
+        return "SZ"
+    if symbol.endswith(".BJ"):
+        return "BJ"
+    return None
+
+
+# 模拟撮合服务内置的 5 只演示标的（与 huatai_trading.get_available_symbols 对齐）
+_SEED_INSTRUMENTS = [
+    {"symbol": "600519.SH", "name": "贵州茅台", "exchange": "SH"},
+    {"symbol": "000001.SH", "name": "上证指数", "exchange": "SH"},
+    {"symbol": "300750.SZ", "name": "宁德时代", "exchange": "SZ"},
+    {"symbol": "600036.SH", "name": "招商银行", "exchange": "SH"},
+    {"symbol": "000651.SZ", "name": "格力电器", "exchange": "SZ"},
+]
+
+
+async def _seed_instruments(conn) -> None:
+    """幂等写入演示标的种子（已存在则跳过）。"""
+    from datetime import datetime
+
+    for it in _SEED_INSTRUMENTS:
+        await conn.execute(
+            text(
+                """
+                INSERT INTO instruments (symbol, name, exchange, updated_at)
+                VALUES (:symbol, :name, :exchange, :ts)
+                ON CONFLICT (symbol) DO NOTHING
+                """
+            ),
+            {
+                "symbol": it["symbol"],
+                "name": it["name"],
+                "exchange": it["exchange"],
+                "ts": datetime.now(),
+            },
+        )
+
+
+async def upsert_instruments(session: AsyncSession, rows: list[dict]) -> None:
+    """批量 upsert 标的主数据。rows: [{symbol, name, exchange?, industry?}]。
+
+    缺失的 exchange 按代码后缀推导；已存在的代码更新 name/industry。
+    """
+    if not rows:
+        return
+    for r in rows:
+        sym = r.get("symbol")
+        if not sym:
+            continue
+        await session.execute(
+            text(
+                """
+                INSERT INTO instruments (symbol, name, exchange, industry, updated_at)
+                VALUES (:symbol, :name, :exchange, :industry, now())
+                ON CONFLICT (symbol) DO UPDATE SET
+                    name = EXCLUDED.name,
+                    exchange = COALESCE(instruments.exchange, EXCLUDED.exchange),
+                    industry = COALESCE(instruments.industry, EXCLUDED.industry),
+                    updated_at = now()
+                """
+            ),
+            {
+                "symbol": sym,
+                "name": r.get("name") or sym,
+                "exchange": r.get("exchange") or _exchange_of(sym),
+                "industry": r.get("industry"),
+            },
+        )
+
+
+async def get_instruments(
+    session: AsyncSession, symbols: list[str] | None = None
+) -> dict[str, dict]:
+    """查标的主数据。symbols 为空返回全量。返回 {symbol: {name, exchange, industry}}。"""
+    stmt = select(Instrument)
+    if symbols:
+        stmt = stmt.where(Instrument.symbol.in_(symbols))
+    rows = (await session.execute(stmt)).scalars().all()
+    return {
+        r.symbol: {
+            "symbol": r.symbol,
+            "name": r.name or r.symbol,
+            "exchange": r.exchange,
+            "industry": r.industry,
+        }
+        for r in rows
+    }
 
 
 # ---------------------------- 账户 ----------------------------
@@ -396,6 +504,8 @@ async def list_rebalances(
 
 __all__ = [
     "ensure_trading_tables",
+    "upsert_instruments",
+    "get_instruments",
     "get_or_create_account",
     "update_account_balances",
     "list_positions",

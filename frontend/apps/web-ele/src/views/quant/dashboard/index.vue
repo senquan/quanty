@@ -12,10 +12,10 @@ import {
 } from 'element-plus';
 
 import {
-  getAvailableSymbolsApi,
   getOverviewApi,
   getPortfolioValuesApi,
   getPositionsApi,
+  getSymbolMetadataApi,
   getTradesApi,
   getTradingModeApi,
 } from '#/api/core/trading';
@@ -70,7 +70,8 @@ const metrics = computed(() => {
 
   let annualized = 0;
   if (latest?.cumulative_return != null && pv.length >= 2) {
-    const days = diffDays(pv[0].value_date, latest.value_date);
+    const first = pv[0];
+    const days = first ? diffDays(first.value_date, latest.value_date) : 0;
     if (days > 0) {
       annualized = (Math.pow(1 + latest.cumulative_return / 100, 365 / days) - 1) * 100;
     }
@@ -98,26 +99,34 @@ const chartPoints = computed<YieldPoint[]>(() =>
   })),
 );
 
+const totalAssets = computed(() => overview.value?.total_assets ?? 0);
+
 /** 持仓列表（补名称 / 仓位占比 / 今日盈亏估算 / 累计浮盈） */
 const totalMarketValue = computed(() =>
   (positions.value || []).reduce((s, p) => s + (p.market_value || 0), 0),
 );
 const todayPnlAccount = computed(() => {
   const pv = portfolioValues.value;
-  return pv.length >= 2 ? pv[pv.length - 1].total_assets - pv[pv.length - 2].total_assets : 0;
+  return pv.length >= 2
+    ? (pv[pv.length - 1]?.total_assets ?? 0) - (pv[pv.length - 2]?.total_assets ?? 0)
+    : 0;
 });
 const positionRows = computed<PositionRow[]>(() => {
   const total = totalAssets.value;
   const mv = totalMarketValue.value;
   return (positions.value || []).map((p) => ({
-    symbol: p.symbol,
-    name: symbolNameMap.value[p.symbol] || p.symbol,
-    quantity: p.quantity,
-    avgPrice: p.avg_price,
-    marketValue: p.market_value,
-    weightPct: total ? Math.round((p.market_value / total) * 10_000) / 100 : 0,
-    todayPnl: Math.round((mv ? todayPnlAccount.value * (p.market_value / mv) : 0) * 100) / 100,
-    totalPnl: p.unrealized_pnl,
+  symbol: p.symbol,
+  name: symbolNameMap.value[p.symbol] || p.symbol,
+  quantity: p.quantity,
+  avgPrice: p.avg_price,
+  marketValue: p.market_value,
+  weightPct: total ? Math.round((p.market_value / total) * 10_000) / 100 : 0,
+  lastPrice: p.last_price,
+  prevClose: p.prev_close ?? null,
+  todayPnl: p.prev_close
+    ? Math.round((p.last_price - p.prev_close) * p.quantity * 100) / 100
+    : Math.round((mv ? todayPnlAccount.value * (p.market_value / mv) : 0) * 100) / 100,
+  totalPnl: p.unrealized_pnl,
   }));
 });
 
@@ -133,28 +142,38 @@ const rebalanceRows = computed<RebalanceRow[]>(() =>
   })),
 );
 
-const totalAssets = computed(() => overview.value?.total_assets ?? 0);
-
 async function load() {
   loading.value = true;
   errorMsg.value = '';
   try {
-    const [mi, ov, pos, tr, pv, syms] = await Promise.all([
+    const [mi, ov, pos, tr, pv] = await Promise.all([
       getTradingModeApi(),
       getOverviewApi(mode.value),
       getPositionsApi(mode.value),
       getTradesApi(mode.value, { limit: 200 }),
       getPortfolioValuesApi(mode.value, { limit: 180 }),
-      getAvailableSymbolsApi(),
     ]);
     modeInfo.value = mi;
     overview.value = ov;
     positions.value = pos || [];
     trades.value = tr || [];
     portfolioValues.value = pv || [];
-    symbolNameMap.value = Object.fromEntries(
-      (syms?.symbols || []).map((s) => [s.symbol, s.name]),
+
+    // 用实际持仓/成交代码解析中文名（backend instruments 表，缺失代码首次访问时懒回填）
+    const codes = Array.from(
+      new Set([
+        ...(pos || []).map((p) => p.symbol),
+        ...(tr || []).map((t) => t.symbol),
+      ]),
     );
+    if (codes.length) {
+      const md = await getSymbolMetadataApi(codes);
+      symbolNameMap.value = Object.fromEntries(
+        (md?.symbols || []).map((s) => [s.symbol, s.name]),
+      );
+    } else {
+      symbolNameMap.value = {};
+    }
   } catch (e: any) {
     errorMsg.value = e?.message || '加载概览数据失败';
   } finally {
@@ -199,11 +218,11 @@ onMounted(load);
 
     <!-- 下方两张等高、可卷动表格 -->
     <ElRow :gutter="16">
-      <ElCol :xs="24" :lg="12" class="mb-4 lg:mb-0">
-        <PositionsTable :positions="positionRows" v-loading="loading" class="h-[480px]" />
+      <ElCol :xs="24" :lg="12" class="mb-4 lg:mb-0 h-[480px]">
+        <PositionsTable :positions="positionRows" v-loading="loading" />
       </ElCol>
-      <ElCol :xs="24" :lg="12" class="mb-4 lg:mb-0">
-        <RebalanceLogsTable :logs="rebalanceRows" v-loading="loading" class="h-[480px]" />
+      <ElCol :xs="24" :lg="12" class="mb-4 lg:mb-0 h-[480px]">
+        <RebalanceLogsTable :logs="rebalanceRows" v-loading="loading" />
       </ElCol>
     </ElRow>
   </div>
