@@ -69,9 +69,13 @@ class FactorRegistry(Base):
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     formula: Mapped[str | None] = mapped_column(Text, nullable=True)
     data_source: Mapped[str | None] = mapped_column(String(128), nullable=True)
-    is_enabled: Mapped[bool] = mapped_column(Boolean, default=False)   # 后台勾选入库
+    is_enabled: Mapped[bool] = mapped_column(Boolean, default=False)   # 已入库（在 backend 注册）
     last_sync: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     raw: Mapped[dict | None] = mapped_column(JSON, nullable=True)       # 清洗服务原始口径
+    # 最新一期效能指标快照：{as_of_date, ic_mean, ic_std, ir, sharpe_ratio, max_drawdown, win_rate}
+    # 只存最新一期（前端 with_metrics 只消费最新），不做历史序列
+    metrics: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    metrics_synced_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
 
     service: Mapped["CleanerService"] = relationship("CleanerService", back_populates="factors")
@@ -89,4 +93,8 @@ class FactorRegistry(Base):
             "data_source": self.data_source,
             "is_enabled": self.is_enabled,
             "last_sync": self.last_sync.isoformat() if self.last_sync else None,
+            "metrics": self.metrics,
+            "metrics_synced_at": (
+                self.metrics_synced_at.isoformat() if self.metrics_synced_at else None
+            ),
         }

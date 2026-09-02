@@ -1,0 +1,13 @@
+{
+  "active": 1,
+  "due": 1,
+  "results": [
+    {
+      "strategy_id": 14,
+      "status": "success",
+      "target_count": 5,
+      "orders_placed": 5,
+      "amount": 496456.0
+    }
+  ]
+}

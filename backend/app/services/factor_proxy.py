@@ -20,7 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.cleaner import CleanerService
 
-DEFAULT_TIMEOUT = 10.0
+DEFAULT_TIMEOUT = 30.0  # 打分/相关性矩阵/AI生成因子可能耗时较长，放宽到 30s
 
 
 class FactorProxyError(Exception):

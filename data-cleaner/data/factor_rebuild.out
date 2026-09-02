@@ -1,0 +1,3 @@
+factor_build: {"status": "done", "symbols_in": 5553, "symbols_ok": 5553, "symbols_error": 0, "factors_computed": 33, "factors_failed": 0, "custom_computed": 1, "custom_failed": 0, "categories": ["growth", "momentum", "sentiment", "size", "technical", "value", "volatility"], "dates": 1278, "files": 8946, "rows_written": 45888255, "duration_s": 517.0, "sampleErrors": []}
+failedFactors: []
+ºÄÊ±: 518.5 s

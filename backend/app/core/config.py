@@ -34,6 +34,14 @@ class Settings(BaseSettings):
     # 策略调仓编排（原由 data-cleaner 驱动，职责归位后由 backend 承担）
     # 多副本部署时只在唯一实例上开启；调仓记录另有唯一约束兜底幂等
     ENABLE_TRADING_SCHEDULER: bool = False
+    # 因子底册同步（刷新已入库因子的口径与效能指标）
+    # 同交易调度：多副本部署时只能有一个实例开启
+    ENABLE_FACTOR_SYNC: bool = False
+    FACTOR_SYNC_INTERVAL_MIN: int = 60
+    # 清洗服务存活轮询：默认开启，每 30s 刷新 cleaner_services 状态，
+    # 驱动因子可用性（available）随 dc 上下线自动刷新。多副本部署时仅一个实例开启。
+    ENABLE_CLEANER_POLL: bool = True
+    CLEANER_POLL_INTERVAL_SEC: int = 30
     REBALANCE_MODE: str = "paper"
     # 资金分配：可用资金使用率与整手股数（默认沿用原 data-cleaner 逻辑）
     REBALANCE_CASH_USAGE: float = 0.95

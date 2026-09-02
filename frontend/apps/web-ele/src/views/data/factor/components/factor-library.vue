@@ -3,6 +3,7 @@ import { computed, ref } from 'vue';
 
 import { Filter, Layers, Plus, Search, TrendingUp, Wifi } from '@lucide/vue';
 import {
+  ElAlert,
   ElButton,
   ElCard,
   ElCol,
@@ -15,13 +16,25 @@ import {
   ElSelect,
 } from 'element-plus';
 
+import type { CleanerServiceStatus } from '#/api/factor-library';
 import type { Factor, FactorCategory, UpdateFrequency } from '../types';
 import FactorCard from './factor-card.vue';
 
 const props = defineProps<{
   factors: Factor[];
   selectedFactorId?: string;
+  /** 已登记清洗服务的实时状态（用于“dc 离线”提示） */
+  cleanerServices?: CleanerServiceStatus[];
 }>();
+
+const primaryService = computed(() => props.cleanerServices?.[0] ?? null);
+const serviceOnline = computed(() => !!primaryService.value?.available);
+const allServicesOffline = computed(
+  () =>
+    !!props.cleanerServices &&
+    props.cleanerServices.length > 0 &&
+    props.cleanerServices.every((s) => !s.available),
+);
 
 const emit = defineEmits<{
   'select-factor': [factor: Factor];
@@ -88,6 +101,17 @@ const aiTemplates: { label: string; category: FactorCategory }[] = [
 
 <template>
   <div class="space-y-5">
+    <!-- 清洗服务离线提示 -->
+    <ElAlert
+      v-if="allServicesOffline"
+      type="warning"
+      :closable="false"
+      show-icon
+      class="!items-start"
+      title="数据清洗服务已离线"
+      description="当前因子库为 backend 本地缓存快照，效能指标可能滞后；新建 / 编辑 / AI 生成因子等写操作将失败，请检查 data-cleaner 进程是否存活。"
+    />
+
     <!-- Stats Banner -->
     <ElRow :gutter="16">
       <ElCol :span="6">
@@ -141,16 +165,24 @@ const aiTemplates: { label: string; category: FactorCategory }[] = [
       <ElCol :span="6">
         <ElCard shadow="hover" :body-style="{ padding: '16px' }">
           <div class="flex items-center gap-3">
-            <div class="p-3 rounded-xl bg-emerald-50 text-emerald-500">
+            <div
+              class="p-3 rounded-xl"
+              :class="serviceOnline ? 'bg-emerald-50 text-emerald-500' : 'bg-rose-50 text-rose-500'"
+            >
               <Wifi class="w-5 h-5" />
             </div>
             <div>
               <span class="text-[11px] text-gray-400 font-bold block">实时清洗服务</span>
               <div class="text-sm font-bold mt-0.5 flex items-center gap-1">
-                上海 A机组
-                <span class="w-2 h-2 rounded-full bg-emerald-500 inline-block animate-pulse" />
+                {{ primaryService?.name || '未登记' }}
+                <span
+                  class="w-2 h-2 rounded-full inline-block"
+                  :class="serviceOnline ? 'bg-emerald-500 animate-pulse' : 'bg-rose-500'"
+                />
               </div>
-              <span class="text-[9px] text-gray-400">每日收盘定点刷算</span>
+              <span class="text-[9px] text-gray-400">
+                {{ serviceOnline ? '已连接 · 每日收盘定点刷算' : '连接中断 · 因子库为本地缓存' }}
+              </span>
             </div>
           </div>
         </ElCard>

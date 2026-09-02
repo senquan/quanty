@@ -132,6 +132,82 @@ class RawBarRepository:
 
         return written
 
+    def bulk_upsert(self, df: pd.DataFrame, page_size: int = 5000) -> int:
+        """批量写入原始行情（历史补录用），返回写入行数。
+
+        语义与 factor.upsert_raw_bars 完全一致：
+            ON CONFLICT (symbol, timestamp, freq) DO UPDATE SET open/high/low/close/volume/source/adj_factor/hfq_close
+        差别在于用 execute_values 一次提交多行，避免逐行调用存储过程带来的
+        网络往返开销——补数年全市场历史（数百万行）时这是数量级的差距。
+
+        timestamp 传 naive datetime：与 upsert() 现有行为一致，由 PG 会话时区
+        (Asia/Shanghai) 解释为 +08，保证与已有行对齐，不会产生重复时点。
+        """
+        if df.empty:
+            return 0
+        df = df.copy()
+        if "freq" not in df.columns:
+            df["freq"] = "1d"
+        for c in ("adj_factor", "hfq_close"):
+            if c not in df.columns:
+                df[c] = None
+
+        cols = ["symbol", "timestamp", "open", "high", "low", "close",
+                "volume", "source", "freq", "adj_factor", "hfq_close"]
+
+        def _clean(v):
+            # NaN -> None（PG 用 NULL 表示缺失，避免写入 NaN::float8）
+            if v is None:
+                return None
+            if isinstance(v, float) and v != v:  # NaN
+                return None
+            return v
+
+        rows = [
+            tuple(_clean(v) for v in rec)
+            for rec in df[cols].itertuples(index=False, name=None)
+        ]
+
+        if self._engine is None:
+            # parquet 降级：逐标的合并
+            for sym, g in df.groupby("symbol"):
+                self._pq_upsert(g)
+            return len(df)
+
+        sql = """
+            INSERT INTO factor.raw_bars
+                (symbol, timestamp, open, high, low, close, volume, source, freq,
+                 adj_factor, hfq_close)
+            VALUES %s
+            ON CONFLICT (symbol, timestamp, freq) DO UPDATE SET
+                open       = EXCLUDED.open,
+                high       = EXCLUDED.high,
+                low        = EXCLUDED.low,
+                close      = EXCLUDED.close,
+                volume     = EXCLUDED.volume,
+                source     = EXCLUDED.source,
+                adj_factor = EXCLUDED.adj_factor,
+                hfq_close  = EXCLUDED.hfq_close
+        """
+        written = 0
+        try:
+            from psycopg2.extras import execute_values
+
+            raw = self._engine.raw_connection()
+            try:
+                with raw.cursor() as cur:
+                    for i in range(0, len(rows), page_size):
+                        chunk = rows[i:i + page_size]
+                        execute_values(cur, sql, chunk)
+                        written += len(chunk)
+                raw.commit()
+            finally:
+                raw.close()
+        except Exception as e:  # noqa: BLE001
+            logger.error(f"bulk_upsert 失败，回退逐行 upsert: {e}")
+            return self.upsert(df)
+        return written
+
     def get_latest_date(self, symbol: str, freq: str = "1d") -> str | None:
         if self._engine is not None:
             try:

@@ -32,6 +32,13 @@ class Settings(BaseSettings):
     ALPHAFEED_KEY: str | None = None
     ALPHAFEED_BASE_URL: str = "https://api.alphafeed.org"
 
+    # Pandadata 数据源（A股日线/前复权/财报等；SDK panda_data==0.0.12，需 init_token 鉴权）
+    # 凭据由 Pandadata 服务方提供，base_url 对应其 JAVA_SERVICE_BASE_URL。
+    # 未配置时 pandadata 路径不可用（init_token 失败），不影响其他数据源。
+    PANDADATA_USERNAME: str | None = None
+    PANDADATA_PASSWORD: str | None = None
+    PANDADATA_BASE_URL: str | None = None
+
     # Application
     DEBUG: bool = True
     HOST: str = "0.0.0.0"

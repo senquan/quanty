@@ -11,9 +11,11 @@ import logging
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
+from apscheduler.triggers.interval import IntervalTrigger
 
 from app.core.config import settings
 from app.core.database import AsyncSessionLocal
+from app.services import cleaner_gateway as gw
 from app.services import rebalance_service
 
 logger = logging.getLogger(__name__)
@@ -30,33 +32,92 @@ async def _strategy_rebalance_job() -> None:
         logger.error("策略调仓扫描失败: %s", e)
 
 
+async def _factor_sync_job() -> None:
+    """定期刷新已入库因子的口径与效能指标（读本地底册不依赖本任务）。"""
+    try:
+        async with AsyncSessionLocal() as db:
+            result = await gw.sync_all_services(db)
+        logger.info("因子同步完成 %s", result)
+    except Exception as e:  # noqa: BLE001  不阻断调度器
+        logger.error("因子同步失败: %s", e)
+
+
+async def _poll_qos_job() -> None:
+    """每 30s 刷新已登记清洗服务的存活状态，驱动因子可用性（available）实时反映。"""
+    from app.models.cleaner import CleanerService
+    from sqlalchemy import select
+
+    try:
+        async with AsyncSessionLocal() as db:
+            svcs = (
+                await db.execute(
+                    select(CleanerService).where(CleanerService.is_active.is_(True))
+                )
+            ).scalars().all()
+            for svc in svcs:
+                await gw.poll_qos(svc)
+                db.add(svc)
+            await db.commit()
+    except Exception as e:  # noqa: BLE001  不阻断调度器
+        logger.error("清洗服务状态轮询失败: %s", e)
+
+
 def register_jobs() -> None:
-    scheduler.add_job(
-        _strategy_rebalance_job,
-        trigger=CronTrigger(
-            day_of_week="mon-fri",
-            hour="9-15",
-            minute="*/15",
-            timezone="Asia/Shanghai",
-        ),
-        id="strategy_rebalance",
-        misfire_grace_time=600,
-        max_instances=1,
-        coalesce=True,
-        replace_existing=True,
-    )
+    # 各任务按独立开关注册；两个开关都关闭时调度器不启动
+    if getattr(settings, "ENABLE_TRADING_SCHEDULER", False):
+        scheduler.add_job(
+            _strategy_rebalance_job,
+            trigger=CronTrigger(
+                day_of_week="mon-fri",
+                hour="9-15",
+                minute="*/15",
+                timezone="Asia/Shanghai",
+            ),
+            id="strategy_rebalance",
+            misfire_grace_time=600,
+            max_instances=1,
+            coalesce=True,
+            replace_existing=True,
+        )
+
+    if getattr(settings, "ENABLE_FACTOR_SYNC", False):
+        interval = max(5, int(getattr(settings, "FACTOR_SYNC_INTERVAL_MIN", 60)))
+        scheduler.add_job(
+            _factor_sync_job,
+            trigger=IntervalTrigger(minutes=interval, timezone="Asia/Shanghai"),
+            id="factor_sync",
+            misfire_grace_time=600,
+            max_instances=1,
+            coalesce=True,
+            replace_existing=True,
+        )
+
+    # 清洗服务存活轮询：默认开启，使因子可用性随 dc 上下线自动刷新。
+    # 即便 ENABLE_TRADING_SCHEDULER / ENABLE_FACTOR_SYNC 都关，本任务也可独立运行。
+    if getattr(settings, "ENABLE_CLEANER_POLL", True):
+        poll_sec = max(5, int(getattr(settings, "CLEANER_POLL_INTERVAL_SEC", 30)))
+        scheduler.add_job(
+            _poll_qos_job,
+            trigger=IntervalTrigger(seconds=poll_sec, timezone="Asia/Shanghai"),
+            id="cleaner_poll",
+            misfire_grace_time=60,
+            max_instances=1,
+            coalesce=True,
+            replace_existing=True,
+        )
 
 
 def start_scheduler() -> None:
-    if not getattr(settings, "ENABLE_TRADING_SCHEDULER", False):
-        logger.info("交易调度器未启用（ENABLE_TRADING_SCHEDULER=false）")
-        return
     register_jobs()
+    jobs = [j.id for j in scheduler.get_jobs()]
+    if not jobs:
+        logger.info("无启用中的定时任务，调度器未启动")
+        return
     scheduler.start()
-    logger.info("交易调度器已启动", extra={"status": "scheduler_started"})
+    logger.info("调度器已启动", extra={"status": "scheduler_started", "jobs": jobs})
 
 
 def shutdown_scheduler() -> None:
     if scheduler.running:
         scheduler.shutdown(wait=False)
-        logger.info("交易调度器已停止")
+        logger.info("调度器已停止")

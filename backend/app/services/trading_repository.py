@@ -93,12 +93,19 @@ async def update_account_balances(
 
 # ---------------------------- 持仓 ----------------------------
 
-async def list_positions(session: AsyncSession, mode: str) -> list[TradingPosition]:
-    stmt = (
-        select(TradingPosition)
-        .where(TradingPosition.mode == mode)
-        .order_by(TradingPosition.market_value.desc())
-    )
+async def list_positions(
+    session: AsyncSession, mode: str, account_id: int | None = None
+) -> list[TradingPosition]:
+    """按模式列出持仓；传入 account_id 时进一步限定账户。
+
+    说明：原先只按 mode 过滤，同 mode 多账户（如多个模拟盘）时会互相干扰，
+    尤其在 sync_state 的"删除内存不存在的持仓"环节可能误删他账户的行。
+    传入 account_id 可消除该风险；不传则保持原行为以兼容既有调用。
+    """
+    stmt = select(TradingPosition).where(TradingPosition.mode == mode)
+    if account_id is not None:
+        stmt = stmt.where(TradingPosition.account_id == account_id)
+    stmt = stmt.order_by(TradingPosition.market_value.desc())
     return list((await session.execute(stmt)).scalars().all())
 
 

@@ -1,4 +1,5 @@
 <script lang="ts" setup>
+import type { CleanerServiceStatus } from '#/api/factor-library';
 import type { Factor, FactorCategory } from './types';
 
 import { onMounted, ref } from 'vue';
@@ -19,6 +20,8 @@ import { factorService } from './factor-service';
 const factors = ref<Factor[]>([]);
 const selectedFactor = ref<Factor | null>(null);
 const activeTab = ref('library');
+// 清洗服务实时状态（用于因子页“dc 离线”提示）
+const services = ref<CleanerServiceStatus[]>([]);
 
 // Editor modal state
 const editorVisible = ref(false);
@@ -29,6 +32,15 @@ async function loadFactors() {
   factors.value = await factorService.getFactors();
   if (factors.value.length > 0 && !selectedFactor.value) {
     selectedFactor.value = factors.value[0]!;
+  }
+}
+
+// Load cleaner service status (best-effort; 失败不影响因子列表展示)
+async function loadServices() {
+  try {
+    services.value = await factorService.getServices();
+  } catch {
+    services.value = [];
   }
 }
 
@@ -72,7 +84,10 @@ async function handleAIGenerate(category: FactorCategory) {
   ElMessage.success(`AI 因子 ${factor.name} 已生成`);
 }
 
-onMounted(loadFactors);
+onMounted(() => {
+  loadFactors();
+  loadServices();
+});
 </script>
 
 <template>
@@ -82,6 +97,7 @@ onMounted(loadFactors);
         <FactorLibrary
           :factors="factors"
           :selected-factor-id="selectedFactor?.id"
+          :cleaner-services="services"
           @select-factor="handleSelectFactor"
           @edit-factor="handleEditFactor"
           @delete-factor="handleDeleteFactor"

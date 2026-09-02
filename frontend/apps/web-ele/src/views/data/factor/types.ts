@@ -45,6 +45,11 @@ export interface Factor {
 
   // Universe values for correlation calculation
   mockUniverseValues: number[];
+
+  // 来源清洗服务状态（backend-owned 语义，用于“dc 离线”提示与徽标）
+  available?: boolean;
+  serviceCode?: string;
+  serviceStatus?: string;
 }
 
 export interface BacktestParams {

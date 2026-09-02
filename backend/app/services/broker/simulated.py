@@ -75,3 +75,11 @@ class SimulatedBroker(BrokerAdapter):
             )
         self._svc._update_account_value()
         self.restored = True
+        # 记录回灌时所基于的撮合服务对象。用于识别"回灌之后模拟服务单例被重建"
+        # 的情况：此时 restored 仍为 True，但内存已变回初始空状态，若照常以内存
+        # 为准回写 DB，会把 DB 持仓清空、现金刷回初始值。
+        self._restored_svc = self._svc
+
+    def is_restore_valid(self) -> bool:
+        """当前内存状态是否确实来自一次 DB 回灌（且底层服务未被替换）。"""
+        return bool(self.restored) and getattr(self, "_restored_svc", None) is self._svc

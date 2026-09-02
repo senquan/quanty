@@ -63,7 +63,8 @@ services:
     build: ./data-cleaner
     container_name: quant-data-cleaner
     environment:
-      DATABASE_URL: postgresql+asyncpg://quant_user:quant_password@postgres:5432/quant_db
+      # 指向独立的 factor 库，不是 backend 的 quant_db
+      DATABASE_URL: postgresql+asyncpg://quant_user:quant_password@postgres-factor:5432/factor_db
       REDIS_URL: redis://redis:6379/0
       FACTOR_DATA_DIR: /data/factors
       DEBUG: "False"
@@ -73,7 +74,7 @@ services:
     volumes:
       - factor_data:/data/factors
     depends_on:
-      - postgres
+      - postgres-factor
       - redis
     networks:
       - quant-network
@@ -81,6 +82,7 @@ services:
 
 volumes:
   postgres_data:
+  postgres_factor_data:
   factor_data:
 
 networks:

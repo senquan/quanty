@@ -9,6 +9,7 @@
 注意：BrokerAdapter 的查询/下单为同步接口（与既有 huatai_trading 一致），
 实盘适配器会发起 HTTP 请求；若后续实盘调用量增长，再统一改为 run_in_executor。
 """
+import logging
 from datetime import datetime
 from uuid import uuid4
 
@@ -28,6 +29,8 @@ from app.services.broker.factory import get_broker, normalize_mode
 from app.services.broker.simulated import SimulatedBroker
 from app.services.huatai_trading import Order as BrokerOrder
 from app.services.huatai_trading import OrderSide, OrderType
+
+logger = logging.getLogger(__name__)
 
 
 def _new_client_order_id(mode: str) -> str:
@@ -51,10 +54,19 @@ class TradingCoordinator:
         )
 
     async def _restore_broker_state(self, account: TradingAccount) -> None:
-        """进程重启后用 DB 回灌模拟盘内存状态（实盘状态在券商侧，无需回灌）。"""
-        if not isinstance(self.broker, SimulatedBroker) or self.broker.restored:
-            return  # 每个进程只回灌一次（清仓后内存为空，不能据此再次回灌）
-        rows = await repo.list_positions(self.session, self.mode)
+        """进程重启后用 DB 回灌模拟盘内存状态（实盘状态在券商侧，无需回灌）。
+
+        回灌条件从原来的「每个进程一次（restored 标志）」改为「回灌仍然有效
+        （is_restore_valid）」：若回灌之后模拟撮合服务单例被重建（模块重导入等），
+        restored 仍为 True 但内存已变回初始空状态，此时必须重新回灌，否则
+        后续 sync_state 会以空内存为准把 DB 持仓清空、现金刷回初始值。
+        """
+        if not isinstance(self.broker, SimulatedBroker):
+            return
+        if self.broker.is_restore_valid():
+            return  # 已回灌且底层撮合服务未被替换
+        rows = await repo.list_positions(self.session, self.mode, account_id=account.id)
+        logger.info("模拟盘内存回灌: cash=%s, 持仓 %s 条", account.cash_balance, len(rows))
         self.broker.restore(
             cash=account.cash_balance,
             positions=[(r.symbol, r.quantity, r.avg_price) for r in rows],
@@ -90,9 +102,17 @@ class TradingCoordinator:
             seen.add((p.symbol, side))
 
         # 券商侧已清仓、DB 仍残留的行 → 清理
-        for row in await repo.list_positions(self.session, self.mode):
-            if (row.symbol, row.side) not in seen:
-                await self.session.delete(row)
+        # 安全闸：仅当内存确实来自一次有效的 DB 回灌时才允许删除。
+        # 否则内存可能是空/陈旧的，照删会把 DB 全部持仓清空（历史上
+        # 600036 持仓即因此丢失）。不可信时跳过删除并告警。
+        if isinstance(self.broker, SimulatedBroker) and not self.broker.is_restore_valid():
+            logger.warning("模拟盘内存状态不可信（未完成有效 DB 回灌），跳过持仓删除以免覆盖 DB")
+        else:
+            for row in await repo.list_positions(
+                self.session, self.mode, account_id=account.id
+            ):
+                if (row.symbol, row.side) not in seen:
+                    await self.session.delete(row)
 
         await self.session.commit()
         return account, await repo.list_positions(self.session, self.mode)

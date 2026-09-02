@@ -149,5 +149,18 @@ async def refresh_industries(db, service_code=None) -> dict:
 
 
 async def factor_availability(db, service_code=None) -> dict:
-    svc = await pick_service(db, service_code)
-    return await _request(svc, "GET", "/api/v1/strategy/factors/availability") or {}
+    """因子可用性：由**本地底册 + dc 连接状态**推导，不再回源 dc。
+
+    语义（见 docs/plans/2026-09-01.factor-registry-backend-owned.md §6）：
+    "dc 连接状态就是因子可用状态"。故 可用 = 已入库(底册中存在) 且 其 dc 源
+    状态为 online/degraded。dc 宕机时全部不可用，但接口仍正常返回（不超时）。
+
+    返回契约保持 {factor_code: bool} 不变（前端 factorAvailabilityApi 依赖）。
+    """
+    from app.services import cleaner_gateway as gw
+
+    await gw.ensure_cleaner_tables()
+    items = await gw.list_catalog_factors(db, with_metrics=False)
+    if service_code:
+        items = [i for i in items if i["service_code"] == service_code]
+    return {i["code"]: bool(i["available"]) for i in items}

@@ -348,6 +348,59 @@ class FundamentalSource(BaseSource):
             out = out[rp.isin(period_set)]
         return out
 
+    def fetch_growth_akshare_bulk(self, periods: list[str] | None = None) -> "pd.DataFrame":
+        """akshare 批量实现：用业绩报表(stock_yjbb_em)按报告期一次性拉全市场成长数据。
+
+        相比逐标的利润表(fetch_growth_akshare)遍历全市场 5000+ 次网络调用，
+        本方法每个报告期仅 1 次调用，8 期分钟级完成。列映射：
+        营业总收入-同比增长→rev_growth_yoy，净利润-同比增长→eps_growth_yoy
+        （与原逐标的口径一致，均为母公司净利润同比）。
+        """
+        cols = ["symbol", "report_period", "ann_date", "rev_growth_yoy",
+                "eps_growth_yoy", "revenue", "net_profit", "eps"]
+        try:
+            import akshare as ak
+        except ImportError:
+            logger.warning("未安装 akshare，成长数据降级为空")
+            return pd.DataFrame(columns=cols)
+        period_set = set(periods or [])
+        frames: list[pd.DataFrame] = []
+        ok = fail = 0
+        for p in sorted(period_set):
+            try:
+                buf = io.StringIO()
+                with redirect_stderr(buf):
+                    df = ak.stock_yjbb_em(date=p)
+            except Exception as e:  # noqa: BLE001
+                fail += 1
+                logger.warning(f"akshare 业绩报表失败({p}): {e}")
+                continue
+            if df is None or df.empty:
+                continue
+            rp = pd.to_datetime(f"{p[:4]}-{p[4:6]}-{p[6:]}", errors="coerce").date()
+            mapped = pd.DataFrame({
+                "symbol": df["股票代码"].map(lambda c: _from_akshare_code(str(c))),
+                "report_period": rp,
+                "ann_date": pd.to_datetime(df.get("最新公告日期"), errors="coerce").dt.date,
+                "rev_growth_yoy": df.get("营业总收入-同比增长"),
+                "eps_growth_yoy": df.get("净利润-同比增长"),
+                "revenue": df.get("营业总收入-营业总收入"),
+                "net_profit": df.get("净利润-净利润"),
+                "eps": df.get("每股收益"),
+            })
+            ann_na = mapped["ann_date"].isna()
+            if ann_na.any():
+                mapped.loc[ann_na, "ann_date"] = mapped.loc[ann_na, "report_period"]
+            frames.append(mapped)
+            ok += 1
+        logger.info(
+            "akshare 业绩报表遍历完成",
+            extra={"task": "ingest", "periods_ok": ok, "periods_fail": fail},
+        )
+        if not frames:
+            return pd.DataFrame(columns=cols)
+        return pd.concat(frames, ignore_index=True)[cols]
+
     def _fetch_growth(self, params: dict) -> "pd.DataFrame":
         """fina_indicator 统一抓取（营收/净利同比，含 ann_date，防前视）。
 

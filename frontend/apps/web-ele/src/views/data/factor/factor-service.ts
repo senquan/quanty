@@ -16,11 +16,13 @@ import type {
 } from './types';
 
 import {
+  type CleanerServiceStatus,
   type FactorDefinition,
   aiGenerateFactorApi,
   createFactorApi,
   deleteFactorApi,
   factorCorrelationApi,
+  listFactorServicesApi,
   listFactorsApi,
   updateFactorApi,
 } from '#/api/factor-library';
@@ -138,6 +140,11 @@ export function toFactor(d: FactorDefinition): Factor {
     shortReturns: [],
     benchmarkReturns: [],
     mockUniverseValues: [],
+
+    // 来源服务状态（backend-owned 语义）：用于“dc 离线”徽标
+    available: d.available ?? true,
+    serviceCode: d.service_code ?? '',
+    serviceStatus: d.service_status ?? 'unknown',
   };
 }
 
@@ -220,4 +227,9 @@ export const factorService = {
 
   // 组合回测：清洗服务暂无对应引擎，backtest-studio 仍直接使用本地模拟
   // （./mock/factor-data 的 runMultiFactorBacktest），此处不再重复包装。
+
+  /** 清洗服务实时状态（用于“dc 离线”提示） */
+  async getServices(): Promise<CleanerServiceStatus[]> {
+    return (await listFactorServicesApi()) ?? [];
+  },
 };

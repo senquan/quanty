@@ -39,6 +39,11 @@ export interface FactorDefinition {
   description?: string | null;
   /** 由主后端并发补齐的最新一期效能指标，可能为 null */
   metrics?: FactorMetricsRaw | null;
+  /** 来源清洗服务关联（backend-owned 语义新增） */
+  service_code?: string | null;
+  service_status?: string | null;
+  /** 该因子来源服务当前是否在线可用 */
+  available?: boolean;
 }
 
 /** 相关性矩阵：correlation[a][b] = 数值 */
@@ -116,4 +121,21 @@ export async function factorCorrelationApi(codes: string[]) {
   return requestClient.post<FactorCorrelationResult>('/factors/correlation', {
     codes,
   });
+}
+
+// ============ 清洗服务状态 ============
+
+/** 已登记清洗服务的实时状态（由 backend 基于心跳/连通性推导） */
+export interface CleanerServiceStatus {
+  service_code: string;
+  name: string;
+  base_url: string;
+  status: string;
+  last_heartbeat: string | null;
+  available: boolean;
+}
+
+/** 清洗服务状态列表（用于因子页“dc 离线”提示） */
+export async function listFactorServicesApi() {
+  return requestClient.get<CleanerServiceStatus[]>('/factors/services');
 }

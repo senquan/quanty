@@ -458,7 +458,18 @@ def _normalize_universe(universe: object) -> list[str]:
     if isinstance(universe, str):
         return [] if universe in ("all", "custom") else [universe]
     if isinstance(universe, (list, tuple, set)):
-        return [_symbol_digits(u)[:3] if isinstance(u, str) else str(u) for u in universe]
+        out: list[str] = []
+        for u in universe:
+            if not isinstance(u, str):
+                out.append(str(u))
+                continue
+            key = u.strip().lower()
+            # 板块 key（main/cyb/kcb/bj）原样保留——原先对列表元素一律套
+            # _symbol_digits()[:3]，会把 'main'/'cyb' 这类无数字的 key 抹成 ''，
+            # 导致多板块配置（如 ['main','cyb']）过滤时无标的命中、得分全空。
+            # 非板块 key 才按代码取前 3 位前缀。
+            out.append(key if key in UNIVERSE_BOARDS else _symbol_digits(u)[:3])
+        return out
     return []
 
 

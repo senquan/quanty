@@ -106,8 +106,11 @@ def refresh_growth(periods: list[str] | None = None) -> dict:
     provider = src.prefer_growth_provider()
     total = 0
     if provider == "akshare":
-        # akshare 逐标的遍历，一次返回全部请求期，避免按 period 重复拉取
-        df = src.fetch_growth_akshare(periods)
+        # 优先批量业绩报表（每报告期 1 次调用，分钟级）；失败则回退逐标的利润表
+        df = src.fetch_growth_akshare_bulk(periods)
+        if df is None or df.empty:
+            logger.warning("akshare 批量成长为空，回退逐标的利润表")
+            df = src.fetch_growth_akshare(periods)
         total = fundamental_store.upsert_finance_reports(_rows(df))
     else:
         for p in periods:

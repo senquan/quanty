@@ -318,8 +318,25 @@ class HuataiSimulatorService(TradingService):
         return self.orders.get(order_id)
     
     def get_market_price(self, symbol: str) -> float:
-        """获取市场价格"""
-        # 模拟价格波动
+        """获取市场价格：**以真实行情为准**，库内无数据时才回落到内置演示价表。
+
+        取价优先级（本次调整）：
+        1) factor.raw_bars 最新收盘价 —— 真实行情，用于估值与风控；
+        2) 内置演示价表 market_prices —— 仅当库内查不到该标的（如指数、
+           纯演示标的）时兜底，并保留原有 ±0.5% 随机波动；
+        3) 都没有 → 0.0。
+
+        为何改为真实价优先：
+        - 原实现优先用写死的演示价表，与真实行情脱节（600036 真实收盘 40.86，
+          表内却是 45.0），导致持仓市值与浮盈失真；
+        - 更早的实现对未内置标的直接返回 0.0，会引发：① 持仓市值/浮盈归零，
+          界面显示成「-成本」的假亏损；② 账户 total_assets 被低估，风控的
+          单笔/单仓比例上限随之被压低而误拒正常买单（100 万账户分 5 只、
+          每笔约 19 万即全部遭拒）。
+        """
+        real = self._latest_close(symbol)
+        if real > 0:
+            return real
         if symbol in self.market_prices:
             # 随机波动 ±0.5%
             import random
@@ -327,6 +344,44 @@ class HuataiSimulatorService(TradingService):
             fluctuation = random.uniform(-0.005, 0.005)
             return round(base_price * (1 + fluctuation), 2)
         return 0.0
+
+    _PRICE_TTL = 60  # 秒：库内收盘价缓存时长，避免同一轮同步内重复查库
+
+    def _latest_close(self, symbol: str) -> float:
+        """取该标的最新收盘价（同步读 factor.raw_bars，带短时缓存）。"""
+        if not symbol:
+            return 0.0
+        cache = getattr(self, "_price_cache", None)
+        if cache is None:
+            cache = self._price_cache = {}
+        hit = cache.get(symbol)
+        if hit and (time.time() - hit[1]) < self._PRICE_TTL:
+            return hit[0]
+
+        price = 0.0
+        try:
+            from sqlalchemy import create_engine, text
+
+            if getattr(self, "_price_engine", None) is None:
+                self._price_engine = create_engine(
+                    settings.DATABASE_URL.replace("+asyncpg", "+psycopg2"),
+                    pool_pre_ping=True,
+                )
+            with self._price_engine.connect() as conn:
+                val = conn.execute(
+                    text(
+                        "SELECT close FROM factor.raw_bars WHERE symbol=:s "
+                        "ORDER BY timestamp DESC LIMIT 1"
+                    ),
+                    {"s": symbol},
+                ).scalar()
+            price = float(val) if val is not None else 0.0
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"取 {symbol} 最新收盘价失败: {e}")
+            price = 0.0
+
+        cache[symbol] = (price, time.time())
+        return price
     
     def get_available_symbols(self) -> List[Dict]:
         """获取可交易标的"""

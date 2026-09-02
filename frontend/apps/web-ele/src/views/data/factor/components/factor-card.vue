@@ -196,6 +196,15 @@ const overall = computed(() => {
           >
             未评估
           </span>
+          <ElTag
+            v-if="factor.available === false"
+            size="small"
+            type="warning"
+            effect="plain"
+            title="该因子的来源清洗服务当前离线，指标为本地缓存"
+          >
+            源离线
+          </ElTag>
         </div>
         <h4 class="text-sm font-semibold truncate group-hover:text-blue-500 transition-colors">
           {{ factor.name }}

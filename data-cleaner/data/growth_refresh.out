@@ -1,0 +1,4 @@
+=== growth refresh ===
+{"status": "done", "provider": "akshare", "periods": ["20260630", "20260331", "20251231", "20250930", "20250630", "20250331", "20241231", "20240930"], "rows": 69962}
+=== growth factor_build ===
+{"status": "done", "symbols_in": 5553, "symbols_ok": 5553, "symbols_error": 0, "factors_computed": 3, "factors_failed": 0, "custom_computed": 1, "custom_failed": 0, "categories": ["growth", "momentum"], "dates": 158, "files": 316, "rows_written": 1183298, "duration_s": 91.8, "sampleErrors": []}

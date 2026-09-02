@@ -45,6 +45,8 @@ class FactorRegistryOut(BaseModel):
     data_source: str | None = None
     is_enabled: bool
     last_sync: datetime | None = None
+    metrics: dict | None = None
+    metrics_synced_at: datetime | None = None
 
 
 class FactorListQuery(BaseModel):
