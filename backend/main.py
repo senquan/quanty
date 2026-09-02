@@ -1,3 +1,5 @@
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI, Request, status
 from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
@@ -9,12 +11,24 @@ from app.api.api_v1.api import api_router
 from app.schemas.response import Response
 from app.services.factor_strategy_proxy import FactorStrategyProxyError
 
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    """启停交易调度器（仅当 ENABLE_TRADING_SCHEDULER=true 时启动）。"""
+    from app.tasks.scheduler import shutdown_scheduler, start_scheduler
+
+    start_scheduler()
+    yield
+    shutdown_scheduler()
+
+
 app = FastAPI(
     title="Quant Backend API",
     description="量化交易系统后端API",
     version="1.0.0",
     docs_url="/api/docs",
-    redoc_url="/api/redoc"
+    redoc_url="/api/redoc",
+    lifespan=lifespan,
 )
 
 # Global Exception Handlers

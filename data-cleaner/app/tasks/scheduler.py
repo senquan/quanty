@@ -155,16 +155,6 @@ async def _industry_refresh_job() -> None:
         logger.error(f"行业分类刷新失败: {e}", extra={"task": "scheduled_industry"})
 
 
-async def _strategy_rebalance_job() -> None:
-    """交易时段每 15 分钟扫描启用策略，到点则调仓（模拟盘自动下单）。"""
-    from app.strategy import rebalance as rebalance_task
-
-    try:
-        await rebalance_task.scan_and_rebalance()
-    except Exception as e:  # 不阻断调度器
-        logger.error(f"策略调仓扫描失败: {e}", extra={"task": "scheduled_rebalance"})
-
-
 def register_jobs() -> None:
     # 每日盘后流水线：拉数据 → 因子更新 → 效能评估（顺序执行）
     # max_instances=1 + coalesce：任务耗时长（全市场增量可达数小时），
@@ -225,18 +215,8 @@ def register_jobs() -> None:
         coalesce=True,
         replace_existing=True,
     )
-    scheduler.add_job(
-        _strategy_rebalance_job,
-        trigger="cron",
-        hour="9-15",
-        minute="*/15",
-        day_of_week="mon-fri",
-        id="strategy_rebalance",
-        misfire_grace_time=600,
-        max_instances=1,
-        coalesce=True,
-        replace_existing=True,
-    )
+    # 注：策略调仓定时任务已迁至 backend（交易中心）承载。
+    # data-cleaner 只保留 /strategy/scores（算目标持仓）与 /raw/latest-prices（行情中继）。
     # 启动后若行业表为空，立即补刷一次（避免中性化退化/无数据）
     try:
         from datetime import timedelta

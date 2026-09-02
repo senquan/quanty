@@ -15,6 +15,8 @@ from enum import Enum
 from abc import ABC, abstractmethod
 import logging
 
+from app.core.config import settings
+
 # 配置日志
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -119,25 +121,38 @@ class RiskControlManager:
     
     def __init__(self, 
                  max_position_pct: float = 0.3,
-                 max_order_value: float = 100000,
+                 max_order_pct: float = 0.3,
                  max_daily_loss: float = 0.05,
                  min_cash_balance: float = 10000):
         
         self.max_position_pct = max_position_pct  # 单只股票最大仓位比例
-        self.max_order_value = max_order_value   # 单笔最大订单金额
+        self.max_order_pct = max_order_pct        # 单笔订单金额上限（占总资产比例）
         self.max_daily_loss = max_daily_loss      # 日最大亏损比例
         self.min_cash_balance = min_cash_balance  # 最小现金余额
-        
+
+    def max_order_value(self, total_assets: float) -> float:
+        """单笔订单金额上限 = 总资产 × 比例。
+
+        原实现用绝对值（10 万），账户规模变化或标的数较少时会误拒：
+        100 万账户买 5 只标的每笔 19 万即被全部拒单。改为按总资产比例后随规模自适应。
+        """
+        return total_assets * self.max_order_pct
+
     def validate_order(self, order: Order, account: Account) -> tuple[bool, str]:
         """验证订单是否通过风控检查"""
-        
-        # 1. 检查订单金额
+
         order_value = order.price * order.quantity if order.price else 0
-        if order_value > self.max_order_value:
-            return False, f"订单金额 {order_value} 超过最大限制 {self.max_order_value}"
+        total_assets = account.total_assets
+
+        # 1. 检查单笔订单金额（按总资产比例，而非绝对值）
+        limit = self.max_order_value(total_assets)
+        if order_value > limit:
+            return False, (
+                f"订单金额 {order_value} 超过单笔上限 {limit:.2f}"
+                f"（总资产 {total_assets} × {self.max_order_pct:.0%}）"
+            )
         
         # 2. 检查持仓比例
-        total_assets = account.total_assets
         current_position_value = sum(
             pos.market_value for pos in account.positions 
             if pos.symbol == order.symbol
@@ -152,10 +167,11 @@ class RiskControlManager:
         if order.side == OrderSide.BUY and account.cash_balance < order_value:
             return False, f"现金余额不足: {account.cash_balance} < {order_value}"
         
-        # 4. 检查最小现金余额
-        remaining_cash = account.cash_balance - order_value
-        if remaining_cash < self.min_cash_balance:
-            return False, f"买入后现金余额 {remaining_cash} 低于最低要求 {self.min_cash_balance}"
+        # 4. 检查最小现金余额（仅买入：卖出是增加现金，不应受此约束）
+        if order.side == OrderSide.BUY:
+            remaining_cash = account.cash_balance - order_value
+            if remaining_cash < self.min_cash_balance:
+                return False, f"买入后现金余额 {remaining_cash} 低于最低要求 {self.min_cash_balance}"
         
         return True, "订单验证通过"
     
@@ -222,7 +238,8 @@ class HuataiSimulatorService(TradingService):
         # 风控管理器
         self.risk_manager = RiskControlManager(
             max_position_pct=0.3,
-            max_order_value=100000,
+            # 单笔订单上限按总资产比例（与 max_position_pct 对齐，避免另设更紧的绝对门槛）
+            max_order_pct=float(getattr(settings, "RISK_MAX_ORDER_PCT", 0.3)),
             max_daily_loss=0.05,
             min_cash_balance=10000
         )
@@ -357,7 +374,9 @@ class HuataiSimulatorService(TradingService):
     def _update_position(self, order: Order, is_buy: bool):
         """更新持仓"""
         symbol = order.symbol
-        position_key = f"{symbol}_{order.side.value}"
+        # 持仓键按持仓方向（LONG）而非订单方向（BUY/SELL）命名：
+        # 否则买入建的 "SYM_BUY" 在卖出时会去查 "SYM_SELL" 而查不到，导致卖出不减仓。
+        position_key = f"{symbol}_{PositionSide.LONG.value}"
         
         if is_buy:
             if position_key in self.positions:

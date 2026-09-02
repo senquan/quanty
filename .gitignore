@@ -55,6 +55,7 @@ quarantine*
 # Documents
 docs/notes
 docs/screen
+docs/repos
 
 # Test
 tests/

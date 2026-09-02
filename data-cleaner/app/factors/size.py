@@ -1,6 +1,6 @@
-"""规模类因子（市值）
+"""规模类因子 SIZE_（市值）
 
-依赖迁移 006 的 factor.daily_basic 提供的 total_mv / circ_mv（tushare 单位：千元）。
+依赖迁移 006 的 factor.daily_basic 提供的 total_mv / circ_mv（万元）。
 市值天然右偏，统一取对数（ln）后再做截面 z-score，更符合规模因子定义。
 数据缺失（未刷新 daily_basic）时返回 NaN，流水线不受影响。
 """
@@ -13,7 +13,7 @@ from app.factors.registry import register
 
 @register
 class MarketCapTotal(Factor):
-    code = "MKT_CAP"
+    code = "SIZE_MKT_CAP"
     name = "总市值(ln)"
     category = "size"
     frequency = "Daily"
@@ -28,7 +28,7 @@ class MarketCapTotal(Factor):
 
 @register
 class MarketCapCirc(Factor):
-    code = "MKT_CAP_CIRC"
+    code = "SIZE_MKT_CAP_CIRC"
     name = "流通市值(ln)"
     category = "size"
     frequency = "Daily"

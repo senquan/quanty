@@ -3,8 +3,9 @@
 - CRUD：/strategies
 - 回测：POST /strategies/{id}/backtest
 - 持仓预览：POST /scores（任意配置算目标持仓）
-- 手动调仓：POST /strategies/{id}/rebalance
-- 执行记录：GET /strategies/{id}/executions
+
+注：策略调仓的编排与下单已迁至 backend（交易中心）承载，本服务不再驱动交易；
+    执行记录 /strategies/{id}/executions 保留供历史对账，数据迁移完成后可归档。
 - 行业刷新：POST /industries/refresh
 
 受 X-API-Key 保护（与主后端代理一致）。
@@ -21,7 +22,6 @@ import app.storage.db as db
 from app.core.logging import get_logger
 from app.industry import store as industry_store
 from app.strategy import engine
-from app.strategy import rebalance as rebalance_task
 from app.strategy import store as strat_store
 
 
@@ -164,15 +164,6 @@ async def scores(req: ScoresRequest):
         return await _run_sync(engine.compute_target, req.config, req.as_of)
     except Exception as e:  # noqa: BLE001
         raise HTTPException(status_code=500, detail=f"计算失败: {e}") from e
-
-
-@router.post("/strategies/{sid}/rebalance")
-async def manual_rebalance(sid: int):
-    row = await strat_store.get_strategy(sid)
-    if not row:
-        raise HTTPException(status_code=404, detail=f"策略不存在: {sid}")
-    summary = await _run_sync(rebalance_task.rebalance_one, row)
-    return summary
 
 
 @router.get("/strategies/{sid}/executions")

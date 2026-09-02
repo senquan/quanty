@@ -1,361 +1,358 @@
 """
-华泰证券交易API接口
-⚠️ 注意：此为模拟交易API
-实盘交易需要：
-1. 在华泰证券官方申请API权限
-2. 完成OAuth2.0认证
-3. 遵守相关法律法规
-"""
-from typing import List, Optional
-from datetime import datetime
-from pydantic import BaseModel, Field
-from fastapi import APIRouter, Depends, HTTPException, status, Header
-from enum import Enum
+交易接口（模拟盘 paper / 实盘 live）
 
-from app.services.huatai_trading import (
-    Order, Position, Account,
-    OrderType, OrderSide, OrderStatus,
-    get_trading_service, TradingService
-)
+两种模式共用同一套接口，通过 `mode` 参数（默认 paper）区分，
+由 BrokerAdapter 适配层 + TradingCoordinator 落库：
+- 模拟盘：内存撮合（华泰模拟服务），持仓与成交落库，进程重启后从 DB 回灌；
+- 实盘：东方财富妙想适配器，默认 BROKER_DRY_RUN=True 不发起真实请求。
+
+⚠️ 实盘需先在券商申请 API 权限并配置凭证，且须确认成交双校验语义
+（下单成功 ≠ 成交，见 app/services/broker/mx.py）。
+"""
+import json
+from datetime import datetime
+from typing import Optional
+
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
+from pydantic import BaseModel, Field
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.api.api_v1.endpoints.auth import get_current_user
 from app.core.config import settings
+from app.core.database import get_db
+from app.models.trading import (
+    TradingOrder,
+    TradingPosition,
+    TradingRebalanceRecord,
+    TradingTrade,
+)
 from app.models.user import User
 from app.schemas.response import Response
+from app.services import trading_repository as repo
+from app.services.broker.factory import describe_modes
+from app.services.huatai_trading import get_trading_service
+from app.services.rebalance_service import scan_and_rebalance
+from app.services.trading_coordinator import TradingCoordinator, ensure_tables
 
 router = APIRouter()
+
 
 # ============ 请求/响应模型 ============
 
 class OrderRequest(BaseModel):
     """下单请求"""
+
     symbol: str = Field(..., description="股票代码，如 600519.SH")
-    order_type: str = Field(..., description="订单类型: MARKET, LIMIT")
+    order_type: str = Field("LIMIT", description="订单类型: MARKET, LIMIT")
     side: str = Field(..., description="买卖方向: BUY, SELL")
     quantity: int = Field(..., gt=0, description="数量")
     price: Optional[float] = Field(None, ge=0, description="价格，限价单必填")
+    mode: str = Field("paper", description="交易模式: paper, live")
 
-class OrderResponse(BaseModel):
-    """订单响应"""
-    order_id: str
-    symbol: str
-    order_type: str
-    side: str
-    quantity: int
-    price: Optional[float]
-    filled_quantity: int
-    status: str
-    created_at: str
-    filled_at: Optional[str]
-    commission: float
 
-class PositionResponse(BaseModel):
-    """持仓响应"""
-    symbol: str
-    side: str
-    quantity: int
-    avg_price: float
-    market_value: float
-    unrealized_pnl: float
+# ============ 序列化 ============
 
-class AccountResponse(BaseModel):
-    """账户响应"""
-    account_id: str
-    total_assets: float
-    cash_balance: float
-    frozen_cash: float
-    positions: List[PositionResponse]
-    daily_pnl: float
-    daily_commission: float
+def _order_dict(o: TradingOrder) -> dict:
+    return {
+        "order_id": o.client_order_id,
+        "broker_order_id": o.broker_order_id,
+        "symbol": o.symbol,
+        "side": o.side,
+        "order_type": o.order_type,
+        "quantity": o.quantity,
+        "price": o.price,
+        "filled_quantity": o.filled_quantity,
+        "status": o.status,
+        "message": o.message,
+        "source": o.source,
+        "created_at": o.created_at.isoformat() if o.created_at else None,
+        "filled_at": o.filled_at.isoformat() if o.filled_at else None,
+    }
 
-class CancelOrderRequest(BaseModel):
-    """撤单请求"""
-    order_id: str
 
-class MarketDataResponse(BaseModel):
-    """行情数据响应"""
-    symbol: str
-    name: str
-    price: float
-    change: float
-    change_pct: float
-
-class TradeHistoryResponse(BaseModel):
-    """交易历史响应"""
-    trade_id: str
-    symbol: str
-    side: str
-    price: float
-    quantity: int
-    amount: float
-    commission: float
-    trade_time: str
-
-class DailyReportResponse(BaseModel):
-    """日报表响应"""
-    date: str
-    account_id: str
-    opening_balance: float
-    closing_balance: float
-    daily_pnl: float
-    daily_pnl_pct: float
-    total_commission: float
-    order_count: int
-    filled_order_count: int
-
-# ============ API接口 ============
-
-@router.get("/account", response_model=Response[AccountResponse])
-async def get_account(
-    current_user: User = Depends(get_current_user)
-):
-    """获取账户信息"""
-    service = get_trading_service()
-    account = service.get_account()
-    
-    data = AccountResponse(
-        account_id=account.account_id,
-        total_assets=account.total_assets,
-        cash_balance=account.cash_balance,
-        frozen_cash=account.frozen_cash,
-        positions=[
-            PositionResponse(
-                symbol=pos.symbol,
-                side=pos.side.value,
-                quantity=pos.quantity,
-                avg_price=pos.avg_price,
-                market_value=pos.market_value,
-                unrealized_pnl=pos.unrealized_pnl
-            )
-            for pos in account.positions
-        ],
-        daily_pnl=account.daily_pnl,
-        daily_commission=account.daily_commission
+def _position_dict(p: TradingPosition) -> dict:
+    pnl_pct = (
+        round((p.last_price - p.avg_price) / p.avg_price * 100, 2) if p.avg_price else 0.0
     )
-    return Response.success(data=data)
+    return {
+        "symbol": p.symbol,
+        "side": p.side,
+        "quantity": p.quantity,
+        "avg_price": round(p.avg_price, 4),
+        "last_price": round(p.last_price, 4),
+        "market_value": round(p.market_value, 2),
+        "unrealized_pnl": round(p.unrealized_pnl, 2),
+        "pnl_percent": pnl_pct,
+        "updated_at": p.updated_at.isoformat() if p.updated_at else None,
+    }
 
-@router.get("/positions", response_model=Response[List[PositionResponse]])
-async def get_positions(
-    current_user: User = Depends(get_current_user)
+
+def _rebalance_dict(r: TradingRebalanceRecord) -> dict:
+    detail = None
+    if r.detail:
+        try:
+            detail = json.loads(r.detail)
+        except ValueError:  # 脏数据不应让列表整体失败
+            detail = None
+    return {
+        "strategy_id": r.strategy_id,
+        "strategy_name": r.strategy_name,
+        "mode": r.mode,
+        "rebalance_date": _iso(r.rebalance_date),
+        "trade_date": _iso(r.trade_date),
+        "target_count": r.target_count,
+        "orders_placed": r.orders_placed,
+        "amount": r.amount,
+        "status": r.status,
+        "detail": detail,
+    }
+
+
+def _trade_dict(t: TradingTrade) -> dict:
+    return {
+        "trade_id": t.id,
+        "order_id": t.order_id,
+        "symbol": t.symbol,
+        "side": t.side,
+        "price": round(t.price, 4),
+        "quantity": t.quantity,
+        "amount": round(t.amount, 2),
+        "commission": round(t.commission, 2),
+        "trade_time": t.trade_time.isoformat() if t.trade_time else None,
+    }
+
+
+# ============ 模式与概览 ============
+
+@router.get("/mode", summary="各交易模式可用性")
+async def get_mode(_: User = Depends(get_current_user)):
+    modes = describe_modes()
+    default = getattr(settings, "BROKER_MODE", "paper")
+    return Response.success(data={"default": default, "modes": modes})
+
+
+@router.get("/overview", summary="量化概览")
+async def get_overview(
+    mode: str = Query("paper", description="paper / live"),
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(get_current_user),
 ):
-    """获取持仓列表"""
-    service = get_trading_service()
-    positions = service.get_positions()
-    
-    data = [
-        PositionResponse(
-            symbol=pos.symbol,
-            side=pos.side.value,
-            quantity=pos.quantity,
-            avg_price=pos.avg_price,
-            market_value=pos.market_value,
-            unrealized_pnl=pos.unrealized_pnl
-        )
-        for pos in positions
-    ]
-    return Response.success(data=data)
+    await ensure_tables()
+    overview = await TradingCoordinator(db, mode).get_overview()
+    return Response.success(data=overview)
 
-@router.post("/orders", response_model=Response[OrderResponse])
+
+# ============ 账户 / 持仓 ============
+
+@router.get("/account", summary="账户信息")
+async def get_account(
+    mode: str = Query("paper"),
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    await ensure_tables()
+    detail = await TradingCoordinator(db, mode).get_account_detail()
+    detail["positions"] = [_position_dict(p) for p in detail["positions"]]
+    return Response.success(data=detail)
+
+
+@router.get("/positions", summary="持仓列表")
+async def get_positions(
+    mode: str = Query("paper"),
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    await ensure_tables()
+    positions = await TradingCoordinator(db, mode).list_positions()
+    return Response.success(data=[_position_dict(p) for p in positions])
+
+
+# ============ 订单 / 成交 ============
+
+@router.get("/orders", summary="订单列表")
+async def get_orders(
+    mode: str = Query("paper"),
+    status_filter: Optional[str] = Query(None, alias="status"),
+    limit: int = Query(50, ge=1, le=200),
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    await ensure_tables()
+    orders = await TradingCoordinator(db, mode).list_orders(status=status_filter, limit=limit)
+    return Response.success(data=[_order_dict(o) for o in orders])
+
+
+@router.post("/orders", summary="下单")
 async def place_order(
     order_request: OrderRequest,
-    current_user: User = Depends(get_current_user)
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
-    """下单"""
-    service = get_trading_service()
-    
-    try:
-        # 创建订单对象
-        order_type = OrderType.MARKET if order_request.order_type == "MARKET" else OrderType.LIMIT
-        side = OrderSide.BUY if order_request.side == "BUY" else OrderSide.SELL
-        
-        order = Order(
-            order_id="",  # 会在服务中生成
-            symbol=order_request.symbol,
-            order_type=order_type,
-            side=side,
-            quantity=order_request.quantity,
-            price=order_request.price
-        )
-        
-        # 下单
-        filled_order = service.place_order(order)
-        
-        data = OrderResponse(
-            order_id=filled_order.order_id,
-            symbol=filled_order.symbol,
-            order_type=filled_order.order_type.value,
-            side=filled_order.side.value,
-            quantity=filled_order.quantity,
-            price=filled_order.price,
-            filled_quantity=filled_order.filled_quantity,
-            status=filled_order.status.value,
-            created_at=filled_order.created_at.isoformat(),
-            filled_at=filled_order.filled_at.isoformat() if filled_order.filled_at else None,
-            commission=filled_order.commission
-        )
-        return Response.success(data=data)
-        
-    except ValueError as e:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(e)
-        )
-
-@router.delete("/orders/{order_id}", response_model=Response)
-async def cancel_order(
-    order_id: str,
-    current_user: User = Depends(get_current_user)
-):
-    """撤单"""
-    service = get_trading_service()
-    
-    success = service.cancel_order(order_id)
-    
-    if success:
-        return Response.success(msg="撤单成功")
-    else:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="撤单失败，订单不存在或状态不允许撤单"
-        )
-
-@router.get("/orders/{order_id}", response_model=Response[OrderResponse])
-async def get_order(
-    order_id: str,
-    current_user: User = Depends(get_current_user)
-):
-    """查询订单状态"""
-    service = get_trading_service()
-    order = service.get_order_status(order_id)
-    
-    if not order:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="订单不存在"
-        )
-    
-    data = OrderResponse(
-        order_id=order.order_id,
-        symbol=order.symbol,
-        order_type=order.order_type.value,
-        side=order.side.value,
-        quantity=order.quantity,
-        price=order.price,
-        filled_quantity=order.filled_quantity,
-        status=order.status.value,
-        created_at=order.created_at.isoformat(),
-        filled_at=order.filled_at.isoformat() if order.filled_at else None,
-        commission=order.commission
+    await ensure_tables()
+    coordinator = TradingCoordinator(db, order_request.mode)
+    order = await coordinator.place_order(
+        symbol=order_request.symbol,
+        side=order_request.side,
+        order_type=order_request.order_type,
+        quantity=order_request.quantity,
+        price=order_request.price,
+        user_id=getattr(current_user, "id", None),
     )
+    data = _order_dict(order)
+    if order.status == "REJECTED":
+        # 拒单是业务结果，用 200 + status 表达；同时给出可读原因
+        data["message"] = order.message or "下单被拒"
     return Response.success(data=data)
 
-@router.get("/market/quotes", response_model=Response[List[MarketDataResponse]])
-async def get_market_quotes(
-    symbols: Optional[str] = None,
-    current_user: User = Depends(get_current_user)
+
+@router.get("/orders/{order_id}", summary="查询订单")
+async def get_order(
+    order_id: str,
+    mode: str = Query("paper"),
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(get_current_user),
 ):
-    """获取实时行情"""
+    await ensure_tables()
+    order = await repo.get_order(db, order_id)
+    if not order:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="订单不存在")
+    return Response.success(data=_order_dict(order))
+
+
+@router.delete("/orders/{order_id}", summary="撤单")
+async def cancel_order(
+    order_id: str,
+    mode: str = Query("paper"),
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    await ensure_tables()
+    order = await TradingCoordinator(db, mode).cancel_order(order_id)
+    if order is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="订单不存在")
+    data = _order_dict(order)
+    if order.status != "CANCELLED":
+        return Response.error(code=400, msg=order.message or "撤单失败", data=data)
+    return Response.success(data=data, msg="撤单成功")
+
+
+@router.get("/trades", summary="成交记录")
+async def get_trades(
+    mode: str = Query("paper"),
+    start: Optional[str] = None,
+    end: Optional[str] = None,
+    limit: int = Query(200, ge=1, le=500),
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    await ensure_tables()
+    trades = await TradingCoordinator(db, mode).list_trades(start=start, end=end, limit=limit)
+    return Response.success(data=[_trade_dict(t) for t in trades])
+
+
+@router.get("/rebalances", summary="调仓记录")
+async def get_rebalances(
+    mode: str = Query("paper"),
+    limit: int = Query(20, ge=1, le=200),
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    """读本地表 trading_rebalance_records。
+
+    原实现需逐策略转发 data-cleaner 的 /executions（N+1 请求）；
+    调仓编排归位 backend 后直接读本地库。
+    """
+    await ensure_tables()
+    rows = await repo.list_rebalances(db, mode=mode, limit=limit)
+    return Response.success(data=[_rebalance_dict(r) for r in rows])
+
+
+@router.post("/rebalances/trigger", summary="手动触发调仓")
+async def trigger_rebalance(
+    mode: str = Query("paper"),
+    force: bool = Query(False, description="跳过调仓时点判断与当日防重"),
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    """手动触发一次全量扫描调仓（替代原 data-cleaner 的手动调仓端点）。"""
+    await ensure_tables()
+    summary = await scan_and_rebalance(db, mode=mode, force=force)
+    return Response.success(data=summary)
+
+
+def _iso(value) -> Optional[str]:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return value
+    return value.isoformat() if hasattr(value, "isoformat") else str(value)
+
+
+# ============ 行情与风控（沿用模拟撮合服务） ============
+
+@router.get("/market/quotes", summary="可交易标的行情")
+async def get_market_quotes(_: User = Depends(get_current_user)):
     service = get_trading_service()
-    
-    available_symbols = service.get_available_symbols()
-    
     data = [
-        MarketDataResponse(
-            symbol=s['symbol'],
-            name=s['name'],
-            price=s['price'],
-            change=0,  # 模拟数据
-            change_pct=0  # 模拟数据
-        )
-        for s in available_symbols
+        {
+            "symbol": s["symbol"],
+            "name": s["name"],
+            "price": s["price"],
+            "change": 0,
+            "change_pct": 0,
+        }
+        for s in service.get_available_symbols()
     ]
     return Response.success(data=data)
 
-@router.get("/market/price/{symbol}", response_model=Response)
-async def get_market_price(
-    symbol: str,
-    current_user: User = Depends(get_current_user)
-):
-    """获取单个标的实时价格"""
-    service = get_trading_service()
-    price = service.get_market_price(symbol)
-    
-    if price == 0:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"标的 {symbol} 不存在"
-        )
-    
-    return Response.success(data={"symbol": symbol, "price": price, "timestamp": datetime.now().isoformat()})
 
-@router.get("/trade-history", response_model=Response[List[TradeHistoryResponse]])
+@router.get("/market/price/{symbol}", summary="单个标的价格")
+async def get_market_price(symbol: str, _: User = Depends(get_current_user)):
+    price = get_trading_service().get_market_price(symbol)
+    if price == 0:
+        raise HTTPException(status_code=404, detail=f"标的 {symbol} 不存在")
+    return Response.success(
+        data={"symbol": symbol, "price": price, "timestamp": datetime.now().isoformat()}
+    )
+
+
+@router.get("/available-symbols", summary="可交易标的列表")
+async def get_available_symbols(_: User = Depends(get_current_user)):
+    symbols = get_trading_service().get_available_symbols()
+    return Response.success(data={"symbols": symbols, "total": len(symbols)})
+
+
+@router.get("/risk-settings", summary="风险设置")
+async def get_risk_settings(_: User = Depends(get_current_user)):
+    service = get_trading_service()
+    rm = service.risk_manager
+    # max_order_value 为按当前总资产换算出的有效上限（比例 × 总资产）
+    total_assets = service.get_account().total_assets
+    return Response.success(
+        data={
+            "max_position_pct": rm.max_position_pct,
+            "max_order_pct": rm.max_order_pct,
+            "max_order_value": round(rm.max_order_value(total_assets), 2),
+            "max_daily_loss": rm.max_daily_loss,
+            "min_cash_balance": rm.min_cash_balance,
+        }
+    )
+
+
+@router.get("/daily-report", summary="日报表")
+async def get_daily_report(_: User = Depends(get_current_user)):
+    return Response.success(data=get_trading_service().get_daily_report())
+
+
+@router.get("/trade-history", summary="交易历史（模拟撮合服务内存视图）")
 async def get_trade_history(
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
-    current_user: User = Depends(get_current_user)
+    _: User = Depends(get_current_user),
 ):
-    """获取交易历史"""
-    service = get_trading_service()
-    trades = service.get_trade_history(start_date, end_date)
-    
-    data = [
-        TradeHistoryResponse(
-            trade_id=trade['trade_id'],
-            symbol=trade['symbol'],
-            side=trade['side'],
-            price=trade['price'],
-            quantity=trade['quantity'],
-            amount=trade['amount'],
-            commission=trade['commission'],
-            trade_time=trade['trade_time']
-        )
-        for trade in trades
-    ]
-    return Response.success(data=data)
-
-@router.get("/daily-report", response_model=Response[DailyReportResponse])
-async def get_daily_report(
-    current_user: User = Depends(get_current_user)
-):
-    """获取日报表"""
-    service = get_trading_service()
-    report = service.get_daily_report()
-    
-    data = DailyReportResponse(
-        date=report['date'],
-        account_id=report['account_id'],
-        opening_balance=report['opening_balance'],
-        closing_balance=report['closing_balance'],
-        daily_pnl=report['daily_pnl'],
-        daily_pnl_pct=report['daily_pnl_pct'],
-        total_commission=report['total_commission'],
-        order_count=report['order_count'],
-        filled_order_count=report['filled_order_count']
+    return Response.success(
+        data=get_trading_service().get_trade_history(start_date, end_date)
     )
-    return Response.success(data=data)
-
-@router.get("/available-symbols", response_model=Response)
-async def get_available_symbols(
-    current_user: User = Depends(get_current_user)
-):
-    """获取可交易标的列表"""
-    service = get_trading_service()
-    symbols = service.get_available_symbols()
-    
-    return Response.success(data={"symbols": symbols, "total": len(symbols)})
-
-@router.get("/risk-settings", response_model=Response)
-async def get_risk_settings(
-    current_user: User = Depends(get_current_user)
-):
-    """获取风险设置"""
-    service = get_trading_service()
-    
-    return Response.success(data={
-        "max_position_pct": service.risk_manager.max_position_pct,
-        "max_order_value": service.risk_manager.max_order_value,
-        "max_daily_loss": service.risk_manager.max_daily_loss,
-        "min_cash_balance": service.risk_manager.min_cash_balance
-    })
 
 
 # ---------------------------------------------------------------------------
@@ -375,66 +372,82 @@ class InternalOrderRequest(BaseModel):
     quantity: int
     price: float | None = None
     user_id: int | None = None
+    mode: str = "paper"
 
 
 @router.post("/orders/internal", summary="内部下单（策略调仓）")
 async def internal_place_order(
     payload: InternalOrderRequest,
+    db: AsyncSession = Depends(get_db),
     _: bool = Depends(verify_internal_token),
 ):
-    """策略调仓专用下单入口：复用模拟撮合与风控，不校验用户会话。"""
-    order_type = OrderType(payload.order_type.upper())
-    side = OrderSide(payload.side.upper())
-    order = Order(
-        order_id=f"INT-{datetime.now().strftime('%Y%m%d%H%M%S%f')}",
+    await ensure_tables()
+    coordinator = TradingCoordinator(db, payload.mode)
+    order = await coordinator.place_order(
         symbol=payload.symbol,
-        order_type=order_type,
-        side=side,
+        side=payload.side,
+        order_type=payload.order_type,
         quantity=payload.quantity,
         price=payload.price,
+        source="strategy",
+        user_id=payload.user_id,
     )
-    filled = get_trading_service().place_order(order)
-    if filled is None:
-        return Response.error(code=400, msg=f"下单被拒或失败: {payload.symbol}")
-    symbol = filled.symbol.decode() if isinstance(filled.symbol, bytes) else str(filled.symbol)
-    return Response.success(data={
-        "symbol": symbol,
-        "side": getattr(filled.side, "value", str(filled.side)),
-        "quantity": filled.quantity,
-        "price": float(filled.price) if filled.price is not None else None,
-        "status": getattr(filled.status, "value", str(filled.status)),
-        "message": getattr(filled, "message", "") or "",
-    })
+    return Response.success(
+        data={
+            "order_id": order.client_order_id,
+            "symbol": order.symbol,
+            "side": order.side,
+            "quantity": order.quantity,
+            "price": order.price,
+            "filled_quantity": order.filled_quantity,
+            "status": order.status,
+            "message": order.message or "",
+        }
+    )
 
 
 @router.get("/account/internal", summary="内部账户查询")
-async def internal_account(_: bool = Depends(verify_internal_token)):
-    service = get_trading_service()
-    acct = service.get_account()
-    return Response.success(data={
-        "cash_balance": acct.cash_balance,
-        "total_asset": acct.total_assets,
-        "market_value": acct.total_assets - acct.cash_balance,
-        "realized_pnl": acct.daily_pnl,
-        "unrealized_pnl": 0.0,
-        "daily_pnl": acct.daily_pnl,
-    })
+async def internal_account(
+    db: AsyncSession = Depends(get_db),
+    _: bool = Depends(verify_internal_token),
+):
+    await ensure_tables()
+    overview = await TradingCoordinator(db, "paper").get_overview()
+    return Response.success(
+        data={
+            "cash_balance": overview["cash_balance"],
+            "total_asset": overview["total_assets"],
+            "market_value": overview["market_value"],
+            "realized_pnl": overview["total_pnl"],
+            "unrealized_pnl": overview["unrealized_pnl"],
+            "daily_pnl": overview["total_pnl"],
+        }
+    )
 
 
 @router.get("/positions/internal", summary="内部持仓查询")
-async def internal_positions(_: bool = Depends(verify_internal_token)):
-    service = get_trading_service()
-    positions = service.get_positions()
-    data = [
-        {
-            "symbol": p.symbol,
-            "side": p.side.value if isinstance(p.side, Enum) else p.side,
-            "quantity": p.quantity,
-            "avg_price": p.avg_price,
-            "market_price": p.market_price,
-            "market_value": p.market_value,
-            "unrealized_pnl": p.unrealized_pnl,
-        }
-        for p in positions
-    ]
-    return Response.success(data=data)
+async def internal_positions(
+    db: AsyncSession = Depends(get_db),
+    _: bool = Depends(verify_internal_token),
+):
+    """策略调仓读取当前持仓。
+
+    注意：字段名 `market_price` 是 data-cleaner 调仓侧的既有约定
+    （app/strategy/rebalance.py 读取 symbol / quantity / market_price），不要改名。
+    """
+    await ensure_tables()
+    positions = await TradingCoordinator(db, "paper").list_positions()
+    return Response.success(
+        data=[
+            {
+                "symbol": p.symbol,
+                "side": p.side,
+                "quantity": p.quantity,
+                "avg_price": p.avg_price,
+                "market_price": p.last_price,
+                "market_value": p.market_value,
+                "unrealized_pnl": p.unrealized_pnl,
+            }
+            for p in positions
+        ]
+    )

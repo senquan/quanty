@@ -1,9 +1,11 @@
 # 数据基础设施：数据清洗服务实现方案
 
-> 版本: v1.0
+> 版本: v1.1
 > 创建日期: 2026-08-24
+> 更新日期: 2026-08-31（v1.1：更正服务边界与部署形态，见 §1.4、§2.2、§12）
 > 目标读者: 实施 subagent（后端开发 / 运维 / 量化研究员）
 > 关联文档: `2026-06-11.factor-api.md`（因子库 API 需求）
+>           `2026-08-31.rebalance-orchestration-migration.md`（调仓编排迁出至 backend）
 
 ---
 
@@ -27,13 +29,30 @@
 2. 执行标准化清洗流水线（去重、缺失值处理、异常值检测、复权对齐、时间对齐）
 3. 基于清洗后数据**批量生成多类别因子数据**（动量 / 波动率 / 价值 / 成长 / 情绪 / 技术）
 4. 提供 REST API 供主后端与前端因子库消费（对接 `2026-06-11.factor-api.md`）
-5. 支持 Docker 一键部署，可独立扩展、独立迭代
+5. **发信号**：基于因子值计算目标持仓（`POST /strategy/scores`），供 backend 调仓使用
+6. **行情中继**：为 backend 提供批量最新收盘价（`POST /raw/latest-prices`）
+7. 支持 Docker 一键部署，可独立扩展、独立迭代
+
+> 第 5、6 项为 v1.1 补充：backend 与 data-cleaner 分库后，backend 无法直连 `factor` 库，
+> "买什么"（目标持仓）与"多少钱"（最新价）只能经本服务的只读接口获取。
 
 ### 1.3 非目标（Out of Scope）
 
 - 实时流式计算（本期只做 T+1 批处理，实时化留待 Phase 3）
 - 因子回测引擎（由主后端 `backtest_engine.py` 负责）
-- 交易执行（由 `huatai_trading.py` 负责）
+- **交易执行与调仓编排**（由 backend 交易中心负责；本服务不持有持仓、账户，也不下单）
+
+### 1.4 服务边界（与 backend 的分工）
+
+> 2026-08-31 明确。此前调仓编排与下单曾落在 data-cleaner 内（职责越界），
+> 现已迁回 backend，详见 `2026-08-31.rebalance-orchestration-migration.md`。
+
+| 服务 | 定位 | 职责 | 不做 |
+|---|---|---|---|
+| **data-cleaner**（本服务） | 无状态服务，可独立多实例部署 | 数据清洗 / 因子计算 / 回测 / 发信号 / 行情中继 | **不碰交易**：不编排调仓、不下单、不持有持仓与账户 |
+| **backend** | 控制中心 + 交易中心 | 策略编排 / 持仓与现金 / 风控 / 下单 / 调仓记录 / 定时调度 | — |
+
+关键约束：**backend 与 data-cleaner 分属独立 Postgres 实例**，二者只能通过 HTTP 接口交互。
 
 ---
 
@@ -81,11 +100,17 @@
 
 ### 2.2 部署形态
 
-新增独立服务 `data-cleaner`，与现有 `backend` 平级，通过共享的 PostgreSQL 与 Redis 交换数据：
+新增独立服务 `data-cleaner`，与现有 `backend` 平级：
+
+> ⚠️ **v1.1 更正**：原方案假设"通过共享的 PostgreSQL 与 Redis 交换数据"，现明确为
+> **各自独立的 Postgres 实例**，两服务只能通过 HTTP 接口交互
+> （data-cleaner 持有 `factor` schema，backend 持有业务表与交易表）。
+> data-cleaner 为**无状态**服务，可水平扩展多实例；
+> backend 为控制中心，其定时调度器只在单一实例启用（`ENABLE_TRADING_SCHEDULER`）。
 
 ```
 lab.Quant/
-├── backend/                  # 现有主后端（不动）
+├── backend/                  # 主后端：控制中心 + 交易中心（含调仓编排与定时调度）
 ├── data-cleaner/             # ★ 新增：数据清洗服务（本方案主体）
 │   ├── app/
 │   │   ├── main.py
@@ -115,7 +140,7 @@ lab.Quant/
 | 缓存 | Redis 7 | 缓存热因子数据，降低 DB 压力 |
 | 时序存储 | Parquet + PostgreSQL | 因子值矩阵（宽表）存 Parquet；元数据/索引存 PG |
 | 数据校验 | pandera | DataFrame schema 校验，比手写 assert 更声明式 |
-| 数据库 | PostgreSQL 15（复用现有） | 新增独立 schema `factor`，与业务表隔离 |
+| 数据库 | PostgreSQL 15（**独立实例**，非复用 backend 库） | 与 backend 分库部署；库内用独立 schema `factor` 组织 |
 | 部署 | Docker + docker-compose | 与现有部署方式一致 |
 
 ---
@@ -335,6 +360,8 @@ data/factors/
 
 服务端口 `8100`，路由前缀 `/api/v1`。完整实现 `2026-06-11.factor-api.md` 的 P0/P1 接口：
 
+### 7.1 因子 / 数据 / 流水线接口
+
 | Method | Path | 说明 | 优先级 |
 |--------|------|------|--------|
 | GET | `/api/v1/factor/` | 因子列表（支持 category/author/frequency/search 过滤） | P0 |
@@ -347,6 +374,29 @@ data/factors/
 | GET | `/api/v1/data/bars` | 查询清洗后行情（symbol/start/end/freq） | P0（新增） |
 | POST | `/api/v1/pipeline/run` | 手动触发清洗+因子计算任务 | P0（新增） |
 | GET | `/api/v1/pipeline/status` | 查询最近流水线运行状态与报告 | P0（新增） |
+
+### 7.2 策略与行情中继接口（v1.1 补充）
+
+除上表外，本服务还承载策略与行情中继接口：
+
+| Method | Path | 说明 |
+|--------|------|------|
+| GET | `/api/v1/strategy/strategies` | 策略列表 |
+| POST / GET / PUT / DELETE | `/api/v1/strategy/strategies/{id}` | 策略 CRUD |
+| POST | `/api/v1/strategy/strategies/{id}/backtest` | 回测 |
+| GET | `/api/v1/strategy/strategies/{id}/backtests` | 回测历史 |
+| **POST** | `/api/v1/strategy/scores` | **发信号**：任意配置算目标持仓（纯计算，无副作用） |
+| GET | `/api/v1/strategy/strategies/{id}/executions` | 历史调仓记录（仅供对账，已停止写入） |
+| GET | `/api/v1/raw/universe` | 全 A 股代码池 |
+| GET | `/api/v1/raw/{symbol}` | 单标的区间历史 |
+| **POST** | `/api/v1/raw/latest-prices` | **行情中继**：批量取最新收盘价（供 backend 调仓取价） |
+| POST | `/api/v1/raw/backfill` | 触发增量 / 全量回填 |
+
+> `POST /strategy/scores` 与 `POST /raw/latest-prices` 是 backend 调仓链路的两个依赖点：
+> 前者回答"买什么"，后者回答"多少钱"。二者均为**只读计算，不产生交易副作用**。
+>
+> 原 `POST /api/v1/strategy/strategies/{id}/rebalance`（手动调仓）已随编排迁出而删除，
+> 由 backend 的 `POST /api/v1/trading/rebalances/trigger` 替代。
 
 自定义因子 formula 表达式用受限语法解析（白名单函数：`close/open/high/low/volume/delay/ref/ma/std/max/min/rank/ts_mean/ts_std` 等），**禁止 eval 任意代码**，实现见 §10 安全要求。
 
@@ -361,6 +411,9 @@ data/factors/
 # - 每个交易日 18:00: 拉取日线 → 清洗 → 计算全部 Daily 因子 → 写存储 → 刷新缓存
 # - 每周六 09:00: 重算因子效能指标（需更长回看窗口）
 # - 每小时: 心跳写入 Redis factor:status
+#
+# v1.1：策略调仓扫描任务（原交易日 9-15 点每 15 分钟）已迁出至 backend，
+#       本服务不再驱动任何交易行为，保持无状态。
 ```
 
 ### 8.2 日志与监控
@@ -399,7 +452,37 @@ CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8100"]
 
 ### 9.2 `docker-compose.yml` 追加服务
 
+> **v1.1：data-cleaner 使用独立的 Postgres 实例**（与 backend 分库），
+> 此处新增 `postgres-factor` 服务。`data-cleaner` 无状态，可 `--scale` 多实例；
+> `backend` 为控制中心，其调度器只在单一实例启用，**不可用 `--scale` 直接扩容**
+> （除非保证只有一个实例设置 `ENABLE_TRADING_SCHEDULER=true`）。
+
 ```yaml
+  postgres:                 # backend 库：业务表 + 交易表
+    image: postgres:15
+    container_name: quant-postgres
+    environment:
+      POSTGRES_DB: quant_db
+      POSTGRES_USER: quant_user
+      POSTGRES_PASSWORD: quant_password
+    ports: ["5432:5432"]
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./backend/init:/docker-entrypoint-initdb.d
+    networks: [quant-network]
+
+  postgres-factor:          # data-cleaner 库：factor schema（与 backend 分库）
+    image: postgres:15
+    container_name: quant-postgres-factor
+    environment:
+      POSTGRES_DB: factor_db
+      POSTGRES_USER: quant_user
+      POSTGRES_PASSWORD: quant_password
+    ports: ["5433:5432"]
+    volumes:
+      - postgres_factor_data:/var/lib/postgresql/data
+    networks: [quant-network]
+
   redis:
     image: redis:7-alpine
     container_name: quant-redis
@@ -410,15 +493,24 @@ CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8100"]
     build: ./data-cleaner
     container_name: quant-data-cleaner
     environment:
-      DATABASE_URL: postgresql+asyncpg://quant_user:quant_password@postgres:5432/quant_db
+      # 注意：指向独立的 factor 库，不是 backend 的 quant_db
+      DATABASE_URL: postgresql+asyncpg://quant_user:quant_password@postgres-factor:5432/factor_db
       REDIS_URL: redis://redis:6379/0
       FACTOR_DATA_DIR: /data/factors
       TZ: Asia/Shanghai
     ports: ["8100:8100"]
     volumes:
       - ./data/factors:/data/factors
-    depends_on: [postgres, redis]
+    depends_on: [postgres-factor, redis]
     networks: [quant-network]
+```
+
+顶层 `volumes` 需同步追加 `postgres_factor_data:`。
+
+扩容示例（仅 data-cleaner 可水平扩展）：
+
+```bash
+docker compose up -d --scale data-cleaner=3
 ```
 
 ### 9.3 `data-cleaner/requirements.txt`
@@ -495,7 +587,9 @@ python-dotenv==1.0.0
 | 数据源限流（yfinance/ccxt） | 拉取失败 | 指数退避重试；多源兜底；拉取结果落地后再进流水线 |
 | 因子计算慢（全市场×多因子） | 流水线超时 | pandas 向量化优先；必要时按 symbol 分片并行（Phase 3 引入 multiprocessing） |
 | formula 注入 | 安全事故 | AST 白名单沙箱 + 单测覆盖恶意输入用例 |
-| 与主后端共用 DB 造成耦合 | 维护困难 | 独立 `factor` schema 隔离；主后端只读不写 |
+| ~~与主后端共用 DB 造成耦合~~ | 已消除 | v1.1：两服务**分属独立 PG 实例**，仅经 HTTP 交互，不再有库级耦合 |
+| backend 无法直连 `factor` 库取价 | 调仓算不出股数 | 由本服务提供 `POST /raw/latest-prices` 行情中继（批量接口，避免 N 次往返）；取价失败时 backend 记为调仓失败而非盲目下单 |
+| data-cleaner 被写入交易职责 | 职责越界、有状态 | 已在 v1.1 纠正：调仓编排与下单归 backend；新增接口须保持只读、无副作用 |
 
 ---
 
@@ -503,8 +597,10 @@ python-dotenv==1.0.0
 
 - [ ] `data-cleaner/` 完整服务代码（含 tests/）
 - [ ] `data-cleaner/Dockerfile`、`requirements.txt`、`.env.example`
-- [ ] `docker-compose.yml` 追加 redis + data-cleaner 服务
-- [ ] PG 建表迁移脚本（`factor` schema 三张表）
+- [ ] `docker-compose.yml` 追加 redis + **独立 factor 库（`postgres-factor`）** + data-cleaner 服务
+- [ ] PG 建表迁移脚本（`factor` schema 三张表，**在独立 factor 库执行**，非 backend 库）
 - [ ] API 文档（FastAPI 自动生成，路径 `/api/docs`）
 - [ ] 15+ 因子实现及单测
 - [ ] 端到端测试报告（fixture → 流水线 → API 查询）
+- [ ] **分库连通性验证**：backend 经 HTTP 调用 `/strategy/scores` 与 `/raw/latest-prices` 成功，
+      且不存在任何 backend 直连 `factor` 库的代码路径

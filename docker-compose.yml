@@ -16,6 +16,21 @@ services:
     networks:
       - quant-network
 
+  postgres-factor:
+    # data-cleaner 专用库（factor schema）。与 backend 分库，两服务只能通过 HTTP 交互。
+    image: postgres:15
+    container_name: quant-postgres-factor
+    environment:
+      POSTGRES_DB: factor_db
+      POSTGRES_USER: quant_user
+      POSTGRES_PASSWORD: quant_password
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_factor_data:/var/lib/postgresql/data
+    networks:
+      - quant-network
+
   backend:
     build: ./backend
     container_name: quant-backend
@@ -23,6 +38,11 @@ services:
       DATABASE_URL: postgresql+asyncpg://quant_user:quant_password@postgres:5432/quant_db
       SECRET_KEY: your-secret-key-change-in-production
       DEBUG: "False"
+      # 交易调度：backend 为控制中心，调度器只在单一实例启用。
+      # 多副本部署时只能有一个实例设为 true，否则会重复触发调仓。
+      ENABLE_TRADING_SCHEDULER: "true"
+      BROKER_MODE: "paper"
+      BROKER_DRY_RUN: "true"
     ports:
       - "8000:8000"
     depends_on:

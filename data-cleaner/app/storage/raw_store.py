@@ -223,6 +223,45 @@ class RawBarRepository:
                 logger.warning(f"PG 覆盖度查询失败: {e}")
         return []
 
+    def latest_prices(self, symbols: list[str]) -> dict[str, float]:
+        """批量取各标的最新前复权收盘价（PG 优先，降级 parquet）。
+
+        供 backend 调仓经「行情中继」取价：backend 与 data-cleaner 分属独立库，
+        无法直接读 factor.raw_bars，只能经此接口获取。
+        """
+        if not symbols:
+            return {}
+        syms = list(dict.fromkeys(symbols))
+        if self._engine is not None:
+            try:
+                from sqlalchemy import text
+
+                sql = (
+                    "SELECT DISTINCT ON (symbol) symbol, close FROM factor.raw_bars "
+                    "WHERE symbol = ANY(:syms) ORDER BY symbol, timestamp DESC"
+                )
+                with self._engine.connect() as conn:
+                    rows = conn.execute(text(sql), {"syms": syms}).fetchall()
+                prices = {r[0]: float(r[1]) for r in rows if r[1] is not None}
+                if prices:
+                    return prices
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"PG latest_prices 失败，试 parquet: {e}")
+
+        # parquet 降级
+        out: dict[str, float] = {}
+        for s in syms:
+            df = self._pq_load(s)
+            if df is None or df.empty:
+                continue
+            try:
+                col = df.sort_values("timestamp")["close"]
+                if not col.empty:
+                    out[s] = float(col.iloc[-1])
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"parquet latest_price {s} 失败: {e}")
+        return out
+
     def load(
         self, symbol: str, start: str | None = None, end: str | None = None
     ) -> pd.DataFrame:

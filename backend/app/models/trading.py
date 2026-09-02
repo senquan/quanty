@@ -1,0 +1,156 @@
+"""交易域持久化模型（模拟盘 / 实盘）
+
+模拟盘与实盘共用同一套结构，统一以 `mode` 字段区分（paper / live）：
+- 概览页与交易管理页无需区分模式即可展示与操作；
+- 落库后持仓、订单、成交不再随进程重启丢失（原实现在 huatai_trading 内存单例中）。
+"""
+from sqlalchemy import (
+    Column,
+    Date,
+    DateTime,
+    Float,
+    Index,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+)
+from sqlalchemy.sql import func
+
+from app.core.database import Base
+
+MODE_PAPER = "paper"
+MODE_LIVE = "live"
+
+# 订单状态（与 huatai_trading.OrderStatus 的 value 保持一致）
+ORDER_PENDING = "PENDING"
+ORDER_FILLED = "FILLED"
+ORDER_CANCELLED = "CANCELLED"
+ORDER_REJECTED = "REJECTED"
+
+
+class TradingAccount(Base):
+    """交易账户：按 (mode, broker) 唯一。
+
+    本期沿用原模拟服务的"单例"语义（一个模式一个账户），user_id 仅作归属记录，
+    不做隔离过滤，避免对现有调仓链路造成破坏性变更。
+    """
+
+    __tablename__ = "trading_accounts"
+    __table_args__ = (
+        UniqueConstraint("mode", "broker", name="uq_trading_account_mode_broker"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, nullable=True, index=True)
+    mode = Column(String(16), nullable=False, default=MODE_PAPER, index=True)
+    broker = Column(String(32), nullable=False, default="simulated")
+    account_id = Column(String(64), nullable=False)  # 券商/模拟器返回的账户号
+    initial_capital = Column(Float, nullable=False, default=0.0)
+    cash_balance = Column(Float, nullable=False, default=0.0)
+    frozen_cash = Column(Float, nullable=False, default=0.0)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class TradingPosition(Base):
+    """当前持仓（每账户每标的一行，卖清后删除）"""
+
+    __tablename__ = "trading_positions"
+    __table_args__ = (
+        UniqueConstraint("account_id", "symbol", "side", name="uq_position_acc_symbol"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    account_id = Column(Integer, nullable=False, index=True)
+    mode = Column(String(16), nullable=False, default=MODE_PAPER, index=True)
+    symbol = Column(String(32), nullable=False)
+    side = Column(String(8), nullable=False, default="LONG")
+    quantity = Column(Integer, nullable=False, default=0)
+    avg_price = Column(Float, nullable=False, default=0.0)
+    last_price = Column(Float, nullable=False, default=0.0)
+    market_value = Column(Float, nullable=False, default=0.0)
+    unrealized_pnl = Column(Float, nullable=False, default=0.0)
+    updated_at = Column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class TradingOrder(Base):
+    """下单记录（含被拒单与撤单）"""
+
+    __tablename__ = "trading_orders"
+    __table_args__ = (
+        UniqueConstraint("client_order_id", name="uq_order_client_id"),
+        Index("ix_trading_orders_mode_created", "mode", "created_at"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    account_id = Column(Integer, nullable=False, index=True)
+    mode = Column(String(16), nullable=False, default=MODE_PAPER, index=True)
+    client_order_id = Column(String(64), nullable=False)  # 幂等：防重复提交
+    broker_order_id = Column(String(64), nullable=True)  # 券商侧订单号
+    symbol = Column(String(32), nullable=False)
+    side = Column(String(8), nullable=False)  # BUY / SELL
+    order_type = Column(String(8), nullable=False, default="LIMIT")  # MARKET / LIMIT
+    quantity = Column(Integer, nullable=False)
+    price = Column(Float, nullable=True)
+    filled_quantity = Column(Integer, nullable=False, default=0)
+    status = Column(String(16), nullable=False, default=ORDER_PENDING, index=True)
+    message = Column(Text, nullable=True)  # 拒单/失败原因
+    source = Column(String(16), nullable=False, default="manual")  # manual / strategy
+    strategy_id = Column(Integer, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    filled_at = Column(DateTime(timezone=True), nullable=True)
+
+
+class TradingTrade(Base):
+    """成交明细（一笔订单可多笔成交）"""
+
+    __tablename__ = "trading_trades"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    order_id = Column(Integer, nullable=False, index=True)
+    account_id = Column(Integer, nullable=False, index=True)
+    mode = Column(String(16), nullable=False, default=MODE_PAPER, index=True)
+    symbol = Column(String(32), nullable=False)
+    side = Column(String(8), nullable=False)
+    price = Column(Float, nullable=False)
+    quantity = Column(Integer, nullable=False)
+    amount = Column(Float, nullable=False)
+    commission = Column(Float, nullable=False, default=0.0)
+    trade_time = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class TradingRebalanceRecord(Base):
+    """调仓执行记录（backend 侧持有）
+
+    原由 data-cleaner 写入 `factor.factor_strategy_executions`；职责归位后
+    由 backend 编排并落本地库，并补上 `mode` 字段以区分模拟盘/实盘。
+
+    `uq_rebalance_strategy_date_mode` 是重复调仓的幂等兜底：即使调度器被多个
+    实例同时触发，同一 (策略, 调仓日, 模式) 也只会有一条记录。
+    """
+
+    __tablename__ = "trading_rebalance_records"
+    __table_args__ = (
+        UniqueConstraint(
+            "strategy_id", "rebalance_date", "mode", name="uq_rebalance_strategy_date_mode"
+        ),
+        Index("ix_rebalance_records_date", "rebalance_date"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    strategy_id = Column(Integer, nullable=False, index=True)
+    strategy_name = Column(String(128), nullable=True)
+    mode = Column(String(16), nullable=False, default=MODE_PAPER)
+    rebalance_date = Column(Date, nullable=False)
+    trade_date = Column(Date, nullable=True)
+    target_count = Column(Integer, nullable=True)
+    orders_placed = Column(Integer, nullable=True)
+    amount = Column(Float, nullable=True)
+    status = Column(String(16), nullable=False, default="success")  # success/error/skipped
+    detail = Column(Text, nullable=True)  # JSON 字符串：订单明细 / 错误信息
+    created_at = Column(DateTime(timezone=True), server_default=func.now())

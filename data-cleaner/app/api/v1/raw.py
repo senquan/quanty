@@ -2,6 +2,7 @@
 
 - GET  /raw/universe    全 A 股代码池
 - GET  /raw/{symbol}    读取某标的区间历史（start/end 可选）
+- POST /raw/latest-prices  批量取最新收盘价（行情中继：供 backend 调仓取价）
 - POST /raw/backfill    手动触发增量/全量回填（source, symbols?, full?）
 - GET  /raw/status      最近一次回填摘要
 """
@@ -9,6 +10,7 @@ from datetime import datetime
 from typing import Any
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
+from pydantic import BaseModel
 
 from app.core.logging import get_logger
 from app.ingestion.universe import get_a_share_universe
@@ -41,6 +43,23 @@ def get_raw(
         raise HTTPException(status_code=404, detail=f"无 {symbol} 历史数据")
     recs = df.assign(timestamp=df["timestamp"].astype(str)).to_dict("records")
     return {"symbol": symbol, "count": len(recs), "rows": recs}
+
+
+class LatestPricesRequest(BaseModel):
+    symbols: list[str]
+
+
+@router.post("/latest-prices")
+def latest_prices(req: LatestPricesRequest) -> dict[str, Any]:
+    """批量取最新前复权收盘价（行情中继）。
+
+    backend 与 data-cleaner 分属独立库，backend 无法直接读 factor.raw_bars，
+    调仓算股数所需的取价经此接口完成（一次请求覆盖全部标的，避免 N 次往返）。
+    """
+    if not req.symbols:
+        return {"prices": {}, "count": 0}
+    prices = repository.latest_prices(req.symbols)
+    return {"prices": prices, "count": len(prices)}
 
 
 @router.post("/backfill")
