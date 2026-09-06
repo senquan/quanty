@@ -1,4 +1,5 @@
 from contextlib import asynccontextmanager
+import logging
 
 from fastapi import FastAPI, Request, status
 from fastapi.responses import JSONResponse
@@ -14,8 +15,32 @@ from app.services.factor_strategy_proxy import FactorStrategyProxyError
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    """启停交易调度器（仅当 ENABLE_TRADING_SCHEDULER=true 时启动）。"""
+    """启停交易调度器；幂等建表、api_key 明文重加密迁移、WS 令牌判空。
+
+    建表放在这里而非依赖接口懒加载：WS handler 在 HTTP 请求上下文之外运行，
+    若表未提前建好，首批 signal / execution.report 落库会失败。
+    """
+    from app.services.cleaner_gateway import ensure_cleaner_tables, migrate_api_keys
     from app.tasks.scheduler import shutdown_scheduler, start_scheduler
+
+    try:
+        await ensure_cleaner_tables()
+    except Exception as e:  # noqa: BLE001 - 建表失败不应阻断服务启动
+        logging.getLogger(__name__).error("幂等建表失败: %s", e)
+
+    # api_key 明文治理：把库内存量明文 api_key 自动重加密（设计文档 §8 / §11）
+    try:
+        await migrate_api_keys()
+    except Exception as e:  # noqa: BLE001
+        logging.getLogger(__name__).error("api_key 重加密迁移失败: %s", e)
+
+    # WS 鉴权令牌判空：启用 WS 却未配置令牌 = 握手不校验，属不安全降级
+    if getattr(settings, "WS_ENABLED", False) and not getattr(
+        settings, "STRAT_INTEGRATION_TOKEN", ""
+    ):
+        logging.getLogger(__name__).warning(
+            "WS_ENABLED=true 但 STRAT_INTEGRATION_TOKEN 为空，WS 握手将不校验令牌！请配置。"
+        )
 
     start_scheduler()
     yield
@@ -82,6 +107,13 @@ app.add_middleware(
 
 # Include API routes
 app.include_router(api_router, prefix="/api/v1")
+
+# WebSocket：dc 长连接（backend 作服务端，1 对多，见 docs/plans/2026-09-04.ws-dc-backend.md）
+# 仅在 WS_ENABLED=true 时挂载；关闭时端点不存在，行为与改造前完全一致（纯 HTTP 轮询）。
+if getattr(settings, "WS_ENABLED", False):
+    from app.ws.server import router as ws_router
+
+    app.include_router(ws_router)
 
 @app.get("/")
 async def root():

@@ -1,7 +1,7 @@
-"""交易协调层：模式路由 + 券商撮合 + 落库持久化
+"""交易协调层：组合牵头 + 模式路由 + 券商撮合 + 落库持久化
 
 职责：
-- 按 mode（paper / live）路由到对应 BrokerAdapter；
+- 以 `portfolio_id`（投资组合）为牵头实体，取代原「按 (mode, strategy_id) 自动建账户」；
 - 下单后把订单 / 成交 / 持仓 / 现金落库，使状态不随进程重启丢失；
 - 查询时把券商侧状态同步进 DB，页面统一从 DB 读取（含 last_price 与盈亏）；
 - 进程重启后，用 DB 回灌模拟盘的内存撮合状态。
@@ -9,7 +9,6 @@
 注意：BrokerAdapter 的查询/下单为同步接口（与既有 huatai_trading 一致），
 实盘适配器会发起 HTTP 请求；若后续实盘调用量增长，再统一改为 run_in_executor。
 """
-import json
 import logging
 from datetime import datetime
 from uuid import uuid4
@@ -18,13 +17,12 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
-from app.models.quant import Strategy
 from app.models.trading import (
     MODE_PAPER,
     ORDER_CANCELLED,
     ORDER_FILLED,
     ORDER_REJECTED,
-    TradingAccount,
+    Portfolio,
     TradingPosition,
 )
 from app.services import trading_repository as repo
@@ -42,54 +40,27 @@ def _new_client_order_id(mode: str) -> str:
 
 
 class TradingCoordinator:
-    def __init__(self, session: AsyncSession, mode: str | None = None, strategy_id: int | None = None):
+    def __init__(self, session: AsyncSession, portfolio_id: int):
         self.session = session
-        self.mode = normalize_mode(mode or getattr(settings, "BROKER_MODE", MODE_PAPER))
-        self.strategy_id = strategy_id
-        self._strategy = None
-        self.broker = get_broker(self.mode, strategy_id)
+        self.portfolio_id = portfolio_id
+        self._portfolio: Portfolio | None = None
+        self.mode = MODE_PAPER
+        self.strategy_id: int | None = None
+        self.broker = None
 
-    # ---------------- 账户与状态同步 ----------------
-    def _strategy_capital(self) -> float | None:
-        """从策略配置(config.capital / 兼容 initial_capital)读取该策略初始资金池规模。"""
-        if self._strategy is None or not self._strategy.code:
-            return None
-        try:
-            cfg = json.loads(self._strategy.code)
-        except (ValueError, TypeError):
-            return None
-        if not isinstance(cfg, dict):
-            return None
-        cap = cfg.get("capital")
-        if cap is None:
-            cap = cfg.get("initial_capital")
-        try:
-            return float(cap) if cap is not None else None
-        except (ValueError, TypeError):
-            return None
+    # ---------------- 组合与状态同步 ----------------
+    async def _ensure_portfolio(self) -> Portfolio:
+        if self._portfolio is None:
+            p = await repo.get_portfolio(self.session, self.portfolio_id)
+            if p is None:
+                raise ValueError(f"组合不存在: portfolio_id={self.portfolio_id}")
+            self._portfolio = p
+            self.mode = normalize_mode(p.mode or getattr(settings, "BROKER_MODE", MODE_PAPER))
+            self.strategy_id = p.strategy_id
+            self.broker = get_broker(self.mode, self.strategy_id)
+        return self._portfolio
 
-    async def _ensure_account(self) -> TradingAccount:
-        initial = float(getattr(settings, "TRADING_INITIAL_CAPITAL", 1000000))
-        if self.strategy_id is not None:
-            # 加载策略配置中的初始资金池规模（若有）
-            strat = (
-                await self.session.execute(
-                    select(Strategy).where(Strategy.id == self.strategy_id)
-                )
-            ).scalars().first()
-            self._strategy = strat
-            cap = self._strategy_capital()
-            if cap:
-                initial = cap
-        return await repo.get_or_create_account(
-            self.session,
-            mode=self.mode,
-            broker=self.broker.broker_code,
-            initial_capital=initial,
-            strategy_id=self.strategy_id,
-        )
-
-    async def _restore_broker_state(self, account: TradingAccount) -> None:
+    async def _restore_broker_state(self, portfolio: Portfolio) -> None:
         """进程重启后用 DB 回灌模拟盘内存状态（实盘状态在券商侧，无需回灌）。
 
         回灌条件从原来的「每个进程一次（restored 标志）」改为「回灌仍然有效
@@ -97,28 +68,28 @@ class TradingCoordinator:
         restored 仍为 True 但内存已变回初始空状态，此时必须重新回灌，否则
         后续 sync_state 会以空内存为准把 DB 持仓清空、现金刷回初始值。
         """
-        if not isinstance(self.broker, SimulatedBroker):
+        if self.broker is None or not isinstance(self.broker, SimulatedBroker):
             return
         if self.broker.is_restore_valid():
             return  # 已回灌且底层撮合服务未被替换
         rows = await repo.list_positions(
-            self.session, self.mode, account_id=account.id, strategy_id=self.strategy_id
+            self.session, portfolio_id=portfolio.id
         )
-        logger.info("模拟盘内存回灌: cash=%s, 持仓 %s 条", account.cash_balance, len(rows))
+        logger.info("模拟盘内存回灌: cash=%s, 持仓 %s 条", portfolio.cash_balance, len(rows))
         self.broker.restore(
-            cash=account.cash_balance,
+            cash=portfolio.cash_balance,
             positions=[(r.symbol, r.quantity, r.avg_price) for r in rows],
         )
 
-    async def sync_state(self) -> tuple[TradingAccount, list[TradingPosition]]:
-        """把券商侧账户与持仓同步落库，返回 (账户, 持仓列表)。"""
-        account = await self._ensure_account()
-        await self._restore_broker_state(account)
+    async def sync_state(self) -> tuple[Portfolio, list[TradingPosition]]:
+        """把券商侧账户与持仓同步落库，返回 (组合, 持仓列表)。"""
+        portfolio = await self._ensure_portfolio()
+        await self._restore_broker_state(portfolio)
 
         info = self.broker.get_account()
-        account.account_id = info.account_id or account.account_id
-        await repo.update_account_balances(
-            self.session, account, cash=info.cash_balance, frozen=info.frozen_cash
+        portfolio.account_id = info.account_id or portfolio.account_id
+        await repo.update_portfolio_balances(
+            self.session, portfolio, cash=info.cash_balance, frozen=info.frozen_cash
         )
 
         seen: set[tuple[str, str]] = set()
@@ -129,7 +100,7 @@ class TradingCoordinator:
             )
             await repo.upsert_position(
                 self.session,
-                account_id=account.id,
+                portfolio_id=portfolio.id,
                 mode=self.mode,
                 symbol=p.symbol,
                 side=side,
@@ -148,14 +119,14 @@ class TradingCoordinator:
             logger.warning("模拟盘内存状态不可信（未完成有效 DB 回灌），跳过持仓删除以免覆盖 DB")
         else:
             for row in await repo.list_positions(
-                self.session, self.mode, account_id=account.id, strategy_id=self.strategy_id
+                self.session, portfolio_id=portfolio.id
             ):
                 if (row.symbol, row.side) not in seen:
                     await self.session.delete(row)
 
         await self.session.commit()
-        return account, await repo.list_positions(
-            self.session, self.mode, account_id=account.id, strategy_id=self.strategy_id
+        return portfolio, await repo.list_positions(
+            self.session, portfolio_id=portfolio.id
         )
 
     # ---------------- 下单 / 撤单 ----------------
@@ -172,14 +143,14 @@ class TradingCoordinator:
         user_id: int | None = None,
     ):
         strategy_id = strategy_id if strategy_id is not None else self.strategy_id
-        account = await self._ensure_account()
-        await self._restore_broker_state(account)
+        portfolio = await self._ensure_portfolio()
+        await self._restore_broker_state(portfolio)
 
         side_u = side.upper()
         otype_u = order_type.upper()
         model = await repo.create_order(
             self.session,
-            account_id=account.id,
+            portfolio_id=portfolio.id,
             mode=self.mode,
             client_order_id=_new_client_order_id(self.mode),
             symbol=symbol,
@@ -190,8 +161,8 @@ class TradingCoordinator:
             source=source,
             strategy_id=strategy_id,
         )
-        if user_id is not None and account.user_id is None:
-            account.user_id = user_id
+        if user_id is not None and portfolio.owner_user_id is None:
+            portfolio.owner_user_id = user_id
 
         broker_order = BrokerOrder(
             order_id="",
@@ -227,7 +198,7 @@ class TradingCoordinator:
             await repo.add_trade(
                 self.session,
                 order_id=model.id,
-                account_id=account.id,
+                portfolio_id=portfolio.id,
                 mode=self.mode,
                 symbol=symbol,
                 side=side_u,
@@ -257,42 +228,42 @@ class TradingCoordinator:
         return model
 
     # ---------------- 查询 ----------------
-    def _metrics(
-        self, account: TradingAccount, positions: list[TradingPosition]
-    ) -> dict:
+    def _metrics(self, portfolio: Portfolio, positions: list[TradingPosition]) -> dict:
         market_value = sum(p.market_value for p in positions)
         unrealized = sum(p.unrealized_pnl for p in positions)
-        total_assets = account.cash_balance + market_value
-        pnl = total_assets - account.initial_capital
+        total_assets = portfolio.cash_balance + market_value
+        pnl = total_assets - portfolio.initial_capital
         return {
             "mode": self.mode,
-            "broker": self.broker.broker_code,
-            "account_id": account.account_id,
-            "initial_capital": round(account.initial_capital, 2),
+            "broker": self.broker.broker_code if self.broker else None,
+            "account_id": portfolio.account_id,
+            "portfolio_id": portfolio.id,
+            "initial_capital": round(portfolio.initial_capital, 2),
             "total_assets": round(total_assets, 2),
             "market_value": round(market_value, 2),
-            "cash_balance": round(account.cash_balance, 2),
-            "frozen_cash": round(account.frozen_cash, 2),
+            "cash_balance": round(portfolio.cash_balance, 2),
+            "frozen_cash": round(portfolio.frozen_cash, 2),
             "total_pnl": round(pnl, 2),
-            "total_pnl_pct": round(pnl / account.initial_capital * 100, 2)
-            if account.initial_capital
+            "total_pnl_pct": round(pnl / portfolio.initial_capital * 100, 2)
+            if portfolio.initial_capital
             else 0.0,
             "unrealized_pnl": round(unrealized, 2),
             "position_count": len(positions),
         }
 
     async def get_overview(self) -> dict:
-        account, positions = await self.sync_state()
-        return self._metrics(account, positions)
+        portfolio, positions = await self.sync_state()
+        return self._metrics(portfolio, positions)
 
     async def get_account_detail(self) -> dict:
         """账户详情（含持仓列表），一次同步即可，避免重复 sync_state。"""
-        account, positions = await self.sync_state()
-        metrics = self._metrics(account, positions)
+        portfolio, positions = await self.sync_state()
+        metrics = self._metrics(portfolio, positions)
         return {
-            "account_id": account.account_id,
-            "mode": account.mode,
-            "broker": account.broker,
+            "portfolio_id": portfolio.id,
+            "account_id": portfolio.account_id,
+            "mode": portfolio.mode,
+            "broker": portfolio.broker,
             "total_assets": metrics["total_assets"],
             "cash_balance": metrics["cash_balance"],
             "frozen_cash": metrics["frozen_cash"],
@@ -308,10 +279,16 @@ class TradingCoordinator:
         return positions
 
     async def list_orders(self, status: str | None = None, limit: int = 50):
-        return await repo.list_orders(self.session, self.mode, status=status, limit=limit)
+        return await repo.list_orders(
+            self.session, self.mode, status=status, limit=limit,
+            portfolio_id=self.portfolio_id,
+        )
 
     async def list_trades(self, start: str | None = None, end: str | None = None, limit: int = 200):
-        return await repo.list_trades(self.session, self.mode, start=start, end=end, limit=limit)
+        return await repo.list_trades(
+            self.session, self.mode, start=start, end=end, limit=limit,
+            portfolio_id=self.portfolio_id,
+        )
 
 
 async def ensure_tables() -> None:

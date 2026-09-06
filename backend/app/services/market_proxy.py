@@ -29,7 +29,7 @@ async def latest_prices(
     if not symbols:
         return {}
     svc = await pick_service(db, service_code)
-    headers = {"X-API-Key": svc.api_key} if svc.api_key else {}
+    headers = {"X-API-Key": svc.primary_api_key()} if svc.primary_api_key() else {}
     try:
         async with httpx.AsyncClient(timeout=DEFAULT_TIMEOUT) as client:
             resp = await client.post(

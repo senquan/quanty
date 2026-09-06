@@ -74,6 +74,12 @@ def run_daily_pipeline(
         "每日盘后流水线开始",
         extra={"task": "daily_pipeline", "latest_before": before},
     )
+    # WS 进度推送（未启用时为 no-op，绝不阻断流水线）
+    from app.ws import events as ws_events
+
+    ws_events.emit_pipeline(
+        "started", task="eod_pipeline", detail={"latest_before": before}
+    )
 
     # ---- 1) 增量拉取最新行情 ----
     data_after = before
@@ -140,6 +146,18 @@ def run_daily_pipeline(
         }
     )
 
+    ws_events.emit_pipeline(
+        "step",
+        task="eod_pipeline",
+        step="factor_build",
+        detail={
+            "status": fb.get("status"),
+            "symbols_ok": fb.get("symbols_ok"),
+            "factors_computed": fb.get("factors_computed"),
+            "duration_s": fb.get("duration_s"),
+        },
+    )
+
     # ---- 3) 因子效能评估 ----
     ev = factor_evaluate_task.evaluate_all_factors()
     steps.append(
@@ -150,6 +168,29 @@ def run_daily_pipeline(
             "factors_skipped": ev.get("factors_skipped"),
             "duration_s": ev.get("duration_s"),
         }
+    )
+
+    # ---- 因子变更广播（根基：副本同步通道）----
+    # 放在效能评估**之后**：此时因子值与指标都已是最新的，backend 同步一次即可拿到
+    # 完整口径（只推 code + 版本，真实数据仍由 backend 经 HTTP 增量拉取）。
+    try:
+        from app.factors.registry import list_factors
+
+        codes = [m.get("code") for m in list_factors() if m.get("code")]
+        ws_events.emit_factor_updated(
+            codes, version=str(data_after or ""), reason="eod_pipeline"
+        )
+    except Exception as e:  # noqa: BLE001 - 广播失败绝不阻断流水线
+        logger.warning(f"因子变更广播失败（backend 将靠每日对账兜底）: {e}")
+
+    ws_events.emit_pipeline(
+        "finished",
+        task="eod_pipeline",
+        detail={
+            "latest_after": data_after,
+            "data_advanced": advanced,
+            "duration_s": round(time.time() - t0, 1),
+        },
     )
 
     summary = {

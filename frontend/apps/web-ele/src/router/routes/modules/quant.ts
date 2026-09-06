@@ -23,6 +23,15 @@ const routes: RouteRecordRaw[] = [
         },
       },
       {
+        name: 'QuantPortfolio',
+        path: '/quant/portfolio',
+        component: () => import('#/views/quant/portfolio/index.vue'),
+        meta: {
+          icon: 'lucide:wallet',
+          title: $t('page.quant.portfolio'),
+        },
+      },
+      {
         name: 'QuantStrategy',
         path: '/quant/strategy',
         component: () => import('#/views/quant/strategy/index.vue'),

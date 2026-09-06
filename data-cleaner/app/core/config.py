@@ -39,6 +39,33 @@ class Settings(BaseSettings):
     PANDADATA_PASSWORD: str | None = None
     PANDADATA_BASE_URL: str | None = None
 
+    # ---- WebSocket 长连接（dc 作为客户端主动连入 backend，1 对多）----
+    # 设计见 docs/plans/2026-09-04.ws-dc-backend.md
+    # 总开关：关闭时 dc 行为与改造前完全一致（纯 HTTP），便于一键回退
+    WS_ENABLED: bool = False
+    # backend 的 WS 地址（ws:// / wss://）；留空则由 BACKEND_BASE_URL 自动推导
+    BACKEND_WS_URL: str = ""
+    # 本实例身份：backend 连接注册表的键，多实例部署时必须唯一
+    WS_INSTANCE_ID: str = ""
+    # 对应 backend cleaner_services.service_code（副本归属）
+    WS_SERVICE_CODE: str = ""
+    # 心跳：WS 原生 ping 间隔 / 超时（秒）。
+    # 注意：LB / 代理的空闲超时必须大于 ping 间隔，否则连接会被静默踢掉
+    WS_PING_INTERVAL_SEC: float = 15.0
+    WS_PING_TIMEOUT_SEC: float = 20.0
+    WS_OPEN_TIMEOUT_SEC: float = 10.0
+    # 重连：指数退避 + 抖动（按 instance_id 哈希错峰，防多实例惊群）
+    WS_RECONNECT_MIN_SEC: float = 0.5
+    WS_RECONNECT_MAX_SEC: float = 30.0
+    WS_RECONNECT_MAX_TIMES: int = 0  # 0 表示不限制次数（由熔断逻辑控制）
+    # outbox：发送侧缓冲
+    WS_OUTBOX_TTL_HOURS: int = 24
+    WS_OUTBOX_MAX_RECORDS: int = 10000
+    # 单帧上限（字节），与 protocol.MAX_FRAME_BYTES 对齐
+    WS_MAX_FRAME_BYTES: int = 256 * 1024
+    # 未 ack 消息数上限（背压保护）
+    WS_MAX_INFLIGHT: int = 1000
+
     # Application
     DEBUG: bool = True
     HOST: str = "0.0.0.0"

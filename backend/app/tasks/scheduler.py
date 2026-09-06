@@ -45,9 +45,24 @@ async def _factor_sync_job() -> None:
 
 
 async def _poll_qos_job() -> None:
-    """每 30s 刷新已登记清洗服务的存活状态，驱动因子可用性（available）实时反映。"""
+    """刷新清洗服务存活状态（**WS 长连接的兜底探针**）。
+
+    启用 WS 且已建立长连接的实例由 `event.status` 推送维持状态（秒级），
+    本任务仅对**未连接**的实例兜底轮询，避免 30s 高频无效请求
+    （设计文档 §10 Phase 2）。
+    """
     from app.models.cleaner import CleanerService
     from sqlalchemy import select
+
+    connected: set[str] = set()
+    ws_on = getattr(settings, "WS_ENABLED", False)
+    if ws_on and getattr(settings, "CLEANER_POLL_SKIP_CONNECTED", True):
+        try:
+            from app.ws.registry import registry
+
+            connected = registry.connected_service_codes()
+        except Exception as e:  # noqa: BLE001  注册表不可用时不阻塞轮询
+            logger.warning("读取 WS 连接注册表失败，按未连接处理: %s", e)
 
     try:
         async with AsyncSessionLocal() as db:
@@ -56,12 +71,38 @@ async def _poll_qos_job() -> None:
                     select(CleanerService).where(CleanerService.is_active.is_(True))
                 )
             ).scalars().all()
+            skipped = 0
             for svc in svcs:
+                if svc.service_code in connected:
+                    skipped += 1
+                    continue
                 await gw.poll_qos(svc)
                 db.add(svc)
             await db.commit()
+            if skipped:
+                logger.debug("存活轮询跳过 %s 个已建立长连接的服务", skipped)
     except Exception as e:  # noqa: BLE001  不阻断调度器
         logger.error("清洗服务状态轮询失败: %s", e)
+
+
+async def _factor_reconcile_job() -> None:
+    """因子副本每日对账：发现缺失 / 冗余 / 陈旧（设计文档 §5.3）。
+
+    dc 是因子源(SoT)，backend 为副本；定时全量同步改为"广播触发增量同步"后，
+    必须靠对账兜底，否则副本可能**静默漂移**。
+    """
+    from app.services import factor_replica_sync
+
+    try:
+        result = await factor_replica_sync.reconcile()
+        logger.info(
+            "因子副本对账完成 missing=%s orphaned=%s stale=%s",
+            result.get("missing_total"),
+            result.get("orphaned_total"),
+            result.get("stale_total"),
+        )
+    except Exception as e:  # noqa: BLE001  不阻断调度器
+        logger.error("因子副本对账失败: %s", e)
 
 
 async def _portfolio_valuation_job() -> None:
@@ -110,13 +151,38 @@ def register_jobs() -> None:
 
     # 清洗服务存活轮询：默认开启，使因子可用性随 dc 上下线自动刷新。
     # 即便 ENABLE_TRADING_SCHEDULER / ENABLE_FACTOR_SYNC 都关，本任务也可独立运行。
+    # 启用 WS 后本任务退化为「未连接实例的兜底探针」，降频到 5min（§10 Phase 2）。
     if getattr(settings, "ENABLE_CLEANER_POLL", True):
         poll_sec = max(5, int(getattr(settings, "CLEANER_POLL_INTERVAL_SEC", 30)))
+        if getattr(settings, "WS_ENABLED", False) and getattr(
+            settings, "CLEANER_POLL_SKIP_CONNECTED", True
+        ):
+            poll_sec = max(poll_sec, 300)
         scheduler.add_job(
             _poll_qos_job,
             trigger=IntervalTrigger(seconds=poll_sec, timezone="Asia/Shanghai"),
             id="cleaner_poll",
             misfire_grace_time=60,
+            max_instances=1,
+            coalesce=True,
+            replace_existing=True,
+        )
+
+    # 因子副本每日对账（根基配套）：比对 dc 因子集合与本地副本。
+    # 需配合 ENABLE_FACTOR_SYNC 使用；冗余仅标记告警、不自动删除。
+    if getattr(settings, "ENABLE_FACTOR_RECONCILE", False):
+        from apscheduler.triggers.cron import CronTrigger as _CronTrigger
+
+        scheduler.add_job(
+            _factor_reconcile_job,
+            trigger=_CronTrigger(
+                day_of_week="mon-fri",
+                hour=int(getattr(settings, "FACTOR_RECONCILE_HOUR", 7)),
+                minute=int(getattr(settings, "FACTOR_RECONCILE_MINUTE", 30)),
+                timezone="Asia/Shanghai",
+            ),
+            id="factor_reconcile",
+            misfire_grace_time=3600,
             max_instances=1,
             coalesce=True,
             replace_existing=True,

@@ -5,10 +5,12 @@
 - 落库后持仓、订单、成交不再随进程重启丢失（原实现在 huatai_trading 内存单例中）。
 """
 from sqlalchemy import (
+    Boolean,
     Column,
     Date,
     DateTime,
     Float,
+    ForeignKey,
     Index,
     Integer,
     String,
@@ -29,27 +31,38 @@ ORDER_CANCELLED = "CANCELLED"
 ORDER_REJECTED = "REJECTED"
 
 
-class TradingAccount(Base):
-    """交易账户（资金池）：按 (mode, strategy_id) 唯一。
+class Portfolio(Base):
+    """投资组合（交易域牵头实体）：取代原 trading_accounts。
 
-    每个策略对应一个独立资金池，相当于一只基金产品；strategy_id 为 NULL 表示
-    该模式下未绑定策略的共享账户（历史遗留 / 手动交易）。
+    通常一个组合绑定一个策略（strategy_id），拥有独立资金池（cash_balance /
+    frozen_cash）与独立持仓；持仓 / 订单 / 成交 / 调仓记录 / 每日估值全部改挂
+    portfolio_id。模拟盘 / 实盘由 mode(paper / live) 区分。
+    strategy_id 允许为空：兼容迁移自旧 trading_accounts 的、未绑定策略的独立 /
+    手动账户（API 层 PortfolioCreate 仍要求必填，仅历史迁移可放宽）。
     """
 
-    __tablename__ = "trading_accounts"
+    __tablename__ = "portfolios"
     __table_args__ = (
-        UniqueConstraint("mode", "strategy_id", name="uq_trading_account_mode_strategy"),
+        UniqueConstraint(
+            "owner_user_id", "name", "mode", name="uq_portfolio_owner_name_mode"
+        ),
     )
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    user_id = Column(Integer, nullable=True, index=True)
-    strategy_id = Column(Integer, nullable=True, index=True)
+    name = Column(String(128), nullable=False)  # 组合名（用户命名）
+    strategy_id = Column(
+        Integer, ForeignKey("strategies.id"), nullable=True, index=True
+    )
     mode = Column(String(16), nullable=False, default=MODE_PAPER, index=True)
     broker = Column(String(32), nullable=False, default="simulated")
-    account_id = Column(String(64), nullable=False)  # 券商/模拟器返回的账户号
+    owner_user_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
     initial_capital = Column(Float, nullable=False, default=0.0)
     cash_balance = Column(Float, nullable=False, default=0.0)
     frozen_cash = Column(Float, nullable=False, default=0.0)
+    account_id = Column(String(64), nullable=False)  # 券商/模拟器返回的账户号
+    auto_rebalance = Column(Boolean, nullable=False, default=True)
+    is_active = Column(Boolean, nullable=False, default=True)
+    description = Column(Text, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
@@ -57,18 +70,22 @@ class TradingAccount(Base):
 
 
 class TradingPosition(Base):
-    """当前持仓（每账户每标的一行，卖清后删除）
+    """当前持仓（每组合每标的一行，卖清后删除）
 
-    strategy_id 冗余存储，便于按策略直接归因与查询，不必先经账户反查。
+    strategy_id 冗余存储，便于按策略直接归因与查询，不必先经组合反查。
     """
 
     __tablename__ = "trading_positions"
     __table_args__ = (
-        UniqueConstraint("account_id", "symbol", "side", name="uq_position_acc_symbol"),
+        UniqueConstraint(
+            "portfolio_id", "symbol", "side", name="uq_position_portfolio_symbol"
+        ),
     )
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    account_id = Column(Integer, nullable=False, index=True)
+    portfolio_id = Column(
+        Integer, ForeignKey("portfolios.id"), nullable=False, index=True
+    )
     strategy_id = Column(Integer, nullable=True, index=True)
     mode = Column(String(16), nullable=False, default=MODE_PAPER, index=True)
     symbol = Column(String(32), nullable=False)
@@ -94,7 +111,9 @@ class TradingOrder(Base):
     )
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    account_id = Column(Integer, nullable=False, index=True)
+    portfolio_id = Column(
+        Integer, ForeignKey("portfolios.id"), nullable=False, index=True
+    )
     mode = Column(String(16), nullable=False, default=MODE_PAPER, index=True)
     client_order_id = Column(String(64), nullable=False)  # 幂等：防重复提交
     broker_order_id = Column(String(64), nullable=True)  # 券商侧订单号
@@ -122,7 +141,9 @@ class TradingTrade(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     order_id = Column(Integer, nullable=False, index=True)
-    account_id = Column(Integer, nullable=False, index=True)
+    portfolio_id = Column(
+        Integer, ForeignKey("portfolios.id"), nullable=False, index=True
+    )
     strategy_id = Column(Integer, nullable=True, index=True)
     mode = Column(String(16), nullable=False, default=MODE_PAPER, index=True)
     symbol = Column(String(32), nullable=False)
@@ -147,13 +168,16 @@ class TradingRebalanceRecord(Base):
     __tablename__ = "trading_rebalance_records"
     __table_args__ = (
         UniqueConstraint(
-            "strategy_id", "rebalance_date", "mode", name="uq_rebalance_strategy_date_mode"
+            "portfolio_id", "rebalance_date", name="uq_rebalance_portfolio_date"
         ),
         Index("ix_rebalance_records_date", "rebalance_date"),
     )
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    strategy_id = Column(Integer, nullable=False, index=True)
+    portfolio_id = Column(
+        Integer, ForeignKey("portfolios.id"), nullable=False, index=True
+    )
+    strategy_id = Column(Integer, nullable=True, index=True)
     strategy_name = Column(String(128), nullable=True)
     mode = Column(String(16), nullable=False, default=MODE_PAPER)
     rebalance_date = Column(Date, nullable=False)
@@ -179,13 +203,16 @@ class PortfolioDailyValue(Base):
 
     __tablename__ = "portfolio_daily_values"
     __table_args__ = (
-        UniqueConstraint("mode", "strategy_id", "value_date", name="uq_portfolio_value"),
+        UniqueConstraint("portfolio_id", "value_date", name="uq_portfolio_value"),
         Index("ix_portfolio_value_date", "value_date"),
     )
 
     id = Column(Integer, primary_key=True, autoincrement=True)
+    portfolio_id = Column(
+        Integer, ForeignKey("portfolios.id"), nullable=False, index=True
+    )
     mode = Column(String(16), nullable=False, default=MODE_PAPER, index=True)
-    strategy_id = Column(Integer, nullable=True, index=True)  # NULL = 账户级组合
+    strategy_id = Column(Integer, nullable=True, index=True)  # 冗余：组合绑定策略的快照
     value_date = Column(Date, nullable=False)
     cash_balance = Column(Float, nullable=False, default=0.0)
     market_value = Column(Float, nullable=False, default=0.0)

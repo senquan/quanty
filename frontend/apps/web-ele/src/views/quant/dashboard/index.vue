@@ -148,10 +148,10 @@ async function load() {
   try {
     const [mi, ov, pos, tr, pv] = await Promise.all([
       getTradingModeApi(),
-      getOverviewApi(mode.value),
-      getPositionsApi(mode.value),
+      getOverviewApi(undefined, mode.value),
+      getPositionsApi(undefined, mode.value),
       getTradesApi(mode.value, { limit: 200 }),
-      getPortfolioValuesApi(mode.value, { limit: 180 }),
+      getPortfolioValuesApi(undefined, mode.value, { limit: 180 }),
     ]);
     modeInfo.value = mi;
     overview.value = ov;

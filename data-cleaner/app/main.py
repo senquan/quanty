@@ -12,6 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api.v1.router import api_router
 from app.core.config import settings
 from app.core.logging import get_logger, setup_logging
+from app.ws import events as ws_events
 
 setup_logging("DEBUG" if settings.DEBUG else "INFO")
 logger = get_logger(__name__)
@@ -19,7 +20,11 @@ logger = get_logger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """服务生命周期管理"""
+    """服务生命周期：迁移建表 → 启动调度器 → **启动 WS 长连接客户端**
+
+    WS 客户端是可选能力：`WS_ENABLED=false`（默认）时完全不启动，
+    行为与改造前一致（纯 HTTP），便于一键回退。
+    """
     logger.info("data-cleaner 服务启动", extra={"status": "startup"})
     # 确保因子数据目录存在
     settings.factor_data_path.mkdir(parents=True, exist_ok=True)
@@ -35,7 +40,35 @@ async def lifespan(app: FastAPI):
     from app.tasks.scheduler import start_scheduler
 
     start_scheduler()
+
+    # 启动 dc → backend 的 WebSocket 长连接（失败不得影响主服务）
+    ws_client = None
+    try:
+        from app.ws.client import WSClient
+
+        ws_client = WSClient.from_settings()
+        if ws_client is not None:
+            ws_events.bind(ws_client)
+            await ws_client.start()
+    except Exception as e:  # noqa: BLE001 - 长连接不可用绝不影响服务启动
+        logger.error(f"WS 客户端启动失败（已降级为纯 HTTP）: {e}")
+
     yield
+
+    # 优雅下线：先发 presence(offline)，给一点时间冲刷 outbox 后再停
+    if ws_client is not None:
+        try:
+            import asyncio
+
+            # 仅在**已连接**时发下线通知：否则该事件会滞留 outbox，
+            # 下次启动被重放，反而把服务短暂标记成 offline。
+            if ws_client.is_connected():
+                ws_events.emit_presence(False, reason="shutdown")
+                await asyncio.sleep(0.5)
+            await ws_client.stop()
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"WS 客户端停止异常: {e}")
+
     from app.tasks.scheduler import shutdown_scheduler
 
     shutdown_scheduler()

@@ -87,6 +87,12 @@ uvicorn app.main:app --host 0.0.0.0 --port 8100 --reload
 
 > ⚠️ **端口冲突警告**：data-cleaner **必须**使用 `:8100`，**严禁占用 `:8000`**。`:8000` 是主后端（`backend/`）的专用端口，二者同机部署时若 data-cleaner 落到 8000，会挤掉 backend 导致 `/api/v1/user/info` 等接口全部 404。即使使用 `.env` 中 `PORT=8100`，也请始终在 `uvicorn` 命令里显式写 `--port 8100`（`.env` 的 `PORT` 仅在某些启动方式下生效）。
 
+> **Windows 用户（GBK 控制台崩溃）**：Windows 控制台默认 GBK 代码页，日志若出现非 GBK 字符（中文/特殊符号），`logging` 写出会抛 `UnicodeEncodeError` 并令进程退出（本服务此前因此掉线）。启动前请设置 `PYTHONUTF8=1`（比 `PYTHONIOENCODING=utf-8` 更彻底，还覆盖文件系统编码）：
+> ```powershell
+> $env:PYTHONUTF8 = '1'
+> ```
+> 推荐直接用仓库根的一键脚本（已内置该变量并后台拉起 backend + 本服务）：`powershell -File scripts/start_dev.ps1`。另需确保 `.env` 的 `WS_TOKEN` 与 backend `.env` 的 `STRAT_INTEGRATION_TOKEN` 一致，否则 WS 长连接握手鉴权失败。
+
 > 注意：当前因子实现均为纯 pandas/numpy，`requirements.txt` 默认不含 `TA-Lib`。若未来需接入 TA-Lib，需在镜像内安装其 C 库（`apt-get install -y libta-lib-dev` 或源码编译）后再取消 `requirements.txt` 中注释行。
 
 ### 3.3 环境变量

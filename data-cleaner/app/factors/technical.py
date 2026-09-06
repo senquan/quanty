@@ -1,4 +1,5 @@
 """技术类因子 TECH_（复用 backend 的 TA-Lib 指标思路）"""
+import numpy as np
 
 from app.factors.base import Factor, group_apply
 from app.factors.registry import register
@@ -130,3 +131,45 @@ class MaBias20(Factor):
             return (g["adj_close"] - ma20) / (ma20 + 1e-9)
 
         return group_apply(df, "symbol", _bias)
+
+
+@register
+class High0(Factor):
+    code = "HIGH0"
+    name = "当日最高/收盘比"
+    category = "technical"
+    frequency = "Daily"
+    data_sources = ["adj_high", "adj_close"]
+
+    def compute(self, df):
+        # 同日前复权与不复权比值相同（缩放因子约去），直接向量化计算
+        return df["adj_high"] / (df["adj_close"] + 1e-9)
+
+
+@register
+class Klen(Factor):
+    code = "KLEN"
+    name = "振幅/开盘比"
+    category = "technical"
+    frequency = "Daily"
+    data_sources = ["high", "low", "open"]
+
+    def compute(self, df):
+        # 同日前复权与不复权等价（三价同乘当日缩放因子），用原始价即可
+        return (df["high"] - df["low"]) / (df["open"] + 1e-9)
+
+
+@register
+class Corr5(Factor):
+    code = "CORR5"
+    name = "收盘-量对数5日相关性"
+    category = "technical"
+    frequency = "Daily"
+    data_sources = ["close", "volume"]
+
+    def compute(self, df):
+        def _corr(g):
+            log_vol = np.log(g["volume"] + 1)
+            return g["close"].rolling(5, min_periods=3).corr(log_vol)
+
+        return group_apply(df, "symbol", _corr)

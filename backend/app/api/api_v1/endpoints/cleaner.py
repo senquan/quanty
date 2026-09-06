@@ -28,6 +28,7 @@ from app.schemas.cleaner import (
     FactorRegistryOut,
 )
 from app.schemas.response import Response
+from app.core import credential
 from app.services import cleaner_gateway as gw
 
 router = APIRouter(prefix="/cleaner", tags=["cleaner"])
@@ -57,7 +58,8 @@ async def register_service(
         service_code=payload.service_code,
         name=payload.name,
         base_url=payload.base_url.rstrip("/"),
-        api_key=payload.api_key,
+        # api_key 治理：多 key 逗号并存，整体加密存储（设计文档 §8 / §11）
+        api_key=credential.store_keys([payload.api_key]),
         status=probe.get("status") or "online",
     )
     db.add(svc)
@@ -104,6 +106,9 @@ async def update_service(
     data = payload.model_dump(exclude_unset=True)
     if "base_url" in data and data["base_url"]:
         data["base_url"] = data["base_url"].rstrip("/")
+    # api_key 治理：更新时也加密存储
+    if "api_key" in data and data["api_key"] is not None:
+        data["api_key"] = credential.store_keys([data["api_key"]])
     for k, v in data.items():
         setattr(svc, k, v)
     await db.commit()

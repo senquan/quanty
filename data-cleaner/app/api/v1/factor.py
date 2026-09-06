@@ -111,6 +111,12 @@ async def create_factor(payload: FactorCreate):
         await db.upsert_factor_definition(meta, author="user")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"保存失败: {e}") from e
+
+    # 广播因子变更 → backend 副本增量同步（根基，设计文档 §5.2）
+    # 失败不影响创建结果：backend 可由每日对账兜底发现缺失
+    from app.ws import events as ws_events
+
+    ws_events.emit_factor_updated([payload.code], reason="factor_created")
     return meta
 
 
@@ -140,12 +146,21 @@ async def update_factor(code: str, payload: FactorUpdate):
         await db.upsert_factor_definition(meta, author="user")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"更新失败: {e}") from e
+
+    from app.ws import events as ws_events
+
+    ws_events.emit_factor_updated([code], reason="factor_updated")
     return {"code": code, "status": "updated"}
 
 
 @router.delete("/{code}")
 async def delete_factor(code: str):
-    """删除因子（仅 author=user 的自定义因子）"""
+    """删除因子（仅 author=user 的自定义因子）
+
+    注意：**不主动广播删除**。协议只有 `event.factor.updated`（无 removed 事件），
+    且对账处置已确认为「冗余仅标记 orphaned + 告警，**不自动清理**」，
+    故删除由 backend 每日对账发现并告警，交人工确认（设计文档 §5.3）。
+    """
     ok = await db.delete_factor_definition(code, author="user")
     if not ok:
         raise HTTPException(
@@ -175,6 +190,12 @@ async def evaluate_factor(code: str, payload: FactorEvaluateRequest):
         await db.save_factor_metrics(code, as_of, metrics)
     except Exception:
         pass  # 数据库不可用时仍返回计算结果
+
+    # 指标变更**同样要广播**：backend 副本存的就是指标（metrics / metrics_synced_at），
+    # 不广播的话副本要等 60min 定时同步或次日对账才刷新。
+    from app.ws import events as ws_events
+
+    ws_events.emit_factor_updated([code], version=as_of, reason="factor_evaluated")
     return metrics
 
 
@@ -207,6 +228,13 @@ async def batch_evaluate_factors(payload: FactorBatchEvaluateRequest):
             succeeded += 1
         except Exception as e:
             results.append({"code": item.code, "status": "error", "message": str(e)[:200]})
+
+    # 批量广播：一次推所有成功落库的 code（指标变更需同步到 backend 副本）
+    evaluated = [r["code"] for r in results if r["status"] == "ok"]
+    if evaluated:
+        from app.ws import events as ws_events
+
+        ws_events.emit_factor_updated(evaluated, version=as_of, reason="batch_evaluated")
 
     valid = [r for r in results if r["status"] == "ok"]
     summary = {
@@ -259,6 +287,11 @@ async def ai_generate_factor(payload: "AiGenerateRequest"):
     except Exception as e:
         logger.warning(f"AI 因子落库失败（仍可返回生成结果）: {e}")
         saved = False
+    if saved:
+        from app.ws import events as ws_events
+
+        ws_events.emit_factor_updated([meta["code"]], reason="ai_generated")
+
     result = dict(meta)
     result["source"] = spec["source"]
     result["saved"] = saved

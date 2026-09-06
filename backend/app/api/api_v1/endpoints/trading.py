@@ -23,6 +23,7 @@ from app.api.api_v1.endpoints.auth import get_current_user
 from app.core.config import settings
 from app.core.database import get_db
 from app.models.trading import (
+    Portfolio,
     PortfolioDailyValue,
     TradingOrder,
     TradingPosition,
@@ -51,7 +52,8 @@ class OrderRequest(BaseModel):
     side: str = Field(..., description="买卖方向: BUY, SELL")
     quantity: int = Field(..., gt=0, description="数量")
     price: Optional[float] = Field(None, ge=0, description="价格，限价单必填")
-    mode: str = Field("paper", description="交易模式: paper, live")
+    portfolio_id: int = Field(..., description="组合ID（独立资金池）")
+    mode: str = Field("paper", description="交易模式: paper, live（仅作标注，实际以组合为准）")
 
 
 # ============ 序列化 ============
@@ -100,6 +102,7 @@ def _rebalance_dict(r: TradingRebalanceRecord) -> dict:
         except ValueError:  # 脏数据不应让列表整体失败
             detail = None
     return {
+        "portfolio_id": r.portfolio_id,
         "strategy_id": r.strategy_id,
         "strategy_name": r.strategy_name,
         "mode": r.mode,
@@ -136,22 +139,53 @@ async def get_mode(_: User = Depends(get_current_user)):
     return Response.success(data={"default": default, "modes": modes})
 
 
+async def _aggregate_overview(db: AsyncSession, mode: str) -> dict:
+    """聚合某模式下所有组合的资金/持仓/收益（纯读 DB，不触发券商同步）。"""
+    portfolios = (
+        await db.execute(select(Portfolio).where(Portfolio.mode == mode))
+    ).scalars().all()
+    positions = await repo.list_positions(db, mode=mode)
+    cash = sum(float(p.cash_balance or 0) for p in portfolios)
+    initial = sum(float(p.initial_capital or 0) for p in portfolios)
+    market_value = sum(float(p.market_value or 0) for p in positions)
+    total_assets = cash + market_value
+    pnl = total_assets - initial
+    return {
+        "mode": mode,
+        "broker": None,
+        "account_id": None,
+        "portfolio_id": None,
+        "portfolio_count": len(portfolios),
+        "initial_capital": round(initial, 2),
+        "total_assets": round(total_assets, 2),
+        "market_value": round(market_value, 2),
+        "cash_balance": round(cash, 2),
+        "frozen_cash": round(sum(float(p.frozen_cash or 0) for p in portfolios), 2),
+        "total_pnl": round(pnl, 2),
+        "total_pnl_pct": round(pnl / initial * 100, 2) if initial else 0.0,
+        "unrealized_pnl": round(sum(float(p.unrealized_pnl or 0) for p in positions), 2),
+        "position_count": len(positions),
+    }
+
+
 @router.get("/overview", summary="量化概览")
 async def get_overview(
     mode: str = Query("paper", description="paper / live"),
-    strategy_id: Optional[int] = Query(None, description="策略ID；不传则返回模式共享账户概览"),
+    portfolio_id: Optional[int] = Query(None, description="组合ID；不传则返回该模式全部组合的聚合概览"),
     db: AsyncSession = Depends(get_db),
     _: User = Depends(get_current_user),
 ):
     await ensure_tables()
-    overview = await TradingCoordinator(db, mode, strategy_id=strategy_id).get_overview()
-    return Response.success(data=overview)
+    if portfolio_id is not None:
+        overview = await TradingCoordinator(db, portfolio_id=portfolio_id).get_overview()
+        return Response.success(data=overview)
+    return Response.success(data=await _aggregate_overview(db, mode))
 
 
 @router.get("/portfolio/values", summary="组合每日市值与收益（盘后估值快照）")
 async def get_portfolio_values(
     mode: str = Query("paper", description="paper / live"),
-    strategy_id: Optional[int] = Query(None, description="策略ID；不传返回模式级聚合快照"),
+    portfolio_id: Optional[int] = Query(None, description="组合ID；不传返回该模式按日聚合快照"),
     limit: int = Query(120, ge=1, le=500, description="返回最近 N 个交易日"),
     db: AsyncSession = Depends(get_db),
     _: User = Depends(get_current_user),
@@ -159,15 +193,14 @@ async def get_portfolio_values(
     """读 portfolio_daily_values，供 dashboard 直接画市值曲线 / 收益，无需实时算。
 
     由 backend 盘后定时任务（portfolio_valuation_service.run_eod_valuation）
-    从 data-cleaner 拉行情后写入；传 strategy_id 返回该策略（独立资金池）序列，
-    不传返回模式级聚合；升序返回便于前端绘制时间序列。
+    从 data-cleaner 拉行情后写入；传 portfolio_id 返回该组合序列，
+    不传返回该模式按日聚合的序列；升序返回便于前端绘制时间序列。
     """
     await ensure_tables()
-    conditions = [PortfolioDailyValue.mode == mode]
-    if strategy_id is not None:
-        conditions.append(PortfolioDailyValue.strategy_id == strategy_id)
+    if portfolio_id is not None:
+        conditions = [PortfolioDailyValue.portfolio_id == portfolio_id]
     else:
-        conditions.append(PortfolioDailyValue.strategy_id.is_(None))
+        conditions = [PortfolioDailyValue.mode == mode]
     rows = (
         await db.execute(
             select(PortfolioDailyValue)
@@ -176,18 +209,49 @@ async def get_portfolio_values(
             .limit(limit)
         )
     ).scalars().all()
-    data = [
-        {
-            "strategy_id": r.strategy_id,
-            "value_date": r.value_date.isoformat(),
-            "cash_balance": r.cash_balance,
-            "market_value": r.market_value,
-            "total_assets": r.total_assets,
-            "daily_return": r.daily_return,
-            "cumulative_return": r.cumulative_return,
-        }
-        for r in reversed(rows)
-    ]
+    if portfolio_id is not None:
+        data = [
+            {
+                "portfolio_id": r.portfolio_id,
+                "strategy_id": r.strategy_id,
+                "value_date": r.value_date.isoformat(),
+                "cash_balance": r.cash_balance,
+                "market_value": r.market_value,
+                "total_assets": r.total_assets,
+                "daily_return": r.daily_return,
+                "cumulative_return": r.cumulative_return,
+            }
+            for r in reversed(rows)
+        ]
+    else:
+        agg: dict = {}
+        for r in rows:
+            d = r.value_date.isoformat()
+            bucket = agg.setdefault(
+                d,
+                {"cash_balance": 0.0, "market_value": 0.0, "total_assets": 0.0},
+            )
+            bucket["cash_balance"] += float(r.cash_balance or 0)
+            bucket["market_value"] += float(r.market_value or 0)
+            bucket["total_assets"] += float(r.total_assets or 0)
+        prev = None
+        data = []
+        for d in sorted(agg.keys()):
+            b = agg[d]
+            daily = round((b["total_assets"] - prev) / prev * 100, 4) if prev else None
+            data.append(
+                {
+                    "portfolio_id": None,
+                    "strategy_id": None,
+                    "value_date": d,
+                    "cash_balance": round(b["cash_balance"], 2),
+                    "market_value": round(b["market_value"], 2),
+                    "total_assets": round(b["total_assets"], 2),
+                    "daily_return": daily,
+                    "cumulative_return": None,
+                }
+            )
+            prev = b["total_assets"]
     return Response.success(data=data)
 
 
@@ -195,26 +259,28 @@ async def get_portfolio_values(
 
 @router.get("/account", summary="账户信息")
 async def get_account(
-    mode: str = Query("paper"),
-    strategy_id: Optional[int] = Query(None, description="策略ID；不传则返回模式共享账户"),
+    portfolio_id: int = Query(..., description="组合ID"),
     db: AsyncSession = Depends(get_db),
     _: User = Depends(get_current_user),
 ):
     await ensure_tables()
-    detail = await TradingCoordinator(db, mode, strategy_id=strategy_id).get_account_detail()
+    detail = await TradingCoordinator(db, portfolio_id=portfolio_id).get_account_detail()
     detail["positions"] = [_position_dict(p) for p in detail["positions"]]
     return Response.success(data=detail)
 
 
 @router.get("/positions", summary="持仓列表")
 async def get_positions(
+    portfolio_id: Optional[int] = Query(None, description="组合ID；不传返回该模式全部"),
     mode: str = Query("paper"),
-    strategy_id: Optional[int] = Query(None, description="策略ID；不传则返回模式共享账户持仓"),
     db: AsyncSession = Depends(get_db),
     _: User = Depends(get_current_user),
 ):
     await ensure_tables()
-    positions = await TradingCoordinator(db, mode, strategy_id=strategy_id).list_positions()
+    if portfolio_id is not None:
+        positions = await TradingCoordinator(db, portfolio_id=portfolio_id).list_positions()
+    else:
+        positions = await repo.list_positions(db, mode=mode)
     return Response.success(data=[_position_dict(p) for p in positions])
 
 
@@ -225,11 +291,14 @@ async def get_orders(
     mode: str = Query("paper"),
     status_filter: Optional[str] = Query(None, alias="status"),
     limit: int = Query(50, ge=1, le=200),
+    portfolio_id: Optional[int] = Query(None, description="组合ID；不传返回该模式全部"),
     db: AsyncSession = Depends(get_db),
     _: User = Depends(get_current_user),
 ):
     await ensure_tables()
-    orders = await TradingCoordinator(db, mode).list_orders(status=status_filter, limit=limit)
+    orders = await repo.list_orders(
+        db, mode, status=status_filter, limit=limit, portfolio_id=portfolio_id
+    )
     return Response.success(data=[_order_dict(o) for o in orders])
 
 
@@ -240,7 +309,7 @@ async def place_order(
     current_user: User = Depends(get_current_user),
 ):
     await ensure_tables()
-    coordinator = TradingCoordinator(db, order_request.mode)
+    coordinator = TradingCoordinator(db, portfolio_id=order_request.portfolio_id)
     order = await coordinator.place_order(
         symbol=order_request.symbol,
         side=order_request.side,
@@ -278,12 +347,16 @@ async def cancel_order(
     _: User = Depends(get_current_user),
 ):
     await ensure_tables()
-    order = await TradingCoordinator(db, mode).cancel_order(order_id)
-    if order is None:
+    order = await repo.get_order(db, order_id)
+    if not order:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="订单不存在")
-    data = _order_dict(order)
-    if order.status != "CANCELLED":
-        return Response.error(code=400, msg=order.message or "撤单失败", data=data)
+    coordinator = TradingCoordinator(db, portfolio_id=order.portfolio_id)
+    result = await coordinator.cancel_order(order_id)
+    if result is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="订单不存在")
+    data = _order_dict(result)
+    if result.status != "CANCELLED":
+        return Response.error(code=400, msg=result.message or "撤单失败", data=data)
     return Response.success(data=data, msg="撤单成功")
 
 
@@ -293,11 +366,14 @@ async def get_trades(
     start: Optional[str] = None,
     end: Optional[str] = None,
     limit: int = Query(200, ge=1, le=500),
+    portfolio_id: Optional[int] = Query(None, description="组合ID；不传返回该模式全部"),
     db: AsyncSession = Depends(get_db),
     _: User = Depends(get_current_user),
 ):
     await ensure_tables()
-    trades = await TradingCoordinator(db, mode).list_trades(start=start, end=end, limit=limit)
+    trades = await repo.list_trades(
+        db, mode, start=start, end=end, limit=limit, portfolio_id=portfolio_id
+    )
     return Response.success(data=[_trade_dict(t) for t in trades])
 
 
@@ -443,6 +519,7 @@ class InternalOrderRequest(BaseModel):
     quantity: int
     price: float | None = None
     user_id: int | None = None
+    portfolio_id: int
     mode: str = "paper"
 
 
@@ -453,7 +530,7 @@ async def internal_place_order(
     _: bool = Depends(verify_internal_token),
 ):
     await ensure_tables()
-    coordinator = TradingCoordinator(db, payload.mode)
+    coordinator = TradingCoordinator(db, portfolio_id=payload.portfolio_id)
     order = await coordinator.place_order(
         symbol=payload.symbol,
         side=payload.side,
@@ -479,11 +556,15 @@ async def internal_place_order(
 
 @router.get("/account/internal", summary="内部账户查询")
 async def internal_account(
+    portfolio_id: Optional[int] = Query(None),
     db: AsyncSession = Depends(get_db),
     _: bool = Depends(verify_internal_token),
 ):
     await ensure_tables()
-    overview = await TradingCoordinator(db, "paper").get_overview()
+    if portfolio_id is not None:
+        overview = await TradingCoordinator(db, portfolio_id=portfolio_id).get_overview()
+    else:
+        overview = await _aggregate_overview(db, "paper")
     return Response.success(
         data={
             "cash_balance": overview["cash_balance"],
@@ -498,16 +579,20 @@ async def internal_account(
 
 @router.get("/positions/internal", summary="内部持仓查询")
 async def internal_positions(
+    portfolio_id: Optional[int] = Query(None),
     db: AsyncSession = Depends(get_db),
     _: bool = Depends(verify_internal_token),
 ):
-    """策略调仓读取当前持仓。
+    """组合调仓读取当前持仓。
 
     注意：字段名 `market_price` 是 data-cleaner 调仓侧的既有约定
     （app/strategy/rebalance.py 读取 symbol / quantity / market_price），不要改名。
     """
     await ensure_tables()
-    positions = await TradingCoordinator(db, "paper").list_positions()
+    if portfolio_id is not None:
+        positions = await TradingCoordinator(db, portfolio_id=portfolio_id).list_positions()
+    else:
+        positions = await repo.list_positions(db, mode="paper")
     return Response.success(
         data=[
             {

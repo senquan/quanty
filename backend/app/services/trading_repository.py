@@ -1,6 +1,8 @@
-"""交易域仓储层：账户 / 持仓 / 订单 / 成交的落库与查询（异步）
+"""交易域仓储层：组合 / 持仓 / 订单 / 成交的落库与查询（异步）
 
 沿用项目既有建表约定：`Base.metadata.create_all(tables=[...])` + 进程内锁，幂等执行。
+交易域牵头实体为 `portfolios`（取代原 trading_accounts），持仓 / 订单 / 成交
+均以 `portfolio_id` 挂接。
 """
 import asyncio
 import json
@@ -14,13 +16,14 @@ from app.models.trading import (
     MODE_PAPER,
     ORDER_FILLED,
     Instrument,
+    Portfolio,
     PortfolioDailyValue,
-    TradingAccount,
     TradingOrder,
     TradingPosition,
     TradingRebalanceRecord,
     TradingTrade,
 )
+from app.services import portfolio_migration
 
 _INIT_LOCK: asyncio.Lock | None = None
 _ENSURED = False
@@ -30,6 +33,7 @@ async def ensure_trading_tables() -> None:
     """幂等建表（与 watchlist_service / cleaner_gateway 同一约定）
 
     建表只真正执行一次，后续调用直接返回，避免每个请求都跑一次 DDL。
+    首次执行会顺带把旧 trading_accounts 迁移为 portfolios（幂等自愈）。
     """
     global _INIT_LOCK, _ENSURED
     if _ENSURED:
@@ -43,7 +47,7 @@ async def ensure_trading_tables() -> None:
             await conn.run_sync(
                 Base.metadata.create_all,
                 tables=[
-                    TradingAccount.__table__,
+                    Portfolio.__table__,
                     TradingPosition.__table__,
                     TradingOrder.__table__,
                     TradingTrade.__table__,
@@ -55,26 +59,8 @@ async def ensure_trading_tables() -> None:
             # 标的主数据种子：对齐模拟撮合服务内置的 5 只演示标的，
             # 避免概览页首次加载时这些代码仍无名（其余代码在查询时懒回填）。
             await _seed_instruments(conn)
-        # 存量库迁移（幂等）：账户按 (mode, strategy_id) 唯一，
-        # 持仓 / 成交补 strategy_id 冗余列、持仓补 prev_close。
-        #
-        # 注意：每条 DDL 必须在**独立事务**中执行。PostgreSQL 一旦某条语句报错，
-        # 整个事务即被标记为中止，同事务内后续语句会全部静默失败（try/except 也兜不住）。
-        # 若 UNIQUE 约束因重复行创建失败，会连累其后本应成功的 prev_close 添加一起失败，
-        # 导致模型 SELECT 引用 prev_close 时报「字段不存在」。故逐条独立建连接执行。
-        for ddl in (
-            "ALTER TABLE trading_accounts DROP CONSTRAINT IF EXISTS uq_trading_account_mode_broker",
-            "ALTER TABLE trading_accounts ADD COLUMN IF NOT EXISTS strategy_id INTEGER",
-            "ALTER TABLE trading_positions ADD COLUMN IF NOT EXISTS strategy_id INTEGER",
-            "ALTER TABLE trading_positions ADD COLUMN IF NOT EXISTS prev_close DOUBLE PRECISION",
-            "ALTER TABLE trading_trades ADD COLUMN IF NOT EXISTS strategy_id INTEGER",
-            "ALTER TABLE trading_accounts ADD CONSTRAINT uq_trading_account_mode_strategy UNIQUE (mode, strategy_id)",
-        ):
-            try:
-                async with engine.begin() as c:
-                    await c.execute(text(ddl))
-            except Exception:  # noqa: BLE001  已是最新结构 / 重复行等，忽略
-                pass
+        # 旧库自愈：trading_accounts → portfolios（幂等，已迁移则跳过）
+        await portfolio_migration.migrate_accounts_to_portfolios()
         _ENSURED = True
 
 
@@ -174,50 +160,102 @@ async def get_instruments(
     }
 
 
-# ---------------------------- 账户 ----------------------------
+# ---------------------------- 组合（牵头实体） ----------------------------
 
-async def get_or_create_account(
+async def get_portfolio(session: AsyncSession, portfolio_id: int) -> Portfolio | None:
+    """按 id 取组合（必须已存在，不再按策略自动建账户）。"""
+    stmt = select(Portfolio).where(Portfolio.id == portfolio_id)
+    return (await session.execute(stmt)).scalars().first()
+
+
+async def list_portfolios(
     session: AsyncSession,
     *,
-    mode: str,
-    broker: str,
-    initial_capital: float,
-    user_id: int | None = None,
-    account_id: str | None = None,
-    strategy_id: int | None = None,
-) -> TradingAccount:
-    """按 (mode, strategy_id) 取账户（每策略=一个独立资金池）；无 strategy_id 时取模式共享账户。
+    mode: str | None = None,
+    owner_user_id: int | None = None,
+    auto_rebalance: bool | None = None,
+    is_active: bool | None = None,
+) -> list[Portfolio]:
+    """列出组合，可附加过滤条件。"""
+    stmt = select(Portfolio)
+    if mode is not None:
+        stmt = stmt.where(Portfolio.mode == mode)
+    if owner_user_id is not None:
+        stmt = stmt.where(Portfolio.owner_user_id == owner_user_id)
+    if auto_rebalance is not None:
+        stmt = stmt.where(Portfolio.auto_rebalance == auto_rebalance)
+    if is_active is not None:
+        stmt = stmt.where(Portfolio.is_active == is_active)
+    stmt = stmt.order_by(Portfolio.id.desc())
+    return list((await session.execute(stmt)).scalars().all())
 
-    不存在则按初始资金创建；账户号由撮合器返回后回填。
-    """
-    stmt = select(TradingAccount).where(TradingAccount.mode == mode)
-    if strategy_id is not None:
-        stmt = stmt.where(TradingAccount.strategy_id == strategy_id)
-    else:
-        stmt = stmt.where(TradingAccount.strategy_id.is_(None))
-    acct = (await session.execute(stmt)).scalars().first()
-    if acct:
-        return acct
-    acct = TradingAccount(
-        user_id=user_id,
+
+async def create_portfolio(
+    session: AsyncSession,
+    *,
+    name: str,
+    strategy_id: int,
+    mode: str = MODE_PAPER,
+    broker: str = "simulated",
+    owner_user_id: int | None = None,
+    initial_capital: float = 0.0,
+    auto_rebalance: bool = True,
+    is_active: bool = True,
+    description: str | None = None,
+) -> Portfolio:
+    """创建组合（独立资金池，初始现金=初始资金）。"""
+    p = Portfolio(
+        name=name,
         strategy_id=strategy_id,
         mode=mode,
         broker=broker,
-        account_id=account_id or f"{broker.upper()}_{mode.upper()}_{strategy_id or 'SHARED'}",
-        initial_capital=initial_capital,
-        cash_balance=initial_capital,
+        owner_user_id=owner_user_id,
+        initial_capital=float(initial_capital),
+        cash_balance=float(initial_capital),
         frozen_cash=0.0,
+        account_id=f"{broker.upper()}_{mode.upper()}_P{abs(hash((name, strategy_id))) % 100000}",
+        auto_rebalance=auto_rebalance,
+        is_active=is_active,
+        description=description,
     )
-    session.add(acct)
+    session.add(p)
     await session.flush()
-    return acct
+    return p
 
 
-async def update_account_balances(
-    session: AsyncSession, account: TradingAccount, *, cash: float, frozen: float = 0.0
+async def update_portfolio(
+    session: AsyncSession,
+    portfolio: Portfolio,
+    *,
+    name: str | None = None,
+    strategy_id: int | None = None,
+    auto_rebalance: bool | None = None,
+    is_active: bool | None = None,
+    description: str | None = None,
 ) -> None:
-    account.cash_balance = cash
-    account.frozen_cash = frozen
+    if name is not None:
+        portfolio.name = name
+    if strategy_id is not None:
+        portfolio.strategy_id = strategy_id
+    if auto_rebalance is not None:
+        portfolio.auto_rebalance = auto_rebalance
+    if is_active is not None:
+        portfolio.is_active = is_active
+    if description is not None:
+        portfolio.description = description
+    await session.flush()
+
+
+async def delete_portfolio(session: AsyncSession, portfolio: Portfolio) -> None:
+    await session.delete(portfolio)
+    await session.flush()
+
+
+async def update_portfolio_balances(
+    session: AsyncSession, portfolio: Portfolio, *, cash: float, frozen: float = 0.0
+) -> None:
+    portfolio.cash_balance = cash
+    portfolio.frozen_cash = frozen
     await session.flush()
 
 
@@ -225,19 +263,22 @@ async def update_account_balances(
 
 async def list_positions(
     session: AsyncSession,
-    mode: str,
-    account_id: int | None = None,
+    *,
+    portfolio_id: int | None = None,
+    mode: str | None = None,
     strategy_id: int | None = None,
 ) -> list[TradingPosition]:
-    """按模式列出持仓；可进一步限定账户或策略。
+    """按组合列出持仓；未给 portfolio_id 时按 mode（聚合视图）过滤。
 
     说明：原先只按 mode 过滤，同 mode 多账户（如多个模拟盘）时会互相干扰，
     尤其在 sync_state 的"删除内存不存在的持仓"环节可能误删他账户的行。
-    传入 account_id / strategy_id 可消除该风险。
+    传入 portfolio_id 可彻底消除该风险。
     """
-    stmt = select(TradingPosition).where(TradingPosition.mode == mode)
-    if account_id is not None:
-        stmt = stmt.where(TradingPosition.account_id == account_id)
+    stmt = select(TradingPosition)
+    if portfolio_id is not None:
+        stmt = stmt.where(TradingPosition.portfolio_id == portfolio_id)
+    if mode is not None:
+        stmt = stmt.where(TradingPosition.mode == mode)
     if strategy_id is not None:
         stmt = stmt.where(TradingPosition.strategy_id == strategy_id)
     stmt = stmt.order_by(TradingPosition.market_value.desc())
@@ -247,7 +288,7 @@ async def list_positions(
 async def upsert_position(
     session: AsyncSession,
     *,
-    account_id: int,
+    portfolio_id: int,
     mode: str,
     symbol: str,
     side: str,
@@ -258,7 +299,7 @@ async def upsert_position(
 ) -> None:
     """写入/更新持仓；quantity<=0 视为清仓，删除该行。"""
     stmt = select(TradingPosition).where(
-        TradingPosition.account_id == account_id,
+        TradingPosition.portfolio_id == portfolio_id,
         TradingPosition.symbol == symbol,
         TradingPosition.side == side,
     )
@@ -275,7 +316,7 @@ async def upsert_position(
     if pos is None:
         session.add(
             TradingPosition(
-                account_id=account_id,
+                portfolio_id=portfolio_id,
                 strategy_id=strategy_id,
                 mode=mode,
                 symbol=symbol,
@@ -301,7 +342,7 @@ async def upsert_position(
 async def create_order(
     session: AsyncSession,
     *,
-    account_id: int,
+    portfolio_id: int,
     mode: str,
     client_order_id: str,
     symbol: str,
@@ -313,7 +354,7 @@ async def create_order(
     strategy_id: int | None = None,
 ) -> TradingOrder:
     order = TradingOrder(
-        account_id=account_id,
+        portfolio_id=portfolio_id,
         mode=mode,
         client_order_id=client_order_id,
         symbol=symbol,
@@ -362,8 +403,11 @@ async def list_orders(
     mode: str,
     status: str | None = None,
     limit: int = 50,
+    portfolio_id: int | None = None,
 ) -> list[TradingOrder]:
     stmt = select(TradingOrder).where(TradingOrder.mode == mode)
+    if portfolio_id is not None:
+        stmt = stmt.where(TradingOrder.portfolio_id == portfolio_id)
     if status:
         stmt = stmt.where(TradingOrder.status == status.upper())
     stmt = stmt.order_by(TradingOrder.id.desc()).limit(limit)
@@ -376,7 +420,7 @@ async def add_trade(
     session: AsyncSession,
     *,
     order_id: int,
-    account_id: int,
+    portfolio_id: int,
     mode: str,
     symbol: str,
     side: str,
@@ -387,7 +431,7 @@ async def add_trade(
 ) -> TradingTrade:
     trade = TradingTrade(
         order_id=order_id,
-        account_id=account_id,
+        portfolio_id=portfolio_id,
         strategy_id=strategy_id,
         mode=mode,
         symbol=symbol,
@@ -408,8 +452,11 @@ async def list_trades(
     start: str | None = None,
     end: str | None = None,
     limit: int = 200,
+    portfolio_id: int | None = None,
 ) -> list[TradingTrade]:
     stmt = select(TradingTrade).where(TradingTrade.mode == mode)
+    if portfolio_id is not None:
+        stmt = stmt.where(TradingTrade.portfolio_id == portfolio_id)
     if start:
         stmt = stmt.where(TradingTrade.trade_time >= _parse_date(start))
     if end:
@@ -440,9 +487,10 @@ def _as_date(value) -> date | None:
 async def upsert_rebalance(
     session: AsyncSession,
     *,
-    strategy_id: int,
+    portfolio_id: int,
     rebalance_date,
     mode: str = MODE_PAPER,
+    strategy_id: int | None = None,
     strategy_name: str | None = None,
     trade_date=None,
     target_count: int | None = None,
@@ -451,19 +499,19 @@ async def upsert_rebalance(
     status: str = "success",
     detail: dict | None = None,
 ) -> TradingRebalanceRecord:
-    """按 (strategy_id, rebalance_date, mode) 幂等写入调仓记录。"""
+    """按 (portfolio_id, rebalance_date) 幂等写入调仓记录。"""
     rd = _as_date(rebalance_date)
     stmt = select(TradingRebalanceRecord).where(
-        TradingRebalanceRecord.strategy_id == strategy_id,
+        TradingRebalanceRecord.portfolio_id == portfolio_id,
         TradingRebalanceRecord.rebalance_date == rd,
-        TradingRebalanceRecord.mode == mode,
     )
     rec = (await session.execute(stmt)).scalars().first()
     if rec is None:
         rec = TradingRebalanceRecord(
-            strategy_id=strategy_id, rebalance_date=rd, mode=mode
+            portfolio_id=portfolio_id, rebalance_date=rd, mode=mode
         )
         session.add(rec)
+    rec.strategy_id = strategy_id
     rec.strategy_name = strategy_name
     rec.trade_date = _as_date(trade_date)
     rec.target_count = target_count
@@ -476,22 +524,26 @@ async def upsert_rebalance(
 
 
 async def get_rebalance(
-    session: AsyncSession, *, strategy_id: int, rebalance_date, mode: str = MODE_PAPER
+    session: AsyncSession, *, portfolio_id: int, rebalance_date, mode: str = MODE_PAPER
 ) -> TradingRebalanceRecord | None:
     stmt = select(TradingRebalanceRecord).where(
-        TradingRebalanceRecord.strategy_id == strategy_id,
+        TradingRebalanceRecord.portfolio_id == portfolio_id,
         TradingRebalanceRecord.rebalance_date == _as_date(rebalance_date),
-        TradingRebalanceRecord.mode == mode,
     )
     return (await session.execute(stmt)).scalars().first()
 
 
 async def list_rebalances(
-    session: AsyncSession, mode: str | None = None, limit: int = 20
+    session: AsyncSession,
+    mode: str | None = None,
+    limit: int = 20,
+    portfolio_id: int | None = None,
 ) -> list[TradingRebalanceRecord]:
     stmt = select(TradingRebalanceRecord)
     if mode:
         stmt = stmt.where(TradingRebalanceRecord.mode == mode)
+    if portfolio_id is not None:
+        stmt = stmt.where(TradingRebalanceRecord.portfolio_id == portfolio_id)
     stmt = (
         stmt.order_by(
             TradingRebalanceRecord.rebalance_date.desc(),
@@ -506,8 +558,12 @@ __all__ = [
     "ensure_trading_tables",
     "upsert_instruments",
     "get_instruments",
-    "get_or_create_account",
-    "update_account_balances",
+    "get_portfolio",
+    "list_portfolios",
+    "create_portfolio",
+    "update_portfolio",
+    "delete_portfolio",
+    "update_portfolio_balances",
     "list_positions",
     "upsert_position",
     "create_order",

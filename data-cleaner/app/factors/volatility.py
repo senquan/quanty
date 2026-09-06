@@ -93,3 +93,19 @@ class ReturnSkew60(Factor):
             return ret.rolling(60, min_periods=20).skew()
 
         return group_apply(df, "symbol", _skew)
+
+
+@register
+class ReturnStd5(Factor):
+    code = "STD5"
+    name = "5日收益率标准差"
+    category = "volatility"
+    frequency = "Daily"
+    data_sources = ["adj_close"]
+
+    def compute(self, df):
+        def _std(g):
+            ret = g["adj_close"].pct_change()
+            return ret.rolling(5, min_periods=3).std()
+
+        return group_apply(df, "symbol", _std)

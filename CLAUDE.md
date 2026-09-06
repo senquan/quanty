@@ -63,3 +63,11 @@ Strong success criteria let you loop independently. Weak criteria ("make it work
 ---
 
 **These guidelines are working if:** fewer unnecessary changes in diffs, fewer rewrites due to overcomplication, and clarifying questions come before implementation rather than after mistakes.
+
+---
+
+## Project-Specific: Local Dev Startup
+
+- **Windows GBK crash**: the console default codepage is GBK; any non-GBK char in logs → `UnicodeEncodeError` → process exits (data-cleaner has died this way). Always set `PYTHONUTF8=1` before starting, or use `scripts/start_dev.ps1` (sets it and launches backend `:8000` + dc `:8100` in the background).
+- **Ports**: backend = `:8000` (`cd backend && python main.py`); data-cleaner = `:8100` (`cd data-cleaner && uvicorn app.main:app --port 8100`). dc must never use `:8000`.
+- **WS auth**: dc `.env` `WS_TOKEN` must equal backend `.env` `STRAT_INTEGRATION_TOKEN`; an empty value disables WS handshake verification — keep them matched (both already set in the committed `.env`).

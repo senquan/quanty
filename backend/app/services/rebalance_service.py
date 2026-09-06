@@ -4,22 +4,28 @@
 与"行情中继"（`POST /raw/latest-prices`），编排 / 资金分配 / 下单 / 记录均由
 backend（交易中心）完成。
 
+调仓牵头实体为**投资组合（Portfolio）**：遍历开启自动调仓且激活的组合，用其
+绑定策略的配置算目标持仓，并以其独立资金池下单。
+
 流程：
-    1. 拉启用策略      proxy.list_strategies(active_only=True)
-    2. 算目标持仓      proxy.scores(config)          ← dc 只做计算
-    3. 取最新价        market_proxy.latest_prices()  ← dc 行情中继
-    4. 读持仓/现金     本地 DB 直读（原实现需两次 dc→backend HTTP 往返）
-    5. 算净买卖清单    按 REBALANCE_CASH_USAGE / REBALANCE_LOT_SIZE
-    6. 下单            TradingCoordinator.place_order(source="strategy")
-    7. 写调仓记录      幂等 upsert（按 strategy_id + rebalance_date + mode）
+    1. 拉组合      list_portfolios(auto_rebalance=True, is_active=True, mode)
+    2. 算目标持仓  proxy.scores(strategy_config)      ← dc 只做计算
+    3. 取最新价    market_proxy.latest_prices()        ← dc 行情中继
+    4. 读持仓/现金  本地 DB 直读（组合级，独立资金池）
+    5. 算净买卖清单 按 REBALANCE_CASH_USAGE / REBALANCE_LOT_SIZE
+    6. 下单        TradingCoordinator.place_order(source="strategy")
+    7. 写调仓记录   幂等 upsert（按 portfolio_id + rebalance_date）
 """
+import json
 import logging
 from datetime import datetime, time
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
-from app.models.trading import MODE_PAPER
+from app.models.quant import Strategy
+from app.models.trading import MODE_PAPER, Portfolio
 from app.services import factor_strategy_proxy as proxy
 from app.services import trading_repository as repo
 from app.services.market_proxy import MarketProxyError, latest_prices
@@ -77,25 +83,40 @@ def compute_desired_quantities(cash: float, prices: dict[str, float]) -> dict[st
     return desired
 
 
-# ---------------- 单策略调仓 ----------------
+# ---------------- 单组合调仓 ----------------
 
 async def rebalance_one(
-    db: AsyncSession, strategy: dict, mode: str = MODE_PAPER, force: bool = False
+    db: AsyncSession, portfolio: Portfolio, force: bool = False
 ) -> dict:
-    """执行单个策略的调仓。force=True 时跳过"到点 / 防重"判断（用于手动触发）。"""
-    sid = strategy.get("id")
-    name = strategy.get("name")
-    config = strategy.get("config") or {}
-    owner = strategy.get("owner")
-    user_id = int(owner) if owner and str(owner).isdigit() else None
+    """执行单个组合的调仓。force=True 时跳过"到点 / 防重"判断（用于手动触发）。"""
+    pid = portfolio.id
+    strategy_id = portfolio.strategy_id
+    name = portfolio.name
+    user_id = portfolio.owner_user_id
+    mode = portfolio.mode or MODE_PAPER
+
+    # 取绑定策略配置（用于算目标持仓）
+    strat = None
+    config: dict = {}
+    if strategy_id is not None:
+        strat = (
+            await db.execute(select(Strategy).where(Strategy.id == strategy_id))
+        ).scalars().first()
+        if strat and strat.code:
+            try:
+                config = json.loads(strat.code)
+            except (ValueError, TypeError):
+                config = {}
+    strategy_name = (strat.name if strat else None) or name
 
     today = datetime.now()
     today_str = today.strftime("%Y-%m-%d")
 
     def payload(status: str, detail: dict, **kw) -> dict:
         return {
-            "strategy_id": sid,
-            "strategy_name": name,
+            "portfolio_id": pid,
+            "strategy_id": strategy_id,
+            "strategy_name": strategy_name,
             "rebalance_date": today_str,
             "mode": mode,
             "status": status,
@@ -105,17 +126,17 @@ async def rebalance_one(
 
     async def fail(reason: str) -> dict:
         await _write(db, payload("error", {"error": reason}))
-        return {"strategy_id": sid, "status": "error", "reason": reason}
+        return {"portfolio_id": pid, "status": "error", "reason": reason}
 
     try:
         if not force:
             # 防重：今日已执行过则跳过（与唯一约束共同构成幂等保障）
             if await repo.get_rebalance(
-                db, strategy_id=sid, rebalance_date=today_str, mode=mode
+                db, portfolio_id=pid, rebalance_date=today_str
             ):
-                return {"strategy_id": sid, "status": "skipped", "reason": "今日已执行"}
+                return {"portfolio_id": pid, "status": "skipped", "reason": "今日已执行"}
 
-        coordinator = TradingCoordinator(db, mode, strategy_id=sid)
+        coordinator = TradingCoordinator(db, portfolio_id=pid)
 
         # 2) 目标持仓（data-cleaner 只做计算）
         target = await proxy.scores(db, config)
@@ -136,7 +157,7 @@ async def rebalance_one(
         if not symbols:
             return await fail("无可用收盘价")
 
-        # 4) 本地读现金与持仓（不再跨服务 HTTP 往返）
+        # 4) 本地读现金与持仓（组合级，独立资金池；不再跨服务 HTTP 往返）
         account, positions = await coordinator.sync_state()
         cash = float(account.cash_balance or 0)
         if cash <= 0:
@@ -175,7 +196,7 @@ async def rebalance_one(
                 order_type="LIMIT",
                 price=round(prices.get(o["symbol"], 0) or 0, 4),
                 source="strategy",
-                strategy_id=sid,
+                strategy_id=strategy_id,
                 user_id=user_id,
             )
             if order.status == "FILLED":
@@ -204,16 +225,16 @@ async def rebalance_one(
             ),
         )
         return {
-            "strategy_id": sid,
+            "portfolio_id": pid,
             "status": status,
             "target_count": len(symbols),
             "orders_placed": placed,
             "amount": round(amount, 2),
         }
     except Exception as e:  # noqa: BLE001
-        logger.exception("策略调仓失败 strategy=%s", sid)
+        logger.exception("组合调仓失败 portfolio=%s", pid)
         await _write(db, payload("error", {"error": str(e)[:200]}))
-        return {"strategy_id": sid, "status": "error", "reason": str(e)[:200]}
+        return {"portfolio_id": pid, "status": "error", "reason": str(e)[:200]}
 
 
 async def _write(db: AsyncSession, payload: dict) -> None:
@@ -221,7 +242,7 @@ async def _write(db: AsyncSession, payload: dict) -> None:
         await repo.upsert_rebalance(db, **payload)
         await db.commit()
     except Exception:  # noqa: BLE001
-        logger.exception("写调仓记录失败 strategy=%s", payload.get("strategy_id"))
+        logger.exception("写调仓记录失败 portfolio=%s", payload.get("portfolio_id"))
         await db.rollback()
 
 
@@ -230,30 +251,39 @@ async def _write(db: AsyncSession, payload: dict) -> None:
 async def scan_and_rebalance(
     db: AsyncSession, mode: str = MODE_PAPER, force: bool = False
 ) -> dict:
-    """扫描启用策略，对到点且未执行的执行调仓。"""
+    """扫描开启自动调仓且激活的组合，对到点且未执行的执行调仓。"""
     await repo.ensure_trading_tables()
     try:
-        strategies = await proxy.list_strategies(db, active_only=True)
+        portfolios = await repo.list_portfolios(
+            db, mode=mode, auto_rebalance=True, is_active=True
+        )
     except Exception as e:  # noqa: BLE001
-        logger.warning("拉取启用策略失败: %s", e)
+        logger.warning("拉取组合失败: %s", e)
         return {"active": 0, "due": 0, "results": [], "error": str(e)[:200]}
 
     now = datetime.now()
-    due = [
-        s
-        for s in strategies
-        if force
-        or (
-            is_rebalance_day(s.get("config") or {}, now)
-            and time_reached(s.get("config") or {}, now)
-        )
-    ]
-    results = [await rebalance_one(db, s, mode=mode, force=force) for s in due]
+    # 调仓时点判断基于「组合绑定策略的配置」
+    due: list[Portfolio] = []
+    for p in portfolios:
+        cfg = {}
+        if p.strategy_id is not None:
+            strat = (
+                await db.execute(select(Strategy).where(Strategy.id == p.strategy_id))
+            ).scalars().first()
+            if strat and strat.code:
+                try:
+                    cfg = json.loads(strat.code)
+                except (ValueError, TypeError):
+                    cfg = {}
+        if force or (is_rebalance_day(cfg, now) and time_reached(cfg, now)):
+            due.append(p)
+
+    results = [await rebalance_one(db, p, force=force) for p in due]
 
     logger.info(
-        "策略调仓扫描完成 active=%s due=%s done=%s",
-        len(strategies),
+        "组合调仓扫描完成 active=%s due=%s done=%s",
+        len(portfolios),
         len(due),
         len(results),
     )
-    return {"active": len(strategies), "due": len(due), "results": results}
+    return {"active": len(portfolios), "due": len(due), "results": results}

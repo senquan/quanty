@@ -2,7 +2,8 @@
 
 - 每个交易日 18:00: 触发一次全量清洗+因子计算流水线（由 pipeline 路由逻辑复用）
 - 每周六 09:00: 重算因子效能指标（更长回看窗口）
-- 每 30s: 心跳写入 Redis factor:status（容器存活探针可由此外部读取）
+- 每 30s: 心跳写入 Redis factor:heartbeat（容器存活探针可由此外部读取），
+  并同时经 WebSocket 推送 event.status 给 backend
 """
 from datetime import datetime
 
@@ -125,10 +126,23 @@ async def _weekly_metrics_job() -> None:
 
 
 async def _heartbeat_job() -> None:
-    """每 30s: 心跳写入 Redis factor:status（存活探针/实时状态）"""
-    from app.storage import cache
+    """每 30s: 心跳写入 Redis factor:heartbeat，并经 WS 推送 event.status。
 
-    await cache.publish_status({"status": "alive", "ts": datetime.now().isoformat()})
+    - Redis 心跳写 `factor:heartbeat`（Phase 4 起与流水线报告 `factor:status`
+      **分离**，此前两者共用 key，心跳会把流水线结果冲掉）。
+    - WS 推送是**替代 backend 30s /qos 轮询**的推路径（设计文档 §10 Phase 2）；
+      未启用 WS 时该推送为 no-op，不影响 Redis 心跳。
+    """
+    from app.storage import cache
+    from app.ws import events as ws_events
+
+    await cache.publish_heartbeat({"status": "alive", "ts": datetime.now().isoformat()})
+
+    if ws_events.is_enabled():
+        try:
+            await ws_events.emit_status()
+        except Exception as e:  # noqa: BLE001 - 推送失败绝不阻断心跳
+            logger.warning(f"WS 状态推送失败: {e}")
 
 
 async def _industry_refresh_job() -> None:

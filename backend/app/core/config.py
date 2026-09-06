@@ -21,6 +21,8 @@ class Settings(BaseSettings):
 
     # 策略内部下单令牌（data-cleaner 调仓任务携带 X-Internal-Token 调用 /trading/orders/internal）
     STRATEGY_INTERNAL_TOKEN: str = ""
+    # WebSocket 集成令牌（backend ↔ data-cleaner 长连接握手校验，与 dc 的 WS_TOKEN 一致）
+    STRAT_INTEGRATION_TOKEN: str = ""
 
     # 交易：默认模式（paper / live）与模拟盘初始资金
     BROKER_MODE: str = "paper"
@@ -53,7 +55,26 @@ class Settings(BaseSettings):
     # 风控：单笔订单金额上限（占总资产比例）。原为绝对值 10 万，账户规模变化或
     # 标的数较少时会误拒（100 万账户买 5 只标的每笔 19 万即全被拒）。
     RISK_MAX_ORDER_PCT: float = 0.3
-    
+
+    # ---- WebSocket 长连接（backend 作为服务端，接收 N 个 dc 实例连入）----
+    # 设计见 docs/plans/2026-09-04.ws-dc-backend.md
+    # 总开关：关闭时不挂载 /ws/dc，行为与改造前完全一致（纯 HTTP 轮询）
+    WS_ENABLED: bool = False
+    WS_MAX_CONNECTIONS: int = 50
+    WS_MAX_FRAME_BYTES: int = 256 * 1024
+    WS_PING_INTERVAL_SEC: float = 15.0
+    WS_PING_TIMEOUT_SEC: float = 20.0
+    # 事件去重：无 Redis 时的内存 LRU 容量（Redis 可用时额外做跨重启去重）
+    WS_DEDUP_CACHE_SIZE: int = 10000
+    # 连接被认为已失联的秒数（超过则按离线处理）
+    WS_CONNECTION_STALE_SEC: int = 120
+    # 清洗服务存活轮询：已建立 WS 连接的实例跳过轮询，仅对未连接实例兜底
+    CLEANER_POLL_SKIP_CONNECTED: bool = True
+    # 因子副本每日对账（发现缺失 / 冗余 / 陈旧），需配合 ENABLE_FACTOR_SYNC
+    ENABLE_FACTOR_RECONCILE: bool = False
+    FACTOR_RECONCILE_HOUR: int = 7
+    FACTOR_RECONCILE_MINUTE: int = 30
+
     @property
     def allowed_origins_list(self) -> List[str]:
         """Convert comma-separated origins string to list"""

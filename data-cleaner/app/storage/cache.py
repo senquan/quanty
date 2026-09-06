@@ -2,12 +2,22 @@
 
 Key 规范（见设计文档 §6.3）:
 - factor:latest:{code} -> 最新一期因子值（JSON）
-- factor:status       -> 流水线最近运行状态
+- factor:status        -> 流水线最近运行状态（**仅**由 publish_status 写）
+- factor:heartbeat     -> 30s 存活心跳（**仅**由 publish_heartbeat 写）
+
+为什么要拆两个 key：历史上心跳与流水线报告共用 `factor:status`，
+导致 30s 一次的心跳把流水线运行结果冲掉（设计文档 §2.2 既有缺陷，Phase 4 修复）。
 
 无 Redis 时优雅降级（所有操作为 no-op），不影响主流程。
 """
 import json
 from typing import Any
+
+#: 流水线运行状态（由 publish_status 写）
+STATUS_KEY = "factor:status"
+
+#: 存活心跳（由 publish_heartbeat 写，与流水线状态分离）
+HEARTBEAT_KEY = "factor:heartbeat"
 
 from app.core.config import settings
 from app.core.logging import get_logger
@@ -66,8 +76,27 @@ async def get_json(key: str) -> Any | None:
 
 
 async def publish_status(status: dict) -> None:
-    """刷新流水线状态（factor:status，TTL 24h）"""
-    await set_json("factor:status", status, ttl=86400)
+    """刷新**流水线**运行状态（factor:status，TTL 24h）。
+
+    注意：勿用于心跳。历史上 30s 心跳也写本 key，会把流水线运行结果冲掉
+    （设计文档 §2.2）。心跳请改用 `publish_heartbeat()`。
+    """
+    await set_json(STATUS_KEY, status, ttl=86400)
+
+
+async def publish_heartbeat(status: dict) -> None:
+    """刷新存活心跳（factor:heartbeat，TTL 24h）—— 与流水线状态分离。"""
+    await set_json(HEARTBEAT_KEY, status, ttl=86400)
+
+
+async def get_status() -> Any | None:
+    """读取流水线运行状态"""
+    return await get_json(STATUS_KEY)
+
+
+async def get_heartbeat() -> Any | None:
+    """读取存活心跳"""
+    return await get_json(HEARTBEAT_KEY)
 
 
 async def cache_factor_latest(code: str, values: list) -> None:

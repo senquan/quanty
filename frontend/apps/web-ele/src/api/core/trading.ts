@@ -135,6 +135,8 @@ export interface OrderRequest {
   quantity: number;
   order_type?: 'MARKET' | 'LIMIT';
   price?: number | null;
+  /** 组合ID（独立资金池），下单必须指定 */
+  portfolio_id: number;
   mode?: TradeMode;
 }
 
@@ -161,31 +163,31 @@ export async function getTradingModeApi() {
   return requestClient.get<ModeInfo>('/trading/mode');
 }
 
-/** 量化概览 */
-export async function getOverviewApi(mode: TradeMode = 'paper') {
+/** 量化概览（portfolioId 给定则返回该组合概览，否则返回该模式全部组合聚合） */
+export async function getOverviewApi(portfolioId?: number, mode: TradeMode = 'paper') {
   return requestClient.get<TradingOverview>('/trading/overview', {
-    params: { mode },
+    params: { portfolio_id: portfolioId, mode },
   });
 }
 
-/** 账户详情（含持仓） */
-export async function getAccountApi(mode: TradeMode = 'paper') {
+/** 账户详情（含持仓），需指定组合 */
+export async function getAccountApi(portfolioId: number) {
   return requestClient.get<AccountInfo>('/trading/account', {
-    params: { mode },
+    params: { portfolio_id: portfolioId },
   });
 }
 
-/** 持仓列表 */
-export async function getPositionsApi(mode: TradeMode = 'paper') {
+/** 持仓列表（portfolioId 给定返回该组合，否则返回该模式全部） */
+export async function getPositionsApi(portfolioId?: number, mode: TradeMode = 'paper') {
   return requestClient.get<Position[]>('/trading/positions', {
-    params: { mode },
+    params: { portfolio_id: portfolioId, mode },
   });
 }
 
 /** 委托列表 */
 export async function getOrdersApi(
   mode: TradeMode = 'paper',
-  params?: { status?: string; limit?: number },
+  params?: { status?: string; limit?: number; portfolio_id?: number },
 ) {
   return requestClient.get<TradeOrder[]>('/trading/orders', {
     params: { mode, ...(params || {}) },
@@ -217,7 +219,7 @@ export async function cancelOrderApi(
 /** 成交记录 */
 export async function getTradesApi(
   mode: TradeMode = 'paper',
-  params?: { start?: string; end?: string; limit?: number },
+  params?: { start?: string; end?: string; limit?: number; portfolio_id?: number },
 ) {
   return requestClient.get<TradeRecord[]>('/trading/trades', {
     params: { mode, ...(params || {}) },
@@ -233,11 +235,12 @@ export async function getRebalancesApi(limit = 20) {
 
 /** 组合每日市值与收益（盘后估值快照，画收益率曲线用） */
 export async function getPortfolioValuesApi(
+  portfolioId?: number,
   mode: TradeMode = 'paper',
-  params?: { strategy_id?: number; limit?: number },
+  params?: { limit?: number },
 ) {
   return requestClient.get<PortfolioValuePoint[]>('/trading/portfolio/values', {
-    params: { mode, ...(params || {}) },
+    params: { portfolio_id: portfolioId, mode, ...(params || {}) },
   });
 }
 

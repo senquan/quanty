@@ -49,6 +49,7 @@ import type {
   TradeOrder,
   TradeRecord,
 } from '#/api/core/trading';
+import { getPortfoliosApi, type Portfolio } from '#/api/core/portfolio';
 
 const loading = ref(false);
 const submitting = ref(false);
@@ -61,6 +62,10 @@ const orders = ref<TradeOrder[]>([]);
 const trades = ref<TradeRecord[]>([]);
 const rebalances = ref<RebalanceRecord[]>([]);
 const availableSymbols = ref<{ symbol: string; name: string; price: number }[]>([]);
+
+// 组合（交易域牵头实体）：交易页按组合查看账户 / 持仓 / 订单 / 成交
+const portfolios = ref<Portfolio[]>([]);
+const selectedPortfolioId = ref<number | null>(null);
 
 const currentMode = computed(() =>
   (modeInfo.value?.modes || []).find((m) => m.mode === mode.value),
@@ -110,11 +115,19 @@ async function load() {
   loading.value = true;
   errorMsg.value = '';
   try {
+    if (selectedPortfolioId.value == null) {
+      modeInfo.value = await getTradingModeApi();
+      account.value = null;
+      orders.value = [];
+      trades.value = [];
+      rebalances.value = [];
+      return;
+    }
     const [mi, acc, ord, trd, reb] = await Promise.all([
       getTradingModeApi(),
-      getAccountApi(mode.value),
-      getOrdersApi(mode.value, { limit: 50 }),
-      getTradesApi(mode.value, { limit: 100 }),
+      getAccountApi(selectedPortfolioId.value),
+      getOrdersApi(mode.value, { limit: 50, portfolio_id: selectedPortfolioId.value }),
+      getTradesApi(mode.value, { limit: 100, portfolio_id: selectedPortfolioId.value }),
       getRebalancesApi(20),
     ]);
     modeInfo.value = mi;
@@ -129,10 +142,36 @@ async function load() {
   }
 }
 
+/** 加载某模式下的组合列表，并默认选中第一个 */
+async function loadPortfolios() {
+  try {
+    const list = await getPortfoliosApi({ mode: mode.value });
+    portfolios.value = list || [];
+    if (
+      selectedPortfolioId.value == null ||
+      !portfolios.value.some((p) => p.id === selectedPortfolioId.value)
+    ) {
+      selectedPortfolioId.value = portfolios.value[0]?.id ?? null;
+    }
+  } catch {
+    portfolios.value = [];
+    selectedPortfolioId.value = null;
+  }
+}
+
+async function onModeChange() {
+  await loadPortfolios();
+  await load();
+}
+
 async function handleSubmitOrder() {
   const symbol = orderForm.symbol.trim().toUpperCase();
   if (!symbol) {
     ElMessage.warning('请填写标的代码');
+    return;
+  }
+  if (selectedPortfolioId.value == null) {
+    ElMessage.warning('请先在右上角选择一个组合');
     return;
   }
   submitting.value = true;
@@ -143,6 +182,7 @@ async function handleSubmitOrder() {
       order_type: orderForm.orderType,
       quantity: orderForm.quantity,
       price: orderForm.orderType === 'LIMIT' ? orderForm.price : null,
+      portfolio_id: selectedPortfolioId.value,
       mode: mode.value,
     });
     if (res.status === 'REJECTED') {
@@ -167,6 +207,7 @@ function useSymbol(symbol: string) {
 }
 
 onMounted(async () => {
+  await loadPortfolios();
   await load();
   // 可交易标的仅用于快捷填充代码，失败不影响主流程
   try {
@@ -182,15 +223,37 @@ onMounted(async () => {
   <div class="trading-page p-4">
     <ElAlert v-if="errorMsg" :title="errorMsg" type="error" show-icon class="mb-4" />
 
-    <!-- 模式切换 -->
+    <ElAlert
+      v-if="selectedPortfolioId == null"
+      type="info"
+      show-icon
+      class="mb-4"
+      title="请先选择或新建一个投资组合（交易域牵头实体，取代原以策略牵头的模拟盘账户）"
+    />
+
+    <!-- 模式 / 组合切换 -->
     <ElCard shadow="never" class="mb-4">
-      <div class="flex items-center justify-between">
-        <div class="flex items-center gap-3">
+      <div class="flex items-center justify-between flex-wrap gap-3">
+        <div class="flex items-center gap-3 flex-wrap">
           <span class="text-sm text-gray-500">交易模式</span>
-          <ElRadioGroup v-model="mode" @change="load">
+          <ElRadioGroup v-model="mode" @change="onModeChange">
             <ElRadioButton value="paper">模拟盘</ElRadioButton>
             <ElRadioButton value="live">实盘</ElRadioButton>
           </ElRadioGroup>
+          <span class="text-sm text-gray-500 ml-2">组合</span>
+          <ElSelect
+            v-model="selectedPortfolioId"
+            placeholder="选择组合"
+            style="width: 200px"
+            @change="load"
+          >
+            <ElOption
+              v-for="p in portfolios"
+              :key="p.id"
+              :label="p.name"
+              :value="p.id"
+            />
+          </ElSelect>
         </div>
         <ElTag v-if="currentMode" :type="currentMode.ready ? 'success' : 'warning'">
           {{ currentMode.message }}

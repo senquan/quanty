@@ -27,7 +27,7 @@ class CleanerService(Base):
     service_code: Mapped[str] = mapped_column(String(64), unique=True, index=True)
     name: Mapped[str] = mapped_column(String(128))
     base_url: Mapped[str] = mapped_column(String(512))          # 不含末尾斜杠，如 http://host:8100
-    api_key: Mapped[str] = mapped_column(String(256))           # X-API-Key，AES 存储占位
+    api_key: Mapped[str] = mapped_column(String(256))           # X-API-Key，AES(Fernet) 加密存储（多 key 逗号分隔）；明文访问走 primary_api_key()
     status: Mapped[str] = mapped_column(String(16), default="unknown")  # online|offline|degraded|unknown
     last_heartbeat: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     qos: Mapped[dict | None] = mapped_column(JSON, nullable=True)         # 最近一次 QoS 快照
@@ -52,6 +52,21 @@ class CleanerService(Base):
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
         }
+
+    # ---- api_key 治理（设计文档 §8 / §11）----
+    # `api_key` 列存的是 `ENC:` 密文（见 app.core.security）；下方方法负责
+    # 解密与多 key 拆分，调用方切勿直接使用 `self.api_key` 明文。
+
+    def api_keys(self) -> list[str]:
+        """解密并拆分出的有效 key 列表（多 key 逗号分隔）。"""
+        from app.core import credential
+
+        return credential.load_keys(self.api_key)
+
+    def primary_api_key(self) -> str | None:
+        """当前主用 key（轮换时取第一个；dc 侧需在其 API_KEYS 中接受它）。"""
+        keys = self.api_keys()
+        return keys[0] if keys else None
 
 
 class FactorRegistry(Base):

@@ -49,7 +49,7 @@ async def _request(
     params: dict | None = None,
     payload: dict | None = None,
 ) -> Any:
-    headers = {"X-API-Key": svc.api_key} if svc.api_key else {}
+    headers = {"X-API-Key": svc.primary_api_key()} if svc.primary_api_key() else {}
     try:
         async with httpx.AsyncClient(timeout=DEFAULT_TIMEOUT) as client:
             resp = await client.request(

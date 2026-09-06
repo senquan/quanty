@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import Base, engine
 from app.models.cleaner import CleanerService, FactorRegistry
+from app.models.signal import ExecutionReport, Signal
 
 logger = logging.getLogger(__name__)
 
@@ -52,7 +53,13 @@ async def ensure_cleaner_tables() -> None:
         async with engine.begin() as conn:
             await conn.run_sync(
                 Base.metadata.create_all,
-                tables=[CleanerService.__table__, FactorRegistry.__table__],
+                tables=[
+                    CleanerService.__table__,
+                    FactorRegistry.__table__,
+                    # WS 预留通道的落库表（signals / execution_reports）
+                    Signal.__table__,
+                    ExecutionReport.__table__,
+                ],
             )
             for ddl in _DDL_MIGRATIONS:
                 await conn.execute(text(ddl))
@@ -140,7 +147,7 @@ async def fetch_factors(
         params["include_metrics"] = "true"
     query = urlencode(params)
     path = f"/api/v1/factor?{query}" if query else "/api/v1/factor"
-    data = await _get_json(service.base_url, path, service.api_key, timeout=timeout)
+    data = await _get_json(service.base_url, path, service.primary_api_key(), timeout=timeout)
     return data if isinstance(data, list) else []
 
 
@@ -296,6 +303,32 @@ async def get_service(db: AsyncSession, service_code: str) -> CleanerService | N
 
 async def list_services(db: AsyncSession) -> list[CleanerService]:
     return list((await db.execute(select(CleanerService).order_by(CleanerService.id))).scalars().all())
+
+
+async def migrate_api_keys() -> int:
+    """启动期一次性：把存量明文 api_key 重写为加密形态（治理 §8 / §11）。
+
+    幂等：已是 `ENC:` 密文的跳过；空值跳过。自身打开会话，
+    返回重写的条数。迁移期若密钥变更导致解密失败，`security` 会回退明文并告警，
+    不会阻断启动。
+    """
+    from app.core import credential
+    from app.core.database import AsyncSessionLocal
+
+    rewritten = 0
+    async with AsyncSessionLocal() as db:
+        rows = (await db.execute(select(CleanerService))).scalars().all()
+        for svc in rows:
+            if not svc.api_key or credential.is_encrypted(svc.api_key):
+                continue
+            # 存量明文 → 整体作为单个 key 加密存储
+            svc.api_key = credential.store_keys([svc.api_key])
+            rewritten += 1
+        if rewritten:
+            await db.commit()
+    if rewritten:
+        logger.info("api_key 明文已自动重加密: %d 条", rewritten)
+    return rewritten
 
 
 async def list_factors(

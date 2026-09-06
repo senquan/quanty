@@ -125,6 +125,12 @@ backend (:8000)   /api/v1/cleaner/*   ← 网关
 2. 启动一个或多个 data-cleaner（各 `:8100`，可不同机）：`cd data-cleaner && uvicorn app.main:app --port 8100`
 3. 启动前端（`:5777`）：`cd frontend && pnpm dev`
 
+> **Windows 用户必读（GBK 控制台崩溃）**：Windows 控制台默认代码页为 GBK，当服务日志出现非 GBK 字符（中文/特殊符号）时，`logging` 写出会抛 `UnicodeEncodeError` 并**使进程退出**（data-cleaner 此前因此掉线）。请在启动前两服务的同一会话里设置 `PYTHONUTF8=1`（比 `PYTHONIOENCODING=utf-8` 更彻底，还覆盖文件系统编码）：
+> ```powershell
+> $env:PYTHONUTF8 = '1'   # 在启动 backend / data-cleaner 前执行
+> ```
+> 推荐直接用一键启动脚本（已内置该变量并后台拉起两服务）：`powershell -File scripts/start_dev.ps1`
+
 **网关 API（主后端 `:8000` 提供，均需登录）**
 
 | 方法 & 路径 | 作用 |
