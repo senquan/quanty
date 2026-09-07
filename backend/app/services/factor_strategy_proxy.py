@@ -25,7 +25,17 @@ DEFAULT_TIMEOUT = 30.0  # 回测可能耗时稍长
 
 
 class FactorStrategyProxyError(Exception):
-    """转发清洗服务失败"""
+    """转发清洗服务失败
+
+    ``status_code`` / ``detail`` 在 dc 返回 4xx/5xx 时带上原始内容 ——
+    调用方要据此区分「这个请求不成立（422）」与「服务端出错」，
+    光靠异常消息分辨不出来。
+    """
+
+    def __init__(self, message: str, status_code: int | None = None, detail: Any = None):
+        super().__init__(message)
+        self.status_code = status_code
+        self.detail = detail
 
 
 async def pick_service(db: AsyncSession, service_code: str | None = None) -> CleanerService:
@@ -49,10 +59,11 @@ async def _request(
     *,
     params: dict | None = None,
     payload: dict | None = None,
+    timeout: float = DEFAULT_TIMEOUT,
 ) -> Any:
     headers = {"X-API-Key": svc.primary_api_key()} if svc.primary_api_key() else {}
     try:
-        async with httpx.AsyncClient(timeout=DEFAULT_TIMEOUT) as client:
+        async with httpx.AsyncClient(timeout=timeout) as client:
             resp = await client.request(
                 method,
                 f"{svc.base_url}{path}",
@@ -70,7 +81,11 @@ async def _request(
             detail = resp.json().get("detail", resp.text[:200])
         except Exception:  # noqa: BLE001
             detail = resp.text[:200]
-        raise FactorStrategyProxyError(f"清洗服务返回 {resp.status_code}：{detail}")
+        raise FactorStrategyProxyError(
+            f"清洗服务返回 {resp.status_code}：{detail}",
+            status_code=resp.status_code,
+            detail=detail,
+        )
 
     if not resp.content:
         return None

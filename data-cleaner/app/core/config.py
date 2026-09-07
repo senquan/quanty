@@ -66,6 +66,22 @@ class Settings(BaseSettings):
     # 未 ack 消息数上限（背压保护）
     WS_MAX_INFLIGHT: int = 1000
 
+    # ---- 市场情报模块（intel）：dc 内可选子模块 ----
+    # 设计见 docs/memo/intel-module-design.md / intel-module-plan.md
+    # 总开关：关闭时 intel 路由/调度/迁移入口全部跳过，dc 行为与改造前一致，
+    # 且 intel 重型依赖（LLM SDK 等）不会被 import（沿用 dc 既有 Dockerfile，不新建镜像）。
+    # 决策（2026-09-07）：RSS 先行 / LLM 先云端 / 做有效性检验。
+    INTEL_ENABLED: bool = False
+    # LLM 提供方：cloud（云端 API）/ local（本地 ollama 等）；决策=先云端
+    INTEL_LLM_PROVIDER: str = "cloud"
+    INTEL_LLM_BASE_URL: str = ""
+    INTEL_LLM_API_KEY: str = ""
+    INTEL_LLM_MODEL: str = ""
+    # 成本护栏：LLM 日预算（元），超限停批并告警（不静默降级）
+    INTEL_DAILY_BUDGET_YUAN: float = 10.0
+    # RSS 轮询间隔（秒），准实时摄取
+    INTEL_RSS_POLL_SEC: int = 300
+
     # Application
     DEBUG: bool = True
     HOST: str = "0.0.0.0"

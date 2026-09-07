@@ -54,7 +54,13 @@ def backfill_symbol(
 ) -> dict:
     """增量（或全量）拉取单标的并入库。返回进度摘要。"""
     today = today or _today()
-    src = get_source(source)
+    # R1c（2026-09-06）：pandadata 是全市场主力源，但 SDK 明确不支持北交所
+    # （报「后缀必须为SH或SZ」）。北交所标的自动改走 akshare，避免静默失败。
+    if source == "pandadata" and symbol.upper().endswith(".BJ"):
+        source_resolved = "akshare"
+    else:
+        source_resolved = source
+    src = get_source(source_resolved)
     latest = repository.get_latest_date(symbol)
     if full or not latest:
         start = _DEFAULT_FULL_START
@@ -98,7 +104,7 @@ def backfill_symbol(
 
 
 def backfill_universe(
-    source: str = "alphafeed",
+    source: str = "pandadata",
     symbols: list[str] | None = None,
     full: bool = False,
     batch_size: int = 200,
@@ -187,7 +193,7 @@ def check_coverage(min_ratio: float = 0.95) -> dict:
 
 
 def verify_and_repair(
-    source: str = "alphafeed", min_ratio: float = 0.95
+    source: str = "pandadata", min_ratio: float = 0.95
 ) -> dict:
     """校验最新交易日覆盖度；不达标则跑一轮增量补齐，并回读结果。"""
     result = check_coverage(min_ratio)

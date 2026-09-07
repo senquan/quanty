@@ -11,6 +11,15 @@
 量纲：raw_bars 既有约定 volume 为「手」。pandadata 返回「股」，在适配器中
 已折算为「手」；akshare 的 成交量 本就是「手」，无需换算。
 
+复权口径（2026-09-06 修正，见 docs/memo/architecture.md §3.3 / §6.1 R1a）：
+两侧均取**前复权**（pandadata adjust="pre" / akshare adjust='qfq'）。
+此前两侧均为不复权，导致 2,000 条除权假跳空（`000990.SZ` 2026-07-30 9.08→6.50
+等），并经 `pipeline/adjust.py` 的 `adj_close = close` 透传污染全部价格类因子。
+
+⚠️ qfq 以「最新日」为锚，标的每次除权后其**全部历史价都会变化**，
+而增量流水线只写当天、从不重写历史 ⇒ **本脚本需定期重跑**，否则历史行会腐化。
+根治方案见架构文档 R1b：落原始价 + adj_factor，回测改用 hfq（锚在最早日，不漂移）。
+
 用法：
     .venv\\Scripts\\python.exe backfill_history_pandadata.py
         [--start 2021-10-01] [--end 2026-09-01] [--batch 200]
@@ -82,7 +91,7 @@ def run_pandadata(symbols: list[str], start: str, end: str, batch: int,
         processed += 1
         lo, hi = bi * batch, min((bi + 1) * batch, len(symbols))
         try:
-            df = src.fetch_daily(symbols[lo:hi], start, end)
+            df = src.fetch_daily(symbols[lo:hi], start, end, adjust="pre")
             if df is None or df.empty:
                 log(f'[pandadata] 批次 {bi} [{lo+1}-{hi}]: 返回空')
                 done.add(bi)
@@ -127,7 +136,7 @@ def run_akshare_bj(symbols: list[str], start: str, end: str, state: dict) -> int
         df = None
         for attempt in range(4):
             try:
-                df = ak.stock_zh_a_daily(symbol='bj' + code, adjust='')
+                df = ak.stock_zh_a_daily(symbol='bj' + code, adjust='qfq')
                 break
             except Exception as e:  # noqa: BLE001
                 if attempt == 3:

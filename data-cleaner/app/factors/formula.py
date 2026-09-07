@@ -20,6 +20,9 @@
   sign(x)       = x.sign()
   zscore(x)     = (x - x.mean())/x.std()
 可用列名 (按 symbol 分组后计算): open/high/low/close/volume/adj_open/adj_high/adj_low/adj_close
+                                 hfq_open/hfq_high/hfq_low/hfq_close（后复权，R1b）
+  时序类因子建议用 hfq_*（历史值不因新除权而改变）；
+  估值类因子必须用 adj_*（真实价口径，与 eps/bps 同源）。
 """
 import ast
 import operator
@@ -41,6 +44,10 @@ _WHITELIST_FUNCS = {
 _ALLOWED_COLS = {
     "open", "high", "low", "close", "volume",
     "adj_open", "adj_high", "adj_low", "adj_close",
+    # R1b（2026-09-06）：后复权列，锚在最早日、历史值恒定。
+    # 时序类因子（动量/波动/技术）用 hfq_* 可摆脱 qfq 漂移；
+    # 估值类因子（PE/PB/股息率）仍须用 adj_*（真实价口径）。
+    "hfq_open", "hfq_high", "hfq_low", "hfq_close",
 }
 
 

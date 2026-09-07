@@ -67,7 +67,7 @@ def trigger_backfill(
     body: dict[str, Any],
     bg: BackgroundTasks,
 ) -> dict[str, Any]:
-    source = body.get("source", "alphafeed")
+    source = body.get("source", "pandadata")
     symbols = body.get("symbols")
     full = bool(body.get("full", False))
 

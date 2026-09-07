@@ -2,6 +2,42 @@
 
 > 用途:长期架构记忆。定位关键模块、数据流、存储与调度,便于后续开发与排障。
 > 最后整理:2026-09-04
+> **2026-09-06 增补:§0 回测归口、§3.10 数据家底实测、§6 回测架构决策。**
+
+---
+
+## 0. 回测归口(2026-09-06 决策)
+
+### 决策
+
+**回测一律放在 dc(data-cleaner)端。backend 不持有回测计算,只做网关转发。**
+
+### 为什么(这不是偏好,是数据位置决定的)
+
+| 事实 | 证据 |
+|---|---|
+| A 股行情数据在 dc | `factor.raw_bars`,实测 **6,118,948 行 / 5,555 只 / 2021-10-08 ~ 2026-09-04** |
+| backend 拿不到 A 股数据 | 两库隔离,backend **无法直连** `factor.raw_bars`——`dc/app/api/v1/raw.py:53` 注释明写:"backend 与 data-cleaner 分属独立库,backend 无法直接读 factor.raw_bars" |
+| backend 现有回测只有 yfinance/ccxt | `backend/app/services/backtest_engine.py:771` `DataManager.sources = {'yahoo', 'crypto'}` |
+
+**→ 这就是「回测数据源为什么没有 A 股」的答案**:不是缺功能,是**回测引擎长在了没有数据的那一侧**。backend 挂在 yfinance/ccxt 上,而 A 股数据在 dc 的库里,中间隔着一条 HTTP。
+
+要让它有 A 股,只有两条路:① 把回测搬到数据所在的 dc;② 让 backend 通过 dc 的 HTTP 接口逐标的取数。
+**选 ①**——回测要反复扫全市场面板,走 HTTP 逐标的取数既慢又把 N 次往返压在请求链路上;而 dc 本地直接 `repository.load()` / `load_all()`,是同机内存级访问。
+
+### 两类回测(不要混为一谈)
+
+| 类型 | 范式 | 现状 | 归口 |
+|---|---|---|---|
+| **因子选股回测** | 横截面多标的、配置驱动、定期调仓 | dc 已有:`app/strategy/engine.py:677 run_backtest`,含涨跌停/停牌/换手率 | **dc(已在位)** |
+| **脚本策略回测** | 单标的、用户写 Python(`buy/sell`)、逐 bar | backend 有:`app/services/backtest_engine.py`,数据源 yahoo/crypto | **待迁 dc** |
+
+dc 的 `run_backtest` **只支持因子选股**(要求 `factor_codes ≥ 1`),不接单标的脚本策略——这是当前的能力缺口,也是迁移的目标位。
+
+### backend 现有回测引擎的定位
+
+`backend/app/services/backtest_engine.py` 于 2026-09-06 完成 P0/P1 修复(撮合时间、on_data 未调用、胜率口径、市场规则闸口,80 项测试),见 `docs/memo/vibe-research-benchmark-2609.md`。
+**这些修复是迁移资产,不是继续投入的方向**——迁到 dc 时,撮合/闸口/市场规则三块逻辑可直接落为 dc 模块,不应在 backend 侧再演进。
 
 ---
 
@@ -41,7 +77,7 @@ A 股量化平台,**前端 → 主后端(网关/交易中心)→ 因子引擎(dc
 - 入口 `backend/main.py`(lifespan 启停交易调度器);配置 `app/core/config.py`。
 - 路由(`app/api/api_v1/api.py`,统一 `/api/v1`):
   - `auth` / `user` / `role` / `menu` / `role_permission`:认证与 RBAC。
-  - `quant`:旧版 buy/sell 脚本回测引擎(`app/services/backtest_engine.py`、`technical_indicators.py`、`performance_analyzer.py`,yfinance/ccxt + TA 指标)。
+  - `quant`:buy/sell 脚本回测引擎(`app/services/backtest_engine.py`、`technical_indicators.py`、`performance_analyzer.py`,yfinance/ccxt + TA 指标)。⚠️ **数据源无 A 股;按 §0 决策待迁 dc,不再在此侧演进。**
   - `trading`:模拟/实盘账户、持仓、订单(`endpoints/trading.py`)。
   - `cleaner`:**多清洗服务网关**——注册/健康/QoS/同步多个 data-cleaner 实例(`endpoints/cleaner.py` + `services/cleaner_gateway.py`)。
   - `factor_library`:聚合因子底册,源自本地 `factor_registry` 表(`endpoints/factor_library.py`)。
@@ -68,9 +104,93 @@ A 股量化平台,**前端 → 主后端(网关/交易中心)→ 因子引擎(dc
 ### 3.2 清洗流水线(`pipeline/`)
 6 步 Transformer:行情对齐 → 复权 → 去极值/缺失 → 类型校验 → 范围校验 → 结构校验(pandera,缺库降级手工)。逐标的语义(按单标的连续序列)。
 
-### 3.3 复权口径(关键约定)
-- `factor.raw_bars`:`close` 为**全局一致前复权 qfq**,以全历史最新 `adj_factor`(`f_latest`)归一(`scale = f/f_latest`,OHLC 同步),含 `adj_factor`、`hfq_close = close * f_latest/f_first`、`amount`(迁移 002/007/008)。
-- 价格类因子统一用 `adj_*` 列(时序可比);**同日多价比值**(如 `high/close`、`(high-low)/open`)前复权与不复权等价(缩放因子约去)。
+### 3.3 复权口径 —— ✅ 已修复为**前复权 qfq** + ✅ 已补齐**后复权 hfq**(2026-09-06)
+
+> ✅ **2026-09-06 更新**:R1a 已全量执行完毕,`factor.raw_bars` 现为**前复权 qfq**。
+> 全库除权假跳空由 **2,000 条 / 1,360 只** 降至 **0 条**。
+> 历史问题与定性证据保留在下方的「定性证据」小节,供回溯。
+> ⚠️ **qfq 以最新日为锚会漂移** —— 本表需**定期重拉**(见 §6.1 R1a)。
+>
+> ✅ **`hfq_close` 已补齐(R1b)**:覆盖 **5,555/5,555 (100%)**、**6,123,959 行**,
+> 由 `backfill_hfq.py` 用 akshare 全历史后复权序列写入(`adj_factor` 仍为 NULL ——
+> 各源均拿不到复权因子,详见 §6.3)。清洗层派生 `hfq_*` 四列供时序因子/回测使用。
+> ⚠️ **`adj_factor` 仍全 NULL**,勿依赖该列。
+
+**设计意图**:`close` 为全局一致前复权 qfq(最新 `adj_factor` 归一,`scale = f/f_latest`,OHLC 同步),含 `adj_factor`、`hfq_close`。
+
+**修复前的情况:不成立。**
+
+#### 定性证据
+
+| # | 证据 | 位置 |
+|---|---|---|
+| 1 | pandadata 回补**未传 `adjust`**,默认 `None` → `get_stock_daily`(**不复权**) | `backfill_history_pandadata.py:85` `src.fetch_daily(symbols, start, end)`;`pandadata_source.py:30` `_ADJUST_METHOD` |
+| 2 | pandadata 输出列 **不含** `adj_factor`/`hfq_close`,写库必然 NULL | `pandadata_source.py:39 COLS`(其占全表 **96%**,5,854,827 行) |
+| 3 | `adj_factor` / `hfq_close` **全表 NULL**(有值标的 0/5555) | 实测 |
+| 4 | 清洗流水线**直接透传**:`adj_close = close`,不做任何复权 | `pipeline/adjust.py:28` |
+| 5 | **决定性**:存在 **2,000 条单日跌幅超出板块跌停幅度**的记录,涉及 **1,360 只标的** | 实测 |
+
+> **判据(两版,第二版为准确值)**:
+> - ~~v1:单日跌幅 < -21%~~ → 2,126 条。**高估**,把新股上市前 5 日的真实暴跌算进来了。
+> - **v2(采用)**:① 分板块阈值 主板 ±10% / 创业板·科创板 ±20% / 北交所 ±30%;
+>   ② **排除上市前 5 个交易日**(科创板、创业板新股上市前 5 日无涨跌幅限制,
+>   北交所上市首日无限制,那段暴跌是真实炒作崩盘)。→ **2,000 条 / 1,360 只**。
+>
+> 典型案例:`002594.SZ`(比亚迪)2025-07-29 **337.00 → 111.42,-66.94%**。
+> 该股 2025 年 10 送 8 转 12 派 39.74:`(337 - 3.974) / 3 = 111.01`,与实测 111.42 吻合 → **确为除权跳空**。
+
+#### 影响面
+
+- 假跳空 **2,000 条 / 1,360 只标的**,区间 2021-10-20 ~ 2026-09-01;
+  逐年 2022:491 / 2023:510 / 2024:360 / 2025:285 / 2026:346 —— **每年都在发生**。
+  其中非北交所 **1,933 条 / 1,299 只**、北交所 **67 条 / 61 只**。
+- **不止回测**:`adj_close = close` 透传,意味着**所有价格类因子**(动量/波动/技术/情绪)都在用不复权价 → 因子值与因子效能(IC/IR)同步失真。
+
+#### 为什么一直没被发现(隐蔽性)
+
+前复权以**最新日**为锚,故近期 `qfq ≈ 不复权`,两者在序列尾部几乎一致:
+
+```
+000001.SZ  2026-09-01  11.92  [pandadata 不复权]
+           2026-09-02  11.91  [alphafeed 前复权]   ← 变动 -0.08%,看不出问题
+```
+
+差异随回溯时间累积。抽查尾部序列**发现不了**问题,必须查历史除权日。
+另:增量流水线用 **alphafeed(前复权**,`daily_pipeline.py:44`),2,550 只标的的序列里
+前 1,191 天不复权 + 最近 2 天前复权 —— **同一序列两种口径**,但因锚点效应近期无跳变。
+
+#### 各源口径(R1a 重拉前实测 —— 留存以说明问题是怎么发生的)
+
+| source | 行数 | 标的 | 区间 | 复权 |
+|---|---|---|---|---|
+| pandadata | 5,854,827 | 5,214 | 2021-10-08 ~ 2026-09-01 | **不复权**(回补未传 adjust) |
+| akshare | 252,436 | 339 | 同上 | 不复权(`adjust=''`) |
+| tushare | 5,549 | 5,549 | 2026-09-03 | qfq,但 `adj_factor` 拉取失败则**降级不复权** |
+| alphafeed | 3,222 | 2,583 | 2026-03-25 ~ 2026-09-04 | **前复权**(`adjust="forward"`) |
+| tushare-backfill | 2,996 | 2,996 | 2026-09-02 | 同 tushare |
+
+#### 增量源变更(R1c, 2026-09-06)
+
+**默认源由 alphafeed 改为 pandadata。** 原因:alphafeed 长期限频,实际覆盖极差 ——
+重拉前库里 alphafeed 仅 3,650 行,按日期折算**只覆盖约 33 只标的**(全市场 5,555),
+每日增量形同虚设。实测 8 只主流标的 7 只返回 429(retry_after 246ms ~ 25.5s)。
+
+| 源 | 全市场日线可用性 | 结论 |
+|---|---|---|
+| **pandadata** | **5,214 只单日约 23s**(实测 400 只 × 4 天 1.8s) | ✅ **主力源** |
+| akshare | 约 1.2s/只,全市场串行 ~111 min | ✅ 北交所唯一源 + 复权备用 |
+| alphafeed | 429 限频,实际覆盖 ~33 只 | ❌ 不再作为默认 |
+| tushare | `adj_factor` 限频 **1 次/分钟** → 5,555 只需 90+ 小时 | ❌ 仅留作基本面取数 |
+
+- `backfill_symbol()` 内置路由:`source="pandadata"` 且标的为 `.BJ` 时**自动切 akshare**
+  (pandadata SDK 明确不支持北交所,报「后缀必须为SH或SZ」)。
+- `PandadataSource.fetch()` **默认 `adjust="pre"`**(前复权)。R1a 的教训:批量接口
+  `fetch_daily` 默认 `None`(不复权),漏传就写出 585 万行脏数据。单标的路径必须默认复权。
+
+⚠️ **源间口径差异(已知,未解决)**:同日同标的 pandadata 与 akshare 的 qfq 收盘价存在偏差
+(实测 600519.SH 2026-09-04:pandadata 1299.56 vs akshare 1330.00,**差 2.3%**;
+000001.SZ:11.92 vs 11.89,差 0.25%)。因北交所走 akshare、沪深走 pandadata,
+跨市场横截面比较时可能存在口径差。北交所仅占 341/5,555(6%),暂可接受。
 
 ### 3.4 因子系统(`factors/`)
 - 内置因子:继承 `Factor`(`factors/base.py`)+ `@register`(`registry.py`),按 `category` 归类,`compute(df)` 内 `groupby("symbol")` 计算;模块:momentum/volatility/technical/sentiment/liquidity/size/fundamental(value/growth)/intraday。
@@ -83,7 +203,21 @@ A 股量化平台,**前端 → 主后端(网关/交易中心)→ 因子引擎(dc
 `{FACTOR_DATA_DIR}/{category}/{YYYY-MM-DD}.parquet`,**index=symbol、列=因子代码**;各类别同日 index 一致,可按 symbol 对齐做相关性/回测。支持 `--symbols/--start/--end/--category` 局部或全量重建。
 
 ### 3.6 因子选股/回测引擎(`strategy/`)
-与 backend 旧版回测**两套独立实现**。配置存 `factor_strategy.config`(JSONB);过滤字段 `exclude_st/min_list_days/exclude_suspended/exclude_limit_up/exclude_limit_down/min_cap`。dc 暴露 `POST /strategy/scores`(目标持仓)、`/raw/latest-prices`(行情中继);**调仓调度在 backend**。
+配置存 `factor_strategy.config`(JSONB);过滤字段 `exclude_st/min_list_days/exclude_suspended/exclude_limit_up/exclude_limit_down/min_cap`。dc 暴露 `POST /strategy/scores`(目标持仓)、`/raw/latest-prices`(行情中继);**调仓调度在 backend**。
+
+**回测接口(现役)**:
+
+| 接口 | 实现 | 返回 |
+|---|---|---|
+| `POST /api/v1/strategy/strategies/{sid}/backtest` | `api/v1/strategy.py:114` → `engine.run_backtest` | `{backtest_id, metrics, nav[], rebalances[], warnings[]}` |
+| `GET /api/v1/strategy/strategies/{sid}/backtests` | `:141` | 回测历史 |
+| `GET /api/v1/strategy/strategies/{sid}/backtests/{bid}` | `:146` | 单次详情(`nav`/`rebalances` 落库,可复现) |
+
+`run_backtest` 已具备 backend 那套没有的东西:涨跌停面板(`limit_up_ts`/`limit_down_ts`)、停牌掩码(缺 bar ∪ `trading_status.suspended`)、行业中性化、换手率、warnings 链。
+
+**能力缺口**:要求 `factor_codes ≥ 1`(`engine.py:686`),**不接单标的脚本策略**。这正是 backend 那套要迁过来的位置——见 §0。
+
+backend 侧已有一一对应的转发桩:`backend/app/services/factor_strategy_proxy.py:107 backtest()`。
 
 ### 3.7 dc 调度(`tasks/scheduler.py`,APScheduler,Asia/Shanghai)
 | 任务 | 触发 | 说明 |
@@ -105,6 +239,30 @@ A 股量化平台,**前端 → 主后端(网关/交易中心)→ 因子引擎(dc
 ### 3.9 dc 存储与可观测
 Parquet 分区落地(类别/日期);失败输入快照 `data/quarantine/`;结构化 JSON 日志;`/api/v1/metrics`(Prometheus 风格);Redis 热因子缓存(不可用自动降级)。
 
+### 3.10 数据家底(2026-09-06 实测)
+
+`SELECT` 直查 `factor.raw_bars`:
+
+| 项 | 值 |
+|---|---|
+| 总行数 | **6,118,948** |
+| 标的数 | **5,555** |
+| 日期范围 | **2021-10-08 ~ 2026-09-04** |
+| 来源分布 | pandadata 5,854,827 / akshare 252,436 / tushare 5,549 / alphafeed 3,140 / tushare-backfill 2,996 |
+| `adj_factor` 非 NULL | **0**(见 §3.3 警告) |
+
+**取数接口(回测迁移直接用这两个)**:
+
+| 接口 | 位置 | 用途 |
+|---|---|---|
+| `repository.load(symbol, start, end)` | `storage/raw_store.py:376` | 单标的区间行情,PG 优先、parquet 兜底;返回 `symbol/timestamp/OHLCV/source/freq/adj_factor/hfq_close/amount` |
+| `repository.load_all(start, end, symbols, freq)` | `storage/raw_store.py:269` | 全市场区间行情,**单条 SQL**(避免 5555 只逐条查) |
+| `load_price_panel(start, end)` | `strategy/engine.py:100` | 价格面板 + 停牌掩码,因子回测在用 |
+
+HTTP 侧对应 `GET /api/v1/raw/{symbol}`(受 X-API-Key 保护)。
+
+> 注意:`load()` 返回 `timestamp` 为**朴素北京时间**(内部做 `tz_convert('Asia/Shanghai').tz_localize(None)`),回测索引可直接用,不要再转一次时区。
+
 ---
 
 ## 4. 前端(`frontend/`)
@@ -116,26 +274,568 @@ Vue3 + Vben Admin + Element Plus;量化模块 `views/quant/*`(策略管理/编�
 ## 5. 端到端数据流
 
 ```
-行情/财务源(alphafeed/tushare/…)
-  → dc.ingestion 拉取(qfq 归一化)→ factor.raw_bars
+行情/财务源(alphafeed/tushare/pandadata/akshare…)
+  → dc.ingestion 拉取(qfq 归一化)→ factor.raw_bars[§3.10:611 万行/5555 只]
   → dc.pipeline 6 步清洗
   → dc.factors 计算(内置+自定义)→ Parquet 横截面 + factor.metrics
   → backend.factor_library 聚合(经 cleaner 网关同步 dc 因子口径)
   → 用户配置 factor_strategy → backend 转发 dc /strategy/scores
   → backend.rebalance_service 调仓 → broker(simulated/mx)下单
   → 前端展示(因子底册/策略/回测/持仓)
+
+回测(§0:一律在 dc)
+  前端 → backend 网关 → dc
+    ├ 因子选股:POST /api/v1/strategy/strategies/{sid}/backtest → engine.run_backtest [现役]
+    └ 脚本策略:POST /api/v1/backtest/script → 待建 [R2/R3]
+                     ↓ 数据源均为 repository.load()/load_all() ← factor.raw_bars(A 股)
 ```
 
 ---
 
 ## 6. 关键约定速查
 
-- 端口:`8000` backend / `8100` dc / `5777` 前端;两库 `quant_db`(:5432)/ `factor_db`(:5433)。
-- 复权:`raw_bars.close` = 全局一致 qfq(最新 `adj_factor` 归一);时序因子用 `adj_*`;同日价比值与不复权等价。
+- 端口:`8000` backend / `8100` dc / `5777` 前端。
+- 库:**docker 部署** `quant_db`(:5432)/ `factor_db`(:5433) 两实例;**本地 .env** 两边都指向 `127.0.0.1:5432/quant`(同一实例,`factor` schema)——本地可互通,**但架构上禁止 backend 直连 factor 表,必须走 dc HTTP**。
+- 复权:`raw_bars.close` 名义为全局一致 qfq,但**当前 `adj_factor` 全 NULL,口径待确认**(§3.3)。
 - 因子横截面:`{FACTOR_DATA_DIR}/{category}/{date}.parquet`,index=symbol,列=因子代码。
 - 新增因子:Factor 类+@register,或 formula 入 `factor.definitions`。
 - 调仓在 backend;dc 只做"算持仓"与"行情中继"。
+- **回测在 dc**(§0):引擎(§6.4)+ 接口(§6.5)+ 前端(§6.6)+ 旧引擎退役(§6.7)**全部落地**;backend 的 `quant/backtest` **只剩转发与策略归属鉴权**,不在其侧演进。
+- **回测状态码**:dc `422` = 这个回测不成立(`detail = {reason, remedy}`),backend 原样透传;`502` = dc 不可用。**不要把 422 包成 500** —— 用户会去翻根本没有错误的日志。
 - 部署:根 `docker-compose.yml`(postgres/postgres-factor/backend/redis/data-cleaner)。
+
+---
+
+## 6.1 回测迁移待办(§0 落地)
+
+| ID | 事项 | 说明 |
+|---|---|---|
+| ~~**R1**~~ | **定复权口径** | ✅ **已定性**:原 `close` 为**不复权价**,2,000 条假跳空 / 1,360 只标的(详见 §3.3) |
+| ~~**R1a**~~ | 重拉前复权(止血) | ✅ **2026-09-06 全量执行完毕**(见 §6.2)。假跳空 **2,000 → 0**。⚠️ **qfq 以最新为锚会漂移** ⇒ **必须把「定期重拉」写进 dc 调度**,漂移原理见 §6.3 |
+| ~~**R1b**~~ | 补 `hfq_close`,回测/时序因子切 hfq | ✅ **2026-09-06 完成**(见 §6.3):**覆盖 5,555/5,555 (100%)**,终检全通过。回测宜用 hfq(锚最早日,历史值永不改变 ⇒ 增量即可)。⚠️ 但**估值因子仍读 qfq** ⇒ 「定期重拉」**仍须保留**,见 §6.3 连带结论 |
+| ~~**R1c**~~ | 增量源与 tushare 静默降级 | ✅ **2026-09-06 完成**(见 §6.3):① tushare 拿不到 `adj_factor` **改为抛错**,不再静默写不复权;② 默认增量源 alphafeed → **pandadata**(alphafeed 限频只覆盖 ~33 只);③ 北交所自动路由 akshare |
+| **R2** | ✅ dc 新增脚本策略回测引擎 | **2026-09-06 完成**(见 §6.4):落位 `data-cleaner/app/backtest/`(7 模块),复用 backend 已修的撮合 + 闸口 + 市场规则,数据源直接 `repository.load()`。**84 项测试全通过** + 4 只真实标的冒烟(qfq/hfq 结果一致) |
+| **R3** | ✅ dc 暴露 `POST /api/v1/backtest/script` | **2026-09-06 完成**(见 §6.5):dc 新增 `app/api/v1/backtest.py`(`/script` + `/styles`,受 X-API-Key 保护);backend 新增 `script_backtest_proxy.py`,`/backtest` 改为转发 + 新增 `/backtest/styles`。**422 语义端到端透传** |
+| **R4** | ✅ 前端回测页改指新链路 | **2026-09-06 完成**(见 §6.6):`quant/backtest/index.vue` 去掉 yahoo/crypto 数据源选单 → 改为**复权口径**选单;口径表改从 `/quant/backtest/styles` 拉(服务端 `gate.py` 为准,拉不到才用内置副本并明示);新增 `data` 元信息条与 `final_position` / `cash` 展示;涨跌配色统一为 **A 股红涨绿跌** |
+| **R5** | ✅ backend 旧引擎退役 | **2026-09-07 完成**(见 §6.7):删 `backtest_engine.py` / `backtest_gate.py` / `market_rules.py` / `performance_analyzer.py` / `technical_indicators.py` 五个死模块;`StrategyValidator` → `strategy_validator.py`、`DataManager` → `market_data.py`(均有活调用者)。**R1–R5 全部收口** |
+
+---
+
+## 6.2 R1a 全量执行记录(2026-09-06 晚,已完成)
+
+### 代码改动(2 行)
+
+| 文件 | 行 | 改动 |
+|---|---|---|
+| `data-cleaner/backfill_history_pandadata.py` | `:85` | `fetch_daily(symbols, start, end)` → `..., adjust="pre")` |
+| 同上 | `:130` | `ak.stock_zh_a_daily(..., adjust='')` → `adjust='qfq'` |
+
+docstring 同步补记复权口径、qfq 漂移需定期重跑、R1b 根治方向。
+
+### 执行结果
+
+| 环节 | 结果 |
+|---|---|
+| 试跑(先内存验证再写库) | 23 只:跳空归零 20/20 + 3/3(BJ);写库 25,761 行后复查 0 条 |
+| pandadata SH/SZ | 5,215 只 / **5,870,472 行** / 27 批 / **506s** / **失败 0** |
+| akshare BJ | 340 只 / **253,450 行** / **886s** / **fail 0** |
+| 全量合计 | **23m 17s**(估算 29~34 min 含因子重建,实际重拉段 23 min) |
+| **终检** | 全库假跳空 **0 条 / 0 只**(原 2,000 条 / 1,360 只) |
+| **因子库重建** | 5,555 只(`symbols_ok` 5,555 / error 0)/ 41 因子(`factors_failed` 0)/ 1,281 日期 / 11,529 文件 / **59,149,161 行** / **981.9s** |
+
+> 因子重建比历史基线(659.3s)慢 49%,原因未深究,疑为首次写入后 parquet 文件数增加。
+> 全部价格类因子(动量/波动/技术/情绪)**此前均建立在错误的不复权价上**,本次重建后才可信。
+
+### 残留与处理
+
+- `301237.SZ` 2026-09-01 `-29.02%`(10送4,比例 0.71):**pandadata 未及时同步该次除权**,
+  qfq 未抹平。已用 akshare `sz301237 adjust='qfq'` 单独补齐 1,082 行 → 归零。
+  ⇒ 新近除权标的存在**源端延迟**,建议把「重拉后残留检测」做成常规巡检。
+- `689009.SH`(九号公司,CDR)**是判据误报**:科创板代码含 `689` 前缀,
+  原判据只写 `688%` 致其按主板 ±10% 判定。-19.15% / -15.41% 均在科创板 ±20% 内,属真实波动。
+  **已修正**:板块判定改为 `30%` / `688%` / `689%` → ±20%。
+
+### 复用脚本(`data-cleaner/`)
+
+| 脚本 | 用途 |
+|---|---|
+| `_r1a_verify.py` | **全库假跳空统计**(分板块阈值 + 排除上市前 5 行),`--top N` 列最严重,`--since DATE` 限定区间 |
+| `_r1a_patch_symbol.py` | 单只标的用 akshare 补前复权并复查(如 `_r1a_patch_symbol.py 301237.SZ`) |
+| `_r1a_trial.py` | 试跑:先内存验证、通过才写库(`--write`) |
+| `_r1a_probe.py` / `_r1a_diag.py` | 单标的两种口径比对 / 逐日比值诊断 |
+| `_r1a_timing_probe.py` | 取数 vs 写库耗时拆分(写库占 78%) |
+| `_r1a_drift_probe.py` | qfq 漂移实证 |
+
+---
+
+脚本 `data-cleaner/_r1a_probe.py`(自动从库挑真除权案例,逐只比对两种口径)、`_r1a_diag.py`(逐日比值诊断)。
+
+| 标的 | 除权日 | 不复权 | 前复权 | 结论 |
+|---|---|---|---|---|
+| 002594.SZ 比亚迪 | 2025-07-29 | **-66.94%** | 最大跌幅 -10.00% | ✅ 抹平 |
+| 600734.SH | 2022-02-15 | **-54.90%** | 最大跌幅 -10.10% | ✅ 抹平 |
+| 301077.SZ | 2022-05-25 | **-54.69%** | 最大跌幅 -16.47% | ✅ 抹平 |
+| 920808.BJ(北交所) | 2023-05-31 | **-63.16%** | -7.31% | ✅ 抹平(走 akshare) |
+
+**两条结论**:
+
+1. **SH/SZ 全部生效**(3/3)。`adjust='pre'` 下最新日与不复权**完全一致**(锚点效应),
+   历史值按除权因子下调 —— 比亚迪历史首日 192.60 → 62.44(比例 0.3242,即 10送8转12 的 1/3)。
+2. **北交所 pandadata 不支持**:`ServiceError 100002 后缀必须为SH或SZ`。
+   库里 340 只北交所标的(25.3 万行)**全部来自 akshare**,需走 `ak.stock_zh_a_daily(symbol='bj'+code, adjust='qfq')`
+   —— 已验证生效(920808.BJ: 184.60→68.00 的 -63.16% 在 qfq 下变为 73.06→67.72 的 -7.31%)。
+
+**放全量时的分路方案**:
+
+| 板块 | 标的 | 数据源 | 改法 |
+|---|---|---|---|
+| SH / SZ | 5,214 只 | pandadata | `backfill_history_pandadata.py:85` 传 `adjust="pre"` |
+| BJ | 340 只 | akshare | `backfill_history_pandadata.py:130` 的 `adjust=''` → `adjust='qfq'` |
+
+> ⚠️ 第一版判据把「新股上市前 5 日暴跌」误判成除权(如 688615.SH 10-09 -49.97%、
+> 603395.SH 11-27 -49.69%,均为科创板新股上市前5日无涨跌幅限制期的真实崩盘)。
+> 修正后影响面由 2,126 条降为 **2,000 条**。此类**真实波动不应被"修复"**,全量重拉后仍会存在,属正常。
+
+#### R1a 全量耗时估算(2026-09-06,实测外推)
+
+**纯机器时间约 29~34 分钟**(含试跑与校验约 35~45 分钟)。脚本 `data-cleaner/_r1a_timing_probe.py`。
+
+| 环节 | 耗时 | 依据 |
+|---|---|---|
+| pandadata SH/SZ 5,214 只 | **~7 min** | 实测 400 只:取数 7.1s + upsert 25.6s = 32.8s → 0.082s/只 外推 |
+| akshare BJ 340 只 | **10~15 min** | 历史 473s(不复权) × 1.51(前复权系数,6 只实测) |
+| 因子重建 5,555 只 | **~11 min** | `data/factor_build.log` 实测 `duration_s: 659.3` |
+| 因子评估 | **~0.5 min** | `factor_evaluate.log` 实测 28.7s |
+
+**两个反直觉的实测发现**:
+
+1. **写库占 78%,取数只占 22%** —— 历史日志 200 只 16s 里取数仅约 3.8s。
+   ⇒ 优化方向是 `bulk_upsert`(批量/commit 策略),**不是**并发取数。
+2. **重拉(UPDATE 已存在行)仅比首次(INSERT)慢 14%** —— 外推 7.1 min vs 历史 373s,倍率 1.14x。
+   PG 的 ON CONFLICT DO UPDATE 惩罚小于预期,不值得为此改方案。
+
+前复权对源端影响:pandadata 400 只 7.6s→7.8s(几乎无差);akshare 6 只 10.9s→15.4s(约 1.5x)。
+
+**无需单独重跑清洗**:`app/pipeline/adjust.py` 是**纯内存 DataFrame 变换**
+(`df["adj_close"] = df["close"]`),`runner.py:35 run(df) -> (df, dict)` 不落库
+⇒ 不存在"清洗中间表",重拉 raw_bars 后**直接重建因子**即可拿到新口径。
+
+**历史基线**(可复用于后续估算,`data/backfill_history.log` 2026-09-02):
+pandadata 5,214 只 / 5,854,827 行 / 不复权 **373s**(27 批 × 200);
+akshare BJ 339 只 / 252,431 行 / 新浪源 **473s**(含 0.35s/只节流)。
+⚠️ BJ 首次用东财源 **339 只全失败**(ProxyError),改新浪 `bj` 前缀后才成功 —— **BJ 是主要风险点**。
+
+**执行注意**:务必挑非交易时段。重拉 + 重建期间 `factor.metrics` 与全部因子值都会变,
+下游调仓调度会读到中间态。
+
+#### 为什么必须全量跑?增量盘后脚本错没错?(2026-09-06 实测)
+
+**结论:增量脚本「一半对一半错」,但即便全对也救不了 —— 全量重拉不是一次性补账,而是 qfq 语义下的周期性维护。**
+
+**(1) 增量脚本的口径取决于当天用哪个源**
+
+| 日期 | 源 | 行数 | 复权 | 判定 |
+|---|---|---|---|---|
+| 2026-09-04 | alphafeed | 1,053 | qfq(服务端) | ✅ 对 |
+| 2026-09-03 | tushare | 5,549 | **不复权**(降级) | ❌ 错 |
+| 2026-09-02 | tushare-backfill + alphafeed | 2,996 + 2,551 | 混合 | ⚠️ |
+| ≤ 2026-09-01 | pandadata | 5,854,827 | 不复权 | ❌ 错 |
+
+- `daily_pipeline.py:44` 默认 `source="alphafeed"`;`alphafeed_source.py:143` 传 `"adjust": "forward"`
+  → **close 由服务端前复权,不依赖本地 adj_factor,alphafeed 路径口径正确**。
+- `tushare_source.py:66` 用 `adj=None` 拿原始价,靠**本地** `adj_factor` 转 qfq;`:93` 拉取失败即降级
+  → 实测库内 `adj_factor` 各源**全为 0**(含 tushare 5,549 行)→ **tushare 路径实际产出不复权价**。
+
+**(2) 三条理由决定「修好增量」不够,必须全量**
+
+1. **增量只占 0.2%**:alphafeed 3,650 + tushare 8,545 ≈ 1.2 万行 / 全表 611 万行。历史 96% 是 pandadata 不复权。
+2. **增量只写当天,从不重写历史**:每日每标的恰 1 行,且 `raw_bars` **无 `updated_at` 列**
+   (列:symbol/timestamp/OHLC/volume/source/freq/adj_factor/hfq_close/amount)。
+   - 实证 `000990.SZ` 2026-07-30 除权 `9.08 → 6.50`,**至 2026-09-06 仍未修复**;
+     另一标的 07-20 `-15.99%`、07-27 `-21.38%` 两处跳空同样在库。
+     alphafeed 自 2026-03-25 起就在写该标的,**但从不回头改历史**。
+3. **qfq 语义决定必然漂移**:qfq 以**最新日**为锚。标的每次除权 ⇒ 锚前移 ⇒ **该标的全部历史行都要重算**。
+   而增量写完就冻结 ⇒ 历史行自写入起持续腐化,直到下次全量重拉。
+
+**(3) 更优解:回测改用 hfq,可摆脱「定期全量」**
+
+| 口径 | 锚点 | 历史值 | 最新价 | 适用 |
+|---|---|---|---|---|
+| **qfq** | 最新日 | **每次除权都变** → 需定期全量重拉 | 真实(下单用) | 交易/下单 |
+| **hfq** | **最早日** | **永不改变** → **增量即可,不漂移** | 非真实 | **回测/因子** |
+
+回测要的是序列稳定可复现 ⇒ **本应用 hfq,而非 qfq**。
+但当前 `hfq_close` 同样全 NULL —— `alphafeed_source.py:104` 的 ex-factors 端点亦失败
+(注释:「失败仅降级:adj_factor/hfq_close 置空,qfq close 不受影响」)。
+
+→ 这正是 **R1b 的价值**:修好 ex-factors ⇒ 落 `adj_factor` + `hfq_close` ⇒ 回测切 hfq
+⇒ 历史永不漂移 ⇒ **不再需要周期性全量重拉**。
+
+**建议路径**:短期 R1a 全量重拉把历史修对(约 30 分钟,让因子与回测立刻可用);
+中期修 ex-factors 并切 hfq,把「定期全量」这个包袱彻底卸掉。
+
+#### R1 修复:建议 R1a 止血 → R1b 收口
+
+**推荐 A(止血)**:改 `backfill_history_pandadata.py:85` 传 `adjust="pre"` 重拉。
+理由不是它更正确,而是——**在复权口径是错的这个前提下,R2 迁回测过去也没有意义**:
+回测会踩 2,126 个假跳空,因子会继续产出失真值。先把数据源修对,再谈回测。
+
+代价:重拉 585 万行 + 全量重建因子库;且 qfq 会漂移(每次除权后历史价变),需要
+把"定期重拉"写进 dc 调度(参考 §3.7 表)。
+
+**再做 B(收口)**:落 `adj_factor`。回测其实更适合用**后复权 hfq** ——
+hfq 以历史最早日为锚,**不会因新除权而改变历史值**,回测序列稳定可复现;
+qfq 的最新价是真实价(下单用),但历史值会漂。两者都留,各用各的。
+
+**不论选哪条,先加一道防线**:在清洗流水线加「除权跳空检测」——
+单日 |涨跌幅| 超出该板块涨跌停幅度即告警(现有 2,126 条就是这么查出来的)。
+口径再错也不至于静默污染。
+
+### 迁移时的既有资产(2026-09-06 已在 backend 落地,可直接搬)
+
+| 资产 | 位置 | 状态 |
+|---|---|---|
+| 事件撮合 + bar 绑定 | `backend/app/services/backtest_engine.py` | 已修(原用 `Timestamp.now()` 导致零成交) |
+| `on_data` 兼容层 | 同上 | 已修(前端模板策略原本 0 笔交易) |
+| FIFO 配对 / 胜率口径 | 同上 | 已修 |
+| 市场规则表 | `backend/app/services/market_rules.py` | 新建,A股/港股/美股/加密四套 |
+| 回测闸口 Plan/Refusal | `backend/app/services/backtest_gate.py` | 新建,8 用例 6 拦 2 放 |
+| 回归测试 | `backend/tests/` | **80 项全通过**(backend 此前无测试) |
+
+dc 现有回测**已带**涨跌停/停牌/换手率,迁移时与市场规则表合并,避免两套事实来源。
+
+---
+
+## 6.3 R1b / R1c 执行记录(2026-09-06 晚)
+
+### R1b:补 `hfq_close` —— 三个源都拿不到复权因子,只能换路
+
+原计划「修 alphafeed `ex-factors` 端点」**不成立**,实测为**权限问题而非代码问题**:
+
+| 源 | 实测结果 | 判定 |
+|---|---|---|
+| alphafeed | `GET /v1/klines/ex-factors` → **403** `{"message":"No permission for 除权因子查询 (markets: CN)"}` | ❌ 套餐不含,改代码无用 |
+| tushare | `adj_factor` ✅ 可用(茅台 6,000 行,max=8.6463),但**限频 1 次/分钟**(实测甚至 1 次/小时)→ 5,555 只需 **90+ 小时** | ❌ 不可行 |
+| tushare `pro_bar(adj='qfq')` | 内部**同样调 `adj_factor`**,同样撞限频 → `OSError` | ❌ 换参数绕不过 |
+| pandadata | 无复权因子接口 | ❌ 不支持 |
+| **akshare** | `stock_zh_a_daily(adjust='hfq')` 全历史一次返回,SH/SZ/科创/创业/北交 **6/6 通过** | ✅ **采用** |
+
+**关键优化:每只标的只需 1 条 UPDATE。**
+hfq 与 qfq 只差一个**每标的常数** k = f_latest / f_first(实测 600519.SH k=8.8825、
+000001.SZ k=150.7258、920808.BJ k=2.5266,比值 std/mean 仅 0.03%~0.34%),
+故 `UPDATE raw_bars SET hfq_close = close * :k WHERE symbol = :s`,
+**5,555 条 SQL 而非 600 万行逐行写**。k 取重叠日期比值的**中位数**抗源端精度噪声。
+
+脚本 `data-cleaner/backfill_hfq.py`(断点续跑,state 在 `data/backfill_hfq_state.json`):
+
+```bash
+.venv/Scripts/python.exe backfill_hfq.py --limit 20 --dry   # 试跑:只算 k 不写库
+.venv/Scripts/python.exe backfill_hfq.py --workers 6        # 全量
+```
+
+### R1b:两套口径并存,**不能**一刀切把 `adj_close` 换成 hfq
+
+`app/pipeline/adjust.py` 现同时产出两套列:
+
+| 列 | 口径 | 锚点 | 历史值 | 适用 |
+|---|---|---|---|---|
+| `adj_*`(qfq) | 前复权 | 最新日 | **每次除权都变** | **估值类**(PE/PB/股息率) |
+| `hfq_*`(新增) | 后复权 | 最早日 | **永不改变** | **时序类**(动量/波动/技术) |
+
+**为什么不能一刀切**:估值因子 `PE = adj_close / eps_ttm`,eps 是真实价口径。
+分子若换成 hfq(茅台被放大 **150 倍**)会得出荒谬的 PE。
+故 `adj_close` **保持不变**,时序因子要后复权就显式写 `hfq_close`
+(已加入 `factors/formula.py` 的 `_ALLOWED_COLS` 白名单)。
+
+⇒ **现有因子值不受影响,补完 hfq 无需重建因子库**(省约 16 分钟)。
+
+#### ⚠️ 连带结论:有了 hfq,「定期重拉」仍然必要
+
+只要**估值因子仍读 `adj_close`(qfq)**,而 qfq 以最新日为锚会漂移,
+`backfill_history_pandadata.py` 的**周期重跑就还得留着** —— hfq 只让回测与时序因子
+摆脱该包袱,不能整体取消。
+
+**更深的坑(未处理,记档)**:严格说**历史估值本就该用当时真实价**(不复权),
+qfq 历史价并非当时的真实成交价 ⇒ 用 qfq 算出的**历史 PE 其实也不准**。
+但 R1a 已把 pandadata 改为 qfq,**库里现在没有不复权价**了。
+若要修正估值口径,需额外保留一份不复权序列(第三套口径),成本与收益待评估。
+
+### R1b 终检(2026-09-06 20:45)
+
+| 指标 | 结果 |
+|---|---|
+| 标的覆盖 | **5,555 / 5,555 (100.0%)** |
+| 行数覆盖 | **6,123,959 / 6,123,959 (100.0%)** |
+| `hfq_close / close` 比值 | **全部标的恒定**(相对 std < 0.1%) |
+| qfq 假跳空 | **0 条** ✅ |
+| hfq 假跳空 | **0 条** ✅ |
+
+样例 k:`600519.SH 8.8825` / `000001.SZ 150.7258` / `002594.SZ 3.1623` / `920808.BJ 2.5266`。
+
+**耗时**:12 路并发约 0.77s/只,全量 ~66 分钟 + 收尾重跑 80s。
+**失败 1 只**:`689009.SH`(九号公司,科创板 CDR)akshare 新浪源无数据,
+两种复权均 `JSONDecodeError` → 已给 `backfill_hfq.py` 加 **pandadata 兜底**
+(用 `adjust="post"` / `"pre"` 两序列算 k = 1.063715)补齐。
+该兜底对 SH/SZ 通用,北交所仍只能走 akshare。
+
+**无需重建因子库**:`adj_close` 仍等于 `close`(qfq),现有因子值完全不变。
+本次只新增 `hfq_*` 列供时序因子/回测按需选用。
+
+### R1c 改动清单
+
+| 文件 | 改动 |
+|---|---|
+| `app/ingestion/tushare_source.py` | 拿不到 `adj_factor` **改为抛 `IngestionError`**,不再静默写入不复权价。显式开关 `TUSHARE_ALLOW_UNADJUSTED=true` 才放行,且 `source` 标记 `tushare-unadjusted` 便于下游隔离 |
+| `app/ingestion/pandadata_source.py` | 新增 `fetch()` 单标的接口(兼容 registry),**默认 `adjust="pre"`** 前复权;北交所显式报错 |
+| `app/ingestion/akshare_source.py` | **新建**。北交所唯一可用源 + 复权备用源,默认 `adjust='qfq'` |
+| `app/ingestion/registry.py` | 注册 `pandadata` / `akshare` |
+| `app/tasks/backfill.py:59` | `source="pandadata"` 且标的为 `.BJ` 时**自动路由 akshare** |
+| 默认源 alphafeed → **pandadata** | `backfill.py:107/196`、`daily_pipeline.py:44`、`scheduler.py:29/64`、`api/v1/raw.py:70`、`run_daily_pipeline.py:30` |
+| `tests/test_adjust_hfq.py` | **新建,12 项全通过** |
+
+**为什么换源**:alphafeed 长期限频 —— 重拉前库里仅 3,650 行,按日期折算**只覆盖约 33 只标的**;
+实测 8 只主流标的 7 只 429(retry_after 246ms ~ 25.5s)。
+pandadata 实测 **5,214 只单日约 23s**。
+
+---
+
+## 6.4 R2 执行记录:脚本策略回测引擎落 dc(2026-09-06 夜)
+
+### 落位与模块
+
+`data-cleaner/app/backtest/`(新建,7 个文件):
+
+| 文件 | 职责 | 来源 |
+|---|---|---|
+| `market_rules.py` | 市场规则表(A 股 T+1 / 整手 100 / 涨跌停 / 费率) | 迁移 backend,**只保留 A 股** |
+| `gate.py` | 闸口:只输出 Plan 或 Refusal | 迁移 + 两段式改造 |
+| `data.py` | 取数 + 复权口径(qfq / hfq) | **新建**(dc 特有) |
+| `indicators.py` | DataEnricher,给策略执行环境挂常用指标 | 迁移 |
+| `validator.py` | 策略代码 AST 校验 | 迁移 |
+| `engine.py` | 两遍执行 + 逐 bar 撮合 | 迁移 + 停牌拒单 |
+| `service.py` | 编排入口(校验→闸口→取数→复核→撮合→指标) | **新建** |
+
+### 相对 backend 的四处改动(都是「迁过来必须改」的,不是顺手改的)
+
+| # | 改动 | 为什么 |
+|---|---|---|
+| 1 | **只留 A 股规则** | dc 只有 `factor.raw_bars`(A 股)。留着港股/美股/加密规则 = 宣称一个这里拿不到数据的能力,闸口的诚实性会打折。非 A 股代码 → 明确 Refusal「dc 只有 A 股行情」 |
+| 2 | **新增 `normalize_symbol`** | 库里 5,555 只全带后缀,`600519` 必须补成 `600519.SH` 才能查库 |
+| 3 | **闸口分两段** | 日期区间只能粗估交易日;取到数后用**真实 bar 数**复核(`check_sample`)。长期停牌/次新股能让实际 bar 数远少于日历天数 |
+| 4 | **撮合加停牌拒单** | dc 有停牌语义:``volume <= 0`` 的 bar 买不进也卖不出。backend 版没有这条,会在停牌日照样撮合 |
+
+### 复权口径:默认 qfq,hfq 可选 —— 以及一个实测踩到的坑
+
+| 口径 | 序列 | 优点 | 代价 |
+|---|---|---|---|
+| **qfq**(默认) | `raw_bars.close` | 名义价即真实价 ⇒ **整手 / 最低佣金 / 涨跌停判定全对** | 锚在最新日,除权后历史值会变 ⇒ 跨时间跑结果会漂 |
+| **hfq** | `hfq_close` 反推 | 锚在最早日 ⇒ **历史值永不改变,结果可复现** | 名义价非真实价 |
+
+**坑**:k = hfq/qfq 是每标的常数(茅台 8.88、平安银行 150.7)。
+只把 OHLC ×k 而**本金不跟着放大**,茅台 100 万本金在名义价 12,400 下**一手都买不起** ——
+实测 hfq 模式 **13 笔买单全部因「不足最小交易单位」被拒,成交 0 笔**。
+
+**解法**:名义价 + **名义本金(= 真实本金 × k)** ⇒ 与真实价 + 真实本金**购买力完全等价**,
+整手判定一致;输出时再把金额类字段 ÷k 还原成真实价(比率类指标等比缩放下不变)。
+仅「佣金最低 5 元」这类**绝对阈值**在名义体系下等价于 5/k 元(量级可忽略)。
+
+⇒ 已加回归测试锁死:同一标的 qfq 与 hfq 的**总收益、成交笔数、期末金额必须一致**。
+
+### 与 backend 同步的一处修复
+
+`_buy` 里「资金不足」原本**静默 return**(信号直接消失),与闸口「被挡下的信号必须说出来」的原则相悖。
+改为记一笔信号、由第二遍明确拒单(与「不足一手」同一处理方式)。
+**backend 侧同段代码已同步修改**,`backend/tests/` 80 项仍全通过。
+
+### 验收
+
+| 项 | 结果 |
+|---|---|
+| `tests/test_backtest_script.py` | **新建,84 项全通过**(0.67s,不连库) |
+| `backend/tests/`(回归验证) | **80 项仍全通过** |
+| 真实数据冒烟(`_r2_smoke.py`) | 4 只标的 × 2 口径全通 |
+
+| 标的 | 板块 | bars | 总收益 | 成交 | qfq ≡ hfq |
+|---|---|---|---|---|---|
+| 600519.SH | 主板 | 1,194 | -15.41% | 25 笔 | ✅ |
+| 000001.SZ | 主板 | 1,194 | -10.58% | 29 笔 | ✅ |
+| 300750.SZ | 创业板 | 1,194 | +79.56% | 22 笔 | ✅ |
+| 920808.BJ | 北交所 | 912 | +223.55% | 18 笔 | ✅ |
+| 689009.SH | 科创板 CDR | 1,194 | -44.70% | 27 笔 | ✅ |
+
+复用脚本:`data-cleaner/_r2_smoke.py [symbol] [start] [end]`(默认 600519.SH,同时跑两种口径)。
+
+### 遗留
+
+- 策略代码在 dc 进程内 `exec`,AST 校验只挡误伤级错误,**不是沙箱**。
+  dc 只应对内暴露;真要做租户隔离需另起子进程。
+- 撮合仍是「信号当根 bar 收盘价成交」,**未计滑点与冲击成本**(已在 warnings 声明)。
+- 涨跌停用前收 ± 板块幅度推算,与因子选股回测的 `trading_status.limit_up` 精度不同
+  (结论一致,均写进 warnings)。
+
+---
+
+## 6.5 R3 执行记录:dc 暴露接口 + backend 转发(2026-09-06 夜)
+
+### dc 侧(新增 `app/api/v1/backtest.py`,受 X-API-Key 保护)
+
+| 端点 | 用途 |
+|---|---|
+| `POST /api/v1/backtest/script` | 跑一次脚本策略回测,返回 service 的完整结果 |
+| `GET /api/v1/backtest/styles` | 口径表(style / price_field / 最少 bar 数 / 取舍说明) |
+
+- 计算是同步阻塞的(读 PG + 逐 bar 撮合)⇒ 丢 `run_in_executor`,不堵事件循环。
+- **口径表来自 `gate.py`,不在 API 里另抄一份** —— 前端下拉与闸口必须是同一份事实,
+  抄一份迟早对不上(闸口说要 240 根、下拉却允许 60 根)。
+
+### backend 侧
+
+| 改动 | 说明 |
+|---|---|
+| `app/services/script_backtest_proxy.py`(新) | 转发层。只多做一个判断:**422 原样透传** |
+| `api/v1/endpoints/quant.py` `/backtest` | 改为转发;本地只做鉴权(策略归属)+ 落历史 |
+| 同上 `/backtest/styles`(新) | 转发 dc 口径表 |
+| `schemas/quant.py` | `BacktestRequest` 加 `price_field`(`data_source` 标注废弃);`BacktestResult` 加 `final_position` / `cash` / `data` |
+| `factor_strategy_proxy.py` | `FactorStrategyProxyError` 加 `status_code` / `detail`;`_request` 加 `timeout`(回测给 60s) |
+
+**为什么 422 必须透传**:dc 的 422 是「这个回测不成立」(闸口拦下 / 没数据),
+detail 是 `{"reason", "remedy"}` —— 前端要靠它展示「为什么跑不了 + 怎么改」。
+包成「回测服务不可用」的话,用户只会以为服务挂了,去翻根本没有错误的日志。
+
+### 顺带清理(改 endpoint 时发现的)
+
+- `PerformanceAnalyzer(...).comprehensive_analysis()` 的返回值**从未被使用**(纯死调用)→ 删除。
+- 回测历史落库失败原本让整个请求 500 —— 计算跑了几十秒,最后只因写历史失败全丢。
+  改为记进 `warnings` 并正常返回。
+
+### 验收
+
+| 项 | 结果 |
+|---|---|
+| `data-cleaner/tests/test_backtest_api.py` | **新建,8 项全通过**(路由 / 默认值 / 422 / 500) |
+| `backend/tests/test_script_backtest_proxy.py` | **新建,8 项全通过**(422 透传 / 5xx / 连不上 / 退化) |
+| `backend/tests/` 全量 | **88 项通过**(80 原有 + 8 新增) |
+| `_r3_smoke.py`(TestClient + 真库) | 200 / 422 语义全对 |
+
+真实 HTTP + 真库冒烟:`600519.SH` 2021-10-08~2026-09-04 → **200**,1,194 bars,
+-15.41% / 25 笔 / 费用 10,757.95;非 A 股、本金太小、区间无数据 → 均 **422** 且带 remedy。
+
+> backend 未装 pytest-asyncio,新测试用 `asyncio.run` 驱动,不为此新增依赖。
+
+---
+
+## 6.6 R4 前端切流执行记录(2026-09-06 夜,已完成)
+
+### 改了什么
+
+| 文件 | 改动 |
+|---|---|
+| `frontend/apps/web-ele/src/api/quant.ts` | 删 `DATA_SOURCES`(yahoo/crypto —— dc 只有 A 股);`BACKTEST_STYLES` 字段名对齐 dc(`value`→`key`、`minBars`→`min_bars`、`hint`→`why_min`,新增 `holding`);新增 `PRICE_FIELDS` / `BacktestDataMeta` / `BacktestStyleCatalog` / `getBacktestStylesApi()`;`BacktestRequest` 加 `price_field`、去 `data_source`;`BacktestResult` 加 `final_position` / `cash` / `data` |
+| `frontend/apps/web-ele/src/views/quant/backtest/index.vue` | 数据源选单 → **复权口径**选单(qfq/hfq);默认标的 `AAPL` → **`600519.SH`**;口径表 `onMounted` 从服务端拉,按 `styles` / `price_fields` / `symbol_hints` 回填;新增数据元信息条(bar 数 / 口径 / 区间 / hfq 系数 k);指标卡加**累计费用 / 期末持仓 / 可用现金**并说明「期末价值 = 现金 + 持仓市值」;涨跌配色统一 **红涨绿跌** |
+
+### 三个判断
+
+1. **口径表认服务端那一份,静态表只做兜底。**
+   闸口认哪些值、每个口径最少要多少根 bar,事实来源在 dc 的 `gate.py`。
+   前端另抄一份静态表,迟早出现「闸口要 240 根、下拉却允许 60 根」的错位。
+   所以改成运行时拉取;**拉不到时退回内置副本,但页面上要明说「这不是服务端那份」**
+   —— 静默兜底等于用一份可能过期的规则去跑,却让人以为是最新的。
+
+2. **「-15.41%」本身没有语境,必须跟数据元信息一起看。**
+   区间被截到哪天、实际吃进去多少根 bar、用的 qfq 还是 hfq(k=8.88 时名义价不是真实价),
+   不给出来,这个数字就是孤立的。新增的元信息条直接写在指标卡上方。
+
+3. **涨红跌绿。**
+   原页面沿用欧美配色(涨绿跌红),与 A 股直觉相反 —— 满屏「绿色」的茅台 -15.41%
+   会让人第一眼读反。指标卡与历史记录表一并改。
+
+### 验收
+
+- **类型检查**:`vue-tsc --noEmit -p apps/web-ele/tsconfig.json`
+  → 改动的 2 个文件 **0 error**(全局 25 个 error 均为既有问题:
+  `data/market/risk/dashboard`、`YieldCurveChart`、`MonacoEditor` 等,与本次无关)。
+- **契约冒烟** `_r4_smoke.py`(TestClient + 真库):逐字段校验前端要读的东西真在响应里
+  —— 前端读不到的字段在测试里看不出来,页面上就是空白或 `undefined`。
+
+| 用例 | 结果 |
+|---|---|
+| `GET /backtest/styles` | 200,styles=long/swing/intraday、price_fields=qfq/hfq,各字段齐备 |
+| `600519.SH` qfq | 200,1,194 bars,-15.41% / 25 笔,期末价值 845,908.01 = 现金 47,908.01 + 600 股 |
+| `600519.SH` hfq | 200,**与 qfq 完全一致**(-15.41% / 25 笔 / 845,908.01),k=8.8825 |
+| `920808.BJ` qfq | 200,912 bars,+223.55% / 18 笔,期末空仓 ⇒ 期末价值 = 现金 |
+
+---
+
+## 6.7 R5 旧引擎退役执行记录(2026-09-07 凌晨,已完成)
+
+### 拆出来的(有活调用者,不能删)
+
+| 新文件 | 内容 | 谁在用 |
+|---|---|---|
+| `app/services/strategy_validator.py` | `StrategyValidator`(AST 安全校验) | 策略 CRUD 三个入口:创建 / 更新 / 校验 |
+| `app/services/market_data.py` | `DataSource` / `YahooFinanceDataSource` / `CCXTDataSource` / `DataManager` | `GET /quant/market-data`(看行情,不是回测) |
+
+这两个类**服务的是「策略能不能存」和「行情展示」,不是回测**。
+回测撮合迁走之后它们仍然有用,所以从 `backtest_engine.py` 里剥出来单独立户,
+而不是跟着引擎一起埋掉。
+
+### 删掉的(无任何调用者)
+
+`backtest_engine.py`(790 行撮合)、`backtest_gate.py`、`market_rules.py`、
+`performance_analyzer.py`、`technical_indicators.py`,以及
+`tests/test_backtest_engine.py`(27 项)、`tests/test_market_rules.py`(53 项)。
+
+dc 侧已有对应实现(`app/backtest/` 的 `engine.py` / `gate.py` / `market_rules.py`),
+留着 backend 这份 = 宣称一个已经不用的能力,且两边会各自漂移。
+**全部 git 已追踪,要恢复随时可取。**
+
+### 顺手修掉的一个真 bug(R3 遗留)
+
+**`main.py` 的全局异常处理器把闸口拒绝的 422 变成了 500。**
+
+`Response.msg` 是 `str`,而闸口拒绝的 `detail` 是 **dict** `{reason, remedy}`
+(`endpoints/quant.py` 的 422)。原实现 `Response.fail(msg=exc.detail)` 直接塞,
+pydantic 在**异常处理器内部**二次抛 `ValidationError` ——
+于是「这个回测不成立」被翻译成 500,用户以为服务挂了,去翻根本没有错误的日志。
+
+**为什么 R3 没发现**:R3 只测到 proxy 层(`ScriptBacktestRefused`),
+dc 侧的 TestClient 又是 dc 自己的 app(没有这个 handler)。
+这个 bug 只在**完整 app + 真实 HTTP** 上才暴露 —— R5 的端到端冒烟才撞出来。
+
+修法:dict / list 形态的 detail 一律放进 `data`,`msg` 只留一句人话。
+**前端 `parseBacktestRefusal` 同步改为两种形态都认**(包装后的 `data`,或裸 `detail`)。
+
+### 验收
+
+- backend `tests/`:**23 项通过**(8 proxy + 11 validator + 4 新增 handler 回归)
+- 应用可导入,7 个 quant 路由全在;`app/` 内无 `backtest_engine` 等旧模块残留引用
+- `_r5_smoke.py`(真实 HTTP → 在跑的 dc + 真实库,**不落库**):
+
+| 用例 | 码 | 结果 |
+|---|---|---|
+| `GET /quant/backtest/styles` | 200 | styles=long/swing/intraday、price_fields=qfq/hfq |
+| `POST /quant/backtest` 600519.SH | 200 | 1,194 bars,-15.41% / 25 笔,期末 845,908.01 = 现金 47,908.01 + 600 股 |
+| `POST /quant/backtest` AAPL | 422 | **reason/remedy 完整透传**(修复后) |
+
+> 冒烟用 `NoCommitSession` 包住真实 session:查询走真库,写入丢掉,
+> 避免污染 `backtest_results`。三个坑都写在脚本注释里:
+> 连接池绑 loop、别预先消费 `Result`、依赖覆盖必须是 async generator **函数**本身。
+
+### 附：示例脚本策略入库(2026-09-07)
+
+``strategies`` 表唯一的记录 id=14 原先存的是**因子策略配置 JSON**
+(``{"top_n": 5, "filters": ...}``),而且是 ``is_active=False`` ——
+那是因子选股的参数,存进「脚本策略」表属于错位,拿它跑脚本回测必然「策略执行失败」。
+
+已原地 UPDATE 为**双均线交叉脚本**(``_seed_script_strategy.py``,默认 dry-run、
+``--apply`` 才写库)。**原地改而不是删了重建**:``backtest_results.strategy_id=14``
+有 1 行历史记录,换 id 会让它悬空。
+
+顺带修了 ``StrategyValidator`` 的一个误报：**局部变量被当成「未识别的全局名称」**。
+原实现对所有 ``ast.Name`` 一视同仁,于是 ``close = data['close']`` 里的 ``close``、
+``for i in ...`` 里的 ``i`` 全被警告 —— 一条普通策略报 5 条噪音,
+真正可疑的全局引用反而淹没在里面。改为先收集局部绑定名(赋值目标 / 参数 / 导入别名 /
+函数名 / except as)再判断;``f = eval; f('1+1')`` 这种仍然拦得住。
 
 ---
 
@@ -144,3 +844,6 @@ Vue3 + Vben Admin + Element Plus;量化模块 `views/quant/*`(策略管理/编�
 - 根:`docker-compose.yml`、`run_daily.sh`(hermes-bot 每日同步/报告,非交易流水线)、`README.md`、`FEATURES.md`。
 - backend:`main.py`、`app/api/api_v1/api.py`、`app/services/{factor_strategy_proxy,rebalance_service}.py`、`app/services/broker/`、`app/tasks/scheduler.py`、`app/models/`。
 - dc:`app/main.py`、`app/tasks/{scheduler,factor_build,factor_evaluate,daily_pipeline,backfill,fundamental_refresh}.py`、`app/factors/{base,registry,formula}.py`、`app/pipeline/runner.py`、`app/storage/{db,parquet_store,raw_store,fundamental_store}.py`、`app/strategy/engine.py`、`migrations/001–010`。
+- **回测相关(§0)**:`app/strategy/engine.py:677 run_backtest`(因子选股)、`:100 load_price_panel`、**`app/backtest/`(脚本策略引擎,§6.4:`service.py:run_script_backtest` 为唯一入口)**、`app/api/v1/strategy.py:114`、`:141`、`:146`、`app/storage/raw_store.py:376 load()`、`:269 load_all()`、`app/api/v1/raw.py`(受 X-API-Key 保护)。
+- backend 转发桩:`app/services/factor_strategy_proxy.py:107 backtest()`、`app/services/script_backtest_proxy.py`(脚本策略回测转发,R3)。
+- dc 回测接口:`app/api/v1/backtest.py`(`POST /backtest/script`、`GET /backtest/styles`)。\n- 前端回测页:`frontend/apps/web-ele/src/views/quant/backtest/index.vue`、`src/api/quant.ts`(R4)。

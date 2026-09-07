@@ -27,7 +27,7 @@ from app.tasks import daily_pipeline as dp  # noqa: E402
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--source", default="alphafeed")
+    parser.add_argument("--source", default="pandadata")
     parser.add_argument("--wait-rounds", type=int, default=dp.DEFAULT_WAIT_ROUNDS)
     parser.add_argument("--wait-minutes", type=int, default=dp.DEFAULT_WAIT_MINUTES)
     parser.add_argument(

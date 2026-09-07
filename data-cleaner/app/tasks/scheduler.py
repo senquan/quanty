@@ -9,6 +9,7 @@ from datetime import datetime
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
+from app.core.config import settings
 from app.core.logging import get_logger
 
 logger = get_logger(__name__)
@@ -26,7 +27,7 @@ async def _daily_eod_pipeline_job() -> None:
     from app.core.config import settings
     from app.tasks import daily_pipeline as daily_pipeline_task
 
-    source = getattr(settings, "RAW_BACKFILL_SOURCE", "alphafeed")
+    source = getattr(settings, "RAW_BACKFILL_SOURCE", "pandadata")
     logger.info(
         "定时任务启动: 每日盘后流水线",
         extra={"task": "scheduled_eod_pipeline", "source": source},
@@ -61,7 +62,7 @@ async def _daily_verify_backfill_job() -> None:
     from app.core.config import settings
     from app.tasks import backfill as backfill_task
 
-    source = getattr(settings, "RAW_BACKFILL_SOURCE", "alphafeed")
+    source = getattr(settings, "RAW_BACKFILL_SOURCE", "pandadata")
     logger.info(
         "定时任务启动: 日线覆盖度校验",
         extra={"task": "scheduled_verify_backfill", "source": source},
@@ -245,6 +246,13 @@ def register_jobs() -> None:
         )
     except Exception as e:  # noqa: BLE001
         logger.warning(f"行业刷新启动任务注册失败（可忽略）: {e}")
+
+    # 市场情报模块（intel）：dc 内可选子模块，仅 INTEL_ENABLED=true 时注册占位任务。
+    # 关闭时本分支不执行，intel 调度完全不存在，dc 调度行为不变。
+    if getattr(settings, "INTEL_ENABLED", False):
+        from app.intel.tasks import register_intel_jobs
+
+        register_intel_jobs(scheduler)
 
 
 def start_scheduler() -> None:

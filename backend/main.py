@@ -59,10 +59,23 @@ app = FastAPI(
 # Global Exception Handlers
 @app.exception_handler(StarletteHTTPException)
 async def http_exception_handler(request: Request, exc: StarletteHTTPException):
-    return JSONResponse(
-        status_code=exc.status_code,
-        content=Response.fail(code=exc.status_code, msg=exc.detail).model_dump()
-    )
+    """统一包成 ``Response.fail``。
+
+    ⚠️ ``detail`` 不一定是字符串。闸口拒绝给的是 **dict**
+    (``{"reason": ..., "remedy": ...}``,见 ``endpoints/quant.py`` 的 422),
+    而 ``Response.msg`` 是 ``str`` —— 直接塞进去会在这里二次抛
+    ``ValidationError``,把「这个回测不成立」变成 500。
+    用户看到的是「服务挂了」,于是去翻根本没有错误的日志。
+
+    ⇒ dict / list 一律放进 ``data``,``msg`` 只留一句人话。
+    """
+    detail = exc.detail
+    if isinstance(detail, (dict, list)):
+        msg = "请求被拒绝" if exc.status_code == 422 else "请求失败"
+        body = Response.fail(code=exc.status_code, msg=msg, data=detail)
+    else:
+        body = Response.fail(code=exc.status_code, msg=str(detail))
+    return JSONResponse(status_code=exc.status_code, content=body.model_dump())
 
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request: Request, exc: RequestValidationError):

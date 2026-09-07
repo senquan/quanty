@@ -145,6 +145,36 @@ class PandadataSource:
         out["volume"] = pd.to_numeric(out["volume"], errors="coerce") / 100.0
         return out[COLS]
 
+    def fetch(
+        self,
+        symbol: str,
+        start: str,
+        end: str,
+        freq: str = "1d",
+        adjust: str | None = "pre",
+    ) -> pd.DataFrame:
+        """单标的拉取（BaseSource 接口，供 registry / backfill_universe 调用）。
+
+        与 `fetch_daily` 的区别：
+        - 入参为单个 symbol 而非列表；
+        - **默认前复权 `adjust="pre"`**（`fetch_daily` 默认 None 即不复权）。
+
+        ⚠️ 此处默认 qfq 是刻意的：R1a（2026-09-06）已实证回补脚本漏传 adjust
+        导致 585 万行为不复权价，产生 2,000 条除权假跳空。批量接口保留 None
+        默认值以免破坏既有调用方，但**单标的路径必须默认复权**。
+
+        北交所（.BJ）不在 pandadata 支持范围（SDK 报「后缀必须为SH或SZ」），
+        本方法直接抛错 —— 请改用 akshare 源。
+        """
+        if freq != "1d":
+            raise RuntimeError(f"pandadata 暂仅支持日线(1d)，收到: {freq}")
+        if symbol.upper().endswith(".BJ"):
+            raise RuntimeError(
+                f"pandadata 不支持北交所标的 {symbol}（SDK 限制：后缀必须为 SH/SZ），"
+                f"请改用 akshare 源"
+            )
+        return self.fetch_daily([symbol], start, end, adjust=adjust)
+
     def last_trade_date(self, exchange: str = "SH"):
         """最新交易日（连通性探针常用）。"""
         sdk = self._client()

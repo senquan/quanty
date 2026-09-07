@@ -6,8 +6,15 @@
 - 任一步骤失败不阻断后续（评估依赖因子库，因子库依赖行情），
   但会把每步结果记录到 steps 里，便于事后定位
 
+数据源
+------
+默认 **pandadata**（R1c, 2026-09-06）。实测全市场 5214 只单日约 23s。
+此前默认 alphafeed，但该源长期限频 —— 库里实际只覆盖 33 只标的，
+导致每日增量形同虚设。北交所（.BJ）pandadata 不支持，
+由 `backfill_symbol` 自动路由到 akshare，无需调用方关心。
+
 用法：
-    python run_daily_pipeline.py [--source alphafeed] [--wait-rounds 2] [--wait-minutes 15]
+    python run_daily_pipeline.py [--source pandadata] [--wait-rounds 2] [--wait-minutes 15]
 """
 import time
 from datetime import datetime
@@ -41,7 +48,7 @@ def is_trading_day(day: datetime | None = None) -> bool:
 
 
 def run_daily_pipeline(
-    source: str = "alphafeed",
+    source: str = "pandadata",
     wait_rounds: int = DEFAULT_WAIT_ROUNDS,
     wait_minutes: int = DEFAULT_WAIT_MINUTES,
     symbols: list[str] | None = None,

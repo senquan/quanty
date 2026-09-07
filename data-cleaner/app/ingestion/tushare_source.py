@@ -6,6 +6,12 @@
 
 代码格式：600519.SH / 000001.SZ / 600519.SH
 依赖配置：TUSHARE_TOKEN（见 app.core.config.settings）
+
+⚠️ 2026-09-06（R1c）：本适配器**不适用于全市场日线**。
+`adj_factor` 限频 1 次/分钟（实测甚至 1 次/小时），`pro_bar(adj='qfq')`
+内部同样调用该接口、同样受限 —— 全市场 5555 只需 90+ 小时。
+全市场日线请用 **pandadata**（实测 5214 只单日约 23s），北交所用 **akshare**。
+本适配器现主要服务于 `fundamental`（基本面/财务）取数。
 """
 from datetime import datetime
 
@@ -73,11 +79,24 @@ class TushareSource(BaseSource):
 
         # 复权因子：拉取「全历史」adj_factor，取全局 f_latest/f_first 作为归一化基准，
         # 使 close 为全局一致的前复权价（qfq），避免多次增量窗口各自基准不一致导致
-        # 跨越分红/送转日的收益、动量误差。adj_factor 有 1 次/分钟限频，失败则降级
-        # 不复权（close 退化为原始价，adj_factor/hfq_close 置空）。
+        # 跨越分红/送转日的收益、动量误差。
+        #
+        # ⚠️ R1c（2026-09-06）：此前 adj_factor 拉取失败时**静默降级为不复权**，
+        # 把原始价当成 qfq 写入 raw_bars —— 与不复权的历史数据无法区分，
+        # 除权日产生假跳空，污染因子与回测。现改为**显式失败**：
+        #   - 默认 strict：拿不到 adj_factor 就抛错，由 backfill 记为 error，绝不入库
+        #   - 显式开启 TUSHARE_ALLOW_UNADJUSTED 才放行，且 source 标记为
+        #     `tushare-unadjusted`，下游可识别、可隔离
+        #
+        # 注：adj_factor 限频 1 次/分钟（实测甚至 1 次/小时），且 pro_bar(adj='qfq')
+        # 内部同样调用该接口，同样受限 —— 故 tushare **不适用于全市场日线**。
+        # 全市场请用 pandadata（实测 5214 只单日约 23s）。
         f_latest = 1.0
         f_first = 1.0
         f_map = None
+        allow_unadjusted = bool(
+            getattr(settings, "TUSHARE_ALLOW_UNADJUSTED", False)
+        )
         try:
             adj = ts.pro_api().query(
                 "adj_factor", ts_code=symbol, start_date="19900101", end_date=end_s
@@ -89,8 +108,15 @@ class TushareSource(BaseSource):
                 f_map = adj.set_index("trade_date")["adj_factor"].astype(float)
                 logger.info("Tushare adj_factor 获取完成", extra={"symbol": symbol})
         except Exception as e:
+            if not allow_unadjusted:
+                raise IngestionError(
+                    f"Tushare adj_factor 获取失败（{symbol}）:"
+                    f"{str(e)[:160]}。已拒绝写入不复权数据——"
+                    f"如需强制放行，设置 TUSHARE_ALLOW_UNADJUSTED=true"
+                    f"（会写入 source=tushare-unadjusted，需自行隔离）"
+                ) from e
             logger.warning(
-                "Tushare adj_factor 获取失败（降级不复权基准=1，含权收益可能有偏）",
+                "Tushare adj_factor 获取失败（降级不复权，source 标记 tushare-unadjusted）",
                 extra={"symbol": symbol, "reason": str(e)[:120]},
             )
 
@@ -119,6 +145,8 @@ class TushareSource(BaseSource):
             raise IngestionError(f"Tushare 有效数据为空: {symbol}")
 
         df = df.sort_values("trade_date").reset_index(drop=True)
+        # 降级写入时 source 必须可区分，否则下游无法把「不复权」与「前复权」分开
+        src_name = self.name if f_map is not None else "tushare-unadjusted"
         rows: list[RawBar] = []
         for _, row in df.iterrows():
             ts_dt = datetime.strptime(str(row["trade_date"]), "%Y%m%d")
@@ -133,7 +161,7 @@ class TushareSource(BaseSource):
                     low=float(row["low"]),
                     close=float(row["close"]),
                     volume=float(row.get("vol", row.get("volume", 0)) or 0),
-                    source=self.name,
+                    source=src_name,
                     freq=freq,
                     adj_factor=None if pd.isna(af) else float(af),
                     hfq_close=None if pd.isna(hf) else float(hf),
