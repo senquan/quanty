@@ -60,7 +60,7 @@ class CleaningPipeline:
         # pandera 结构校验（§10 工程规范）
         from app.pipeline.schema_check import validate_cleaned
 
-        validate_cleaned(current)
+        current = validate_cleaned(current)
 
         logger.info(
             "清洗流水线完成",

@@ -25,6 +25,15 @@ def validate_cleaned(df: pd.DataFrame) -> pd.DataFrame:
     if missing:
         raise PipelineValidationError(f"清洗结果缺少必要列: {missing}")
 
+    # 数值列统一转 float64：整数价 CSV 读为 int64，会与下游/校验的 float64
+    # 预期不一致（pandera WRONG_DATATYPE）。价格本就应为浮点。
+    df = df.copy()
+    for _c in REQUIRED_COLUMNS:
+        if _c in ("symbol", "timestamp"):
+            continue
+        if _c in df.columns:
+            df[_c] = pd.to_numeric(df[_c], errors="coerce").astype("float64")
+
     try:
         from pandera import Check, Column, DataFrameSchema
 
