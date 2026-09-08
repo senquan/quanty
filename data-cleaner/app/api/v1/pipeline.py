@@ -79,6 +79,18 @@ async def run_default_pipeline(
 
         cleaned, report = _pipeline.run(raw)
 
+        # 计算因子前需先合并基础数据（估值/财报等），因子内部依赖这些列；
+        # 否则 cleaned 只有 OHLCV、没有因子列，下面按因子 code 取列会抛
+        # "None of [...] are in the [columns]"（历史失败：FND_ROE/FND_DEBT_RATIO）。
+        from app.tasks import factor_build as factor_build_task
+
+        cleaned = factor_build_task._merge_fundamental(cleaned)
+        for meta in list_factors():
+            try:
+                cleaned[meta["code"]] = compute_factor(meta["code"], cleaned).values
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"因子计算失败 {meta['code']}: {e}")
+
         date = cleaned["timestamp"].max().strftime("%Y-%m-%d")
         # 只取最新一天：parquet 按「日期截面」组织（index=symbol），
         # 用 save_cross_section 合并写入，避免覆盖同日其它标的
@@ -87,7 +99,9 @@ async def run_default_pipeline(
         ]
         categories = sorted({f["category"] for f in list_factors()})
         for category in categories:
-            codes = [meta["code"] for meta in list_factors(category)]
+            codes = [meta["code"] for meta in list_factors(category) if meta["code"] in latest.columns]
+            if not codes:
+                continue
             xs = latest.set_index("symbol")[codes]
             xs = xs[~xs.index.duplicated(keep="last")]
             parquet_store.save_cross_section(category, date, xs)
