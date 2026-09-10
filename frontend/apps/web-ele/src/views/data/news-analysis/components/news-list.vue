@@ -1,37 +1,103 @@
 <script lang="ts" setup>
-import { computed, ref } from 'vue';
+import type { MentionPage, Stance } from '../types';
 
-import { ElInput, ElOption, ElSelect, ElTable, ElTableColumn, ElTag } from 'element-plus';
+/**
+ * 资讯抽取结果列表（**服务端分页，20 行一页**）
+ *
+ * 为什么不下发全量再前端切页：抽取结果随每日构建持续增长（已 800+ 条），
+ * 全量下发既拖慢首屏，也会让筛选失真（只能筛到已下载的那一页）。
+ * 故关键字 / 倾向 / 来源 / 分页全部下推到后端，这里只负责渲染当前页。
+ *
+ * 关键字输入做了 350ms 防抖：每敲一个字打一次接口既浪费又会把输入框卡住。
+ */
+import { onMounted, ref, watch } from 'vue';
 
-import type { NewsMention, Stance } from '../types';
+import {
+  ElInput,
+  ElOption,
+  ElPagination,
+  ElSelect,
+  ElTable,
+  ElTableColumn,
+  ElTag,
+} from 'element-plus';
 
-const props = defineProps<{ mentions: NewsMention[] }>();
+import { newsService } from '../news-service';
+
+const DEFAULT_PAGE_SIZE = 20;
+
+const page = ref<MentionPage>({
+  items: [],
+  page: 1,
+  pageSize: DEFAULT_PAGE_SIZE,
+  sources: [],
+  total: 0,
+});
+const loading = ref(false);
 
 const searchQuery = ref('');
-const selectedStance = ref<Stance | 'all'>('all');
+const debouncedQuery = ref('');
+const selectedStance = ref<'all' | Stance>('all');
 const selectedSource = ref<string>('all');
+const currentPage = ref(1);
+const pageSize = ref(DEFAULT_PAGE_SIZE);
 
-const sourceOptions = computed(() => {
-  const set = new Set(props.mentions.map((m) => m.source));
-  return Array.from(set).sort();
+async function load() {
+  loading.value = true;
+  try {
+    page.value = await newsService.getMentions({
+      page: currentPage.value,
+      pageSize: pageSize.value,
+      q: debouncedQuery.value.trim() || undefined,
+      source: selectedSource.value,
+      stance: selectedStance.value,
+    });
+    // 后端会夹紧 page（例如筛选后总页数变少），以服务端返回为准，
+    // 否则会停在"第 8 页 0 条"这种空页面上。
+    currentPage.value = page.value.page || 1;
+  } finally {
+    loading.value = false;
+  }
+}
+
+let timer: ReturnType<typeof setTimeout> | undefined;
+watch(searchQuery, (v) => {
+  clearTimeout(timer);
+  timer = setTimeout(() => {
+    debouncedQuery.value = v;
+    currentPage.value = 1;
+    load();
+  }, 350);
 });
 
-const filtered = computed(() =>
-  props.mentions.filter((m) => {
-    const q = searchQuery.value.trim().toLowerCase();
-    const matches =
-      !q ||
-      m.symbol.toLowerCase().includes(q) ||
-      m.title.toLowerCase().includes(q) ||
-      m.thesis.toLowerCase().includes(q) ||
-      m.evidence.toLowerCase().includes(q);
-    const matchesStance = selectedStance.value === 'all' || m.stance === selectedStance.value;
-    const matchesSource = selectedSource.value === 'all' || m.source === selectedSource.value;
-    return matches && matchesStance && matchesSource;
-  }),
-);
+// 改筛选条件一律回到第一页：停在第 5 页再改来源，几乎必然落在空页上
+watch([selectedStance, selectedSource], () => {
+  currentPage.value = 1;
+  load();
+});
 
-const stanceMeta: Record<Stance, { label: string; type: 'success' | 'info' | 'danger' }> = {
+function onPageChange(p: number) {
+  currentPage.value = p;
+  load();
+}
+
+function onSizeChange(s: number) {
+  pageSize.value = s;
+  currentPage.value = 1;
+  load();
+}
+
+/** 外部（上传完成等）触发刷新：回到第一页重新拉 */
+function reload() {
+  currentPage.value = 1;
+  return load();
+}
+
+onMounted(load);
+
+defineExpose({ reload });
+
+const stanceMeta: Record<Stance, { label: string; type: 'danger' | 'info' | 'success' }> = {
   bullish: { label: '看多', type: 'danger' },
   neutral: { label: '中性', type: 'info' },
   bearish: { label: '看空', type: 'success' },
@@ -63,12 +129,18 @@ function fmtTime(s: string): string {
       </ElSelect>
       <ElSelect v-model="selectedSource" style="width: 160px">
         <ElOption label="全部来源" value="all" />
-        <ElOption v-for="s in sourceOptions" :key="s" :label="s" :value="s" />
+        <ElOption v-for="s in page.sources" :key="s" :label="s" :value="s" />
       </ElSelect>
-      <span class="count">共 {{ filtered.length }} 条</span>
+      <span class="count">共 {{ page.total }} 条</span>
     </div>
 
-    <ElTable :data="filtered" stripe height="560" empty-text="暂无资讯抽取结果">
+    <ElTable
+      v-loading="loading"
+      :data="page.items"
+      stripe
+      height="520"
+      empty-text="暂无资讯抽取结果"
+    >
       <ElTableColumn prop="symbol" label="标的" width="110" fixed>
         <template #default="{ row }">
           <span class="symbol">{{ row.symbol }}</span>
@@ -92,6 +164,18 @@ function fmtTime(s: string): string {
         <template #default="{ row }">{{ fmtTime(row.publishedAt) }}</template>
       </ElTableColumn>
     </ElTable>
+
+    <div class="pager">
+      <ElPagination
+        v-model:current-page="currentPage"
+        v-model:page-size="pageSize"
+        :total="page.total"
+        :page-sizes="[20, 50, 100]"
+        layout="total, sizes, prev, pager, next, jumper"
+        @current-change="onPageChange"
+        @size-change="onSizeChange"
+      />
+    </div>
   </div>
 </template>
 
@@ -109,6 +193,11 @@ function fmtTime(s: string): string {
   margin-left: auto;
   color: var(--el-text-color-secondary);
   font-size: 13px;
+}
+.pager {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 12px;
 }
 .symbol {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;

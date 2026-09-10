@@ -1,10 +1,10 @@
 /** 资讯分析模块类型定义 */
 
-export type Stance = 'bullish' | 'neutral' | 'bearish';
-export type Horizon = 'short' | 'mid' | 'long' | 'event';
+export type Stance = 'bearish' | 'bullish' | 'neutral';
+export type Horizon = 'event' | 'long' | 'mid' | 'short';
 export type ProfileType = 'author' | 'source';
 
-/** 单条资讯抽取结果（对应 intel.doc_mentions + JOIN documents） */
+/** 资讯抽取结果（intel.doc_mentions + JOIN documents） */
 export interface NewsMention {
   id: string;
   docId: string;
@@ -23,9 +23,29 @@ export interface NewsMention {
   /** 来源（RSS 源名） */
   source: string;
   /** 作者（源未带 author 时为 null） */
-  author: string | null;
+  author: null | string;
   /** 发布时间 */
   publishedAt: string;
+}
+
+// ---- 资讯抽取分页（服务端分页：筛选与分页都下推到后端）----
+export interface MentionQuery {
+  /** 关键字：标题 / 论点 / 证据 / 标的 */
+  q?: string;
+  stance?: 'all' | Stance;
+  source?: string;
+  /** 1-based */
+  page?: number;
+  pageSize?: number;
+}
+
+export interface MentionPage {
+  items: NewsMention[];
+  total: number;
+  page: number;
+  pageSize: number;
+  /** 来源下拉选项（全量，不随分页/筛选变化） */
+  sources: string[];
 }
 
 /** 作者 / 来源画像（对应 intel.author_profiles） */
@@ -36,9 +56,9 @@ export interface AuthorProfile {
   totalDocs: number;
   uniqueSymbols: number;
   stanceDist: {
+    bearish: number;
     bullish: number;
     neutral: number;
-    bearish: number;
   };
   topSymbols: string[];
   dateFirst: string;
@@ -63,7 +83,7 @@ export interface AuthorProfile {
   /** 画像局限与风险提示 */
   styleCaveats?: string;
   /** 总结可靠度 0~1 */
-  styleConfidence?: number | null;
+  styleConfidence?: null | number;
   /** ok / schema_fail / api_fail / skipped / ''（未生成） */
   styleStatus?: string;
 }
@@ -101,7 +121,7 @@ export interface IntelUploadExtraction {
   quarantined?: number;
   apiFail?: number;
   costCny?: number;
-  stoppedReason?: string | null;
+  stoppedReason?: null | string;
   /** status=skipped / error 时的原因 */
   reason?: string;
   error?: string;
@@ -128,4 +148,71 @@ export interface IntelUploadResult {
   /** 上传后立即抽取的结果；未开启时为 null */
   extraction?: IntelUploadExtraction | null;
   next?: string;
+}
+
+// --------------------------------------------------------------------------
+// P4-3 RSSHub 源管理
+//
+// RSSHub 是**第三方中继**（稳定性与合规性都不保证，见设计文档 §7.1），
+// 所以源默认停用，只有用户确认能拉通后手动启用，health 也如实标 degraded。
+// --------------------------------------------------------------------------
+export interface RsshubHealth {
+  /** ok / partial / failed / degraded / ''（从未拉过） */
+  status: string;
+  checkedAt: string;
+  latencyMs: null | number;
+  error: string;
+  lastItemAt: string;
+}
+
+export interface RsshubSource {
+  id: number;
+  name: string;
+  /** 原始 URL（可能是 rsshub://<route>） */
+  url: string;
+  /** 按 INTEL_RSSHUB_BASE_URL 解析后的真实 feed URL；未配置时为空串 */
+  resolvedUrl: string;
+  resolveError: string;
+  credibility: string;
+  enabled: boolean;
+  /** 该源下已入库文档数（>0 时不允许删除） */
+  docCount: number;
+  createdAt: string;
+  health: RsshubHealth;
+}
+
+export interface RsshubStatus {
+  baseUrl: string;
+  configured: boolean;
+  enabled: boolean;
+  total: number;
+  enabledCount: number;
+  hint: string;
+}
+
+export interface RsshubSourceList {
+  count: number;
+  enabledCount: number;
+  sources: RsshubSource[];
+}
+
+/** POST /intel/rsshub/run 的返回（dc run_rsshub_ingest 汇总） */
+export interface RsshubRunResult {
+  sources: number;
+  fetched: number;
+  new: number;
+  dup: number;
+  reposts: number;
+  failed_sources?: number;
+  details?: { error?: string; fetched?: number; new?: number; source?: string; }[];
+}
+
+/** POST /intel/rsshub/test：试探 URL，不入库 */
+export interface RsshubTestResult {
+  ok: boolean;
+  resolvedUrl: string;
+  count: number;
+  titles: string[];
+  error: string;
+  latencyMs: number;
 }

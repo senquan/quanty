@@ -1,4 +1,8 @@
 <script lang="ts" setup>
+import type { UploadUserFile } from 'element-plus';
+
+import type { IntelUploadResult } from '../types';
+
 /**
  * P4-1 人工投喂：批量上传文章文件
  *
@@ -23,9 +27,6 @@ import {
   ElTag,
   ElUpload,
 } from 'element-plus';
-import type { UploadUserFile } from 'element-plus';
-
-import type { IntelUploadResult } from '../types';
 
 import { newsService } from '../news-service';
 
@@ -55,7 +56,7 @@ function clearFiles() {
 }
 
 async function submit() {
-  if (!rawFiles.value.length) {
+  if (rawFiles.value.length === 0) {
     ElMessage.warning('请先选择要导入的文件');
     return;
   }
@@ -89,8 +90,8 @@ async function submit() {
     if (!res.dryRun && res.new > 0) {
       emit('done'); // 有新增 → 通知父页刷新列表
     }
-  } catch (e: any) {
-    ElMessage.error(`上传失败：${e?.message ?? e}`);
+  } catch (error: any) {
+    ElMessage.error(`上传失败：${error?.message ?? error}`);
   } finally {
     submitting.value = false;
   }
@@ -217,13 +218,13 @@ function statusTag(status: string) {
         </span>
       </div>
 
-      <ul v-if="result.rejected.length" class="failed-list">
+      <ul v-if="result.rejected.length > 0" class="failed-list">
         <li v-for="r in result.rejected" :key="r.file">
           <b>{{ r.file }}</b> — {{ r.error }}
         </li>
       </ul>
 
-      <table v-if="result.files.length" class="file-table">
+      <table v-if="result.files.length > 0" class="file-table">
         <thead>
           <tr>
             <th>文件</th>

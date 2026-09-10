@@ -30,6 +30,8 @@ from sqlalchemy import text
 from app.core.security import verify_api_key
 from app.intel.core.config import settings
 from app.intel.core.logging import get_logger
+from app.intel.ingest.rsshub import resolve_rsshub_url
+from pydantic import BaseModel
 
 logger = get_logger(__name__)
 
@@ -330,6 +332,262 @@ def _extract_after_upload(doc_ids: list[int], limit: int) -> dict:
     if s.get("stopped_reason") == "budget":
         out["status"] = "budget_stopped"
     return out
+
+
+# --------------------------------------------------------------------------
+# P4-3 RSSHub 源管理（前端管理页）
+#
+# 定位：RSSHub 是**第三方中继**，稳定性与合规性都不保证（设计文档 §7.1），
+# 所以整组端点默认保持"关"：新增源 enabled 默认 False，只有用户显式开启后
+# 才会被 run_rsshub_ingest 拉取；health 也如实标 degraded，不假装稳。
+#
+# 与 CLI `_p4_rsshub_ingest.py` 是同一批 service 函数，网页操作等价于敲脚本，
+# 不留"只有命令行能做"的暗门。
+# --------------------------------------------------------------------------
+class RsshubSourceIn(BaseModel):
+    name: str
+    url: str
+    enabled: bool = False
+    credibility: str = "low"
+
+
+class RsshubSourcePatch(BaseModel):
+    name: str | None = None
+    url: str | None = None
+    enabled: bool | None = None
+    credibility: str | None = None
+
+
+class RsshubTestIn(BaseModel):
+    url: str
+    limit: int = 10
+
+
+def _resolve_display(url: str) -> tuple[str, str]:
+    """(解析后的真实 feed URL, 解析失败原因)；非 rsshub:// 原样返回"""
+    try:
+        return resolve_rsshub_url(url), ""
+    except ValueError as e:
+        return "", str(e)
+
+
+async def _rsshub_rows() -> list[dict]:
+    """rsshub 源清单：源信息 + 文档数 + 最近一次 health（LATERAL 取最新一条）"""
+    from app.intel.core.db import current_session
+
+    sql = text(
+        """
+        SELECT s.id, s.name, s.url, s.credibility, s.enabled, s.created_at,
+               (SELECT count(*) FROM intel.documents d WHERE d.source_id = s.id) AS doc_count,
+               h.checked_at, h.status AS health_status, h.latency_ms, h.error, h.last_item_at
+        FROM intel.sources s
+        LEFT JOIN LATERAL (
+            SELECT checked_at, status, latency_ms, error, last_item_at
+            FROM intel.feed_health f
+            WHERE f.source_id = s.id
+            ORDER BY f.checked_at DESC
+            LIMIT 1
+        ) h ON true
+        WHERE s.source_type = 'rsshub'
+        ORDER BY s.id
+        """
+    )
+
+    async with current_session() as session:
+        return [dict(r) for r in (await session.execute(sql)).mappings().all()]
+
+
+@router.get("/rsshub/status")
+async def rsshub_status() -> dict:
+    """RSSHub 接入状态：base URL 是否配置 + 源数量（前端先据此提示"未配置"）"""
+    from app.intel.core.db import current_session
+
+    sql = text(
+        """
+        SELECT count(*) AS total,
+               count(*) FILTER (WHERE enabled) AS enabled_cnt
+        FROM intel.sources WHERE source_type = 'rsshub'
+        """
+    )
+    async with current_session() as session:
+        r = (await session.execute(sql)).mappings().one()
+    base = settings.INTEL_RSSHUB_BASE_URL.rstrip("/")
+    return {
+        "baseUrl": base,
+        "configured": bool(base),
+        "enabled": bool(settings.INTEL_ENABLED),
+        "total": int(r["total"]),
+        "enabledCount": int(r["enabled_cnt"]),
+        # 未配置 base URL 时 rsshub://xxx 解析必然失败，前端要能提前禁用相关操作
+        "hint": "" if base else "未配置 INTEL_RSSHUB_BASE_URL，rsshub:// 形式的源无法解析",
+    }
+
+
+@router.get("/rsshub/sources")
+async def rsshub_sources() -> dict:
+    """RSSHub 源清单（含解析后的真实 URL、文档数、最近健康状态）"""
+    items = []
+    for r in await _rsshub_rows():
+        resolved, err = _resolve_display(r["url"])
+        items.append(
+            {
+                "id": int(r["id"]),
+                "name": r["name"],
+                "url": r["url"],
+                "resolvedUrl": resolved,
+                "resolveError": err,
+                "credibility": r["credibility"],
+                "enabled": bool(r["enabled"]),
+                "docCount": int(r["doc_count"] or 0),
+                "createdAt": r["created_at"].isoformat() if r["created_at"] else "",
+                "health": {
+                    "status": r["health_status"] or "",
+                    "checkedAt": r["checked_at"].isoformat() if r["checked_at"] else "",
+                    "latencyMs": r["latency_ms"],
+                    "error": r["error"] or "",
+                    "lastItemAt": r["last_item_at"].isoformat() if r["last_item_at"] else "",
+                },
+            }
+        )
+    return {
+        "count": len(items),
+        "enabledCount": sum(1 for i in items if i["enabled"]),
+        "sources": items,
+    }
+
+
+@router.post("/rsshub/sources")
+async def rsshub_add_source(body: RsshubSourceIn) -> dict:
+    """登记（或复用）一个 RSSHub 源
+
+    url 支持 ``rsshub://<route>``（按 INTEL_RSSHUB_BASE_URL 解析）或完整 feed URL。
+    **默认 enabled=False** —— 第三方中继不自动开，用户确认能拉通再手动启用。
+    """
+    name = (body.name or "").strip()
+    url = (body.url or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="源名不能为空")
+    if not url:
+        raise HTTPException(status_code=400, detail="feed URL 不能为空")
+
+    _, err = _resolve_display(url)
+    if err:  # rsshub:// 但没配 base URL —— 早失败，别让用户建一个永远拉不通的源
+        raise HTTPException(status_code=400, detail=err)
+
+    import anyio
+
+    from app.intel import store
+    from app.intel.service import ensure_rsshub_source
+
+    def _do() -> dict:
+        rec = ensure_rsshub_source(
+            name, url, enabled=body.enabled, credibility=body.credibility or "low"
+        )
+        # upsert 的 ON CONFLICT(url) 不改 enabled（避免 seed 把用户停掉的源重新打开），
+        # 这里按本次请求显式对齐，保证"页面上勾了启用就一定是启用"。
+        store.update_source(rec["id"], enabled=body.enabled)
+        return {"id": rec["id"], "name": name, "url": url, "enabled": body.enabled}
+
+    return await anyio.to_thread.run_sync(_do)
+
+
+@router.patch("/rsshub/sources/{source_id}")
+async def rsshub_update_source(source_id: int, body: RsshubSourcePatch) -> dict:
+    """改名 / 改 URL / 启用停用（只动传入的字段）"""
+    if body.url is not None:
+        _, err = _resolve_display(body.url.strip())
+        if err:
+            raise HTTPException(status_code=400, detail=err)
+
+    import anyio
+
+    from sqlalchemy.exc import IntegrityError
+
+    from app.intel import store
+
+    def _do() -> bool:
+        return store.update_source(
+            source_id,
+            name=body.name.strip() if body.name is not None else None,
+            url=body.url.strip() if body.url is not None else None,
+            enabled=body.enabled,
+            credibility=body.credibility,
+        )
+
+    try:
+        ok = await anyio.to_thread.run_sync(_do)
+    except IntegrityError:
+        raise HTTPException(status_code=409, detail="该 URL 已被其他源占用") from None
+    if not ok:
+        raise HTTPException(status_code=404, detail=f"源 {source_id} 不存在")
+    return {"id": source_id, "updated": True, **body.model_dump(exclude_none=True)}
+
+
+@router.delete("/rsshub/sources/{source_id}")
+async def rsshub_delete_source(source_id: int) -> dict:
+    """删除源；**已入库过文档的源不允许删**（原文与 doc_mentions 要保留溯源），请先停用"""
+    import anyio
+
+    from app.intel import store
+
+    def _do() -> tuple[bool, int]:
+        n = store.count_documents_by_source(source_id)
+        if n > 0:
+            return False, n
+        return store.delete_source(source_id), 0
+
+    deleted, doc_count = await anyio.to_thread.run_sync(_do)
+    if not deleted:
+        raise HTTPException(
+            status_code=409,
+            detail=f"该源下已有 {doc_count} 篇文档，删除会破坏溯源；请改为停用",
+        )
+    return {"id": source_id, "deleted": True}
+
+
+@router.post("/rsshub/run")
+async def rsshub_run() -> dict:
+    """立即跑一轮 RSSHub 摄取（只拉**已启用**的源）"""
+    import anyio
+
+    from app.intel.service import run_rsshub_ingest
+
+    summary = await anyio.to_thread.run_sync(run_rsshub_ingest)
+    logger.info(
+        f"P4-3 RSSHub 手动触发一轮 sources={summary.get('sources')} "
+        f"fetched={summary.get('fetched')} new={summary.get('new')}",
+        extra={"task": "intel_rsshub_poll"},
+    )
+    return summary
+
+
+@router.post("/rsshub/test")
+async def rsshub_test(body: RsshubTestIn) -> dict:
+    """试探一条 feed URL 能否拉通（**不入库、不写 feed_health**）
+
+    填完 URL 先点测试，避免把永远拉不通的源登记进库。
+    """
+    import anyio
+
+    from app.intel.ingest.rsshub import RSSHubSource
+
+    url = (body.url or "").strip()
+    if not url:
+        raise HTTPException(status_code=400, detail="feed URL 不能为空")
+
+    def _do() -> dict:
+        src = RSSHubSource("__probe__")
+        res = src.fetch(url, limit=max(1, min(body.limit, 50)))
+        return {
+            "ok": bool(res.ok),
+            "resolvedUrl": _resolve_display(url)[0],
+            "count": len(res.items),
+            "titles": [it.title[:80] for it in res.items[:5]],
+            "error": res.error or "",
+            "latencyMs": res.latency_ms,
+        }
+
+    return await anyio.to_thread.run_sync(_do)
 
 
 @router.post("/upload", summary="批量上传文章文件并入库（P4-1 人工投喂）")

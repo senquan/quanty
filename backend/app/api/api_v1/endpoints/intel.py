@@ -1,14 +1,16 @@
 """资讯分析 intel 数据接口
 
-读 Postgres ``intel`` schema（由 data-cleaner 产出），暴露两个只读端点：
-- GET /api/v1/intel/mentions  资讯抽取结果（doc_mentions JOIN documents + sources）
+读 Postgres ``intel`` schema（由 data-cleaner 产出），暴露只读端点：
+- GET /api/v1/intel/mentions  资讯抽取结果（doc_mentions JOIN documents + sources，**服务端分页**）
 - GET /api/v1/intel/profiles  作者/来源画像（author_profiles）
+- /api/v1/intel/rsshub/*      RSSHub 源管理（转发 dc，P4-3）
 
 字段一律以 camelCase 返回，前端 news-analysis 组件可直接消费，无需转换。
 """
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, Form, UploadFile
+from pydantic import BaseModel
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -22,37 +24,84 @@ router = APIRouter(prefix="/intel", tags=["intel"])
 
 # 只暴露经过 P1-Gate 校验的 v2 产出，避免旧版本噪声污染前端
 PROMPT_VERSION = "v2"
+# 分页：前端资讯抽取页 20 行一页。数据量随每日构建持续增长（已 800+ 条），
+# 全量下发既拖慢首屏也让前端筛选失真（只筛得到已下载的那一页），故筛选与分页
+# 一律下推到 SQL，前端只渲染当前页。
+MENTION_DEFAULT_PAGE_SIZE = 20
+MENTION_MAX_PAGE_SIZE = 100
 
 
-@router.get("/mentions", summary="资讯抽取结果")
+def _mention_where(q: str, stance: str, source: str) -> tuple[str, dict]:
+    """mentions 的筛选条件（列表与 count 共用，避免两处 SQL 漂移）"""
+    where = "WHERE m.prompt_version = :pv"
+    params: dict = {"pv": PROMPT_VERSION}
+    if q:
+        where += (
+            " AND (d.title ILIKE :like OR m.thesis ILIKE :like"
+            " OR m.evidence ILIKE :like OR m.symbol ILIKE :like)"
+        )
+        params["like"] = f"%{q}%"
+    if stance and stance != "all":
+        where += " AND m.stance = :stance"
+        params["stance"] = stance
+    if source and source != "all":
+        where += " AND s.name = :source"
+        params["source"] = source
+    return where, params
+
+
+_MENTION_ROW_SQL = """
+    FROM intel.doc_mentions m
+    JOIN intel.documents d ON d.id = m.doc_id
+    LEFT JOIN intel.sources s ON s.id = d.source_id
+"""
+
+
+@router.get("/mentions", summary="资讯抽取结果（分页）")
 async def list_mentions(
+    q: str = "",
+    stance: str = "all",
+    source: str = "all",
+    page: int = 1,
+    pageSize: int = MENTION_DEFAULT_PAGE_SIZE,
     db: AsyncSession = Depends(get_db),
     _user: User = Depends(get_current_user),
 ):
-    sql = text(
-        """
-        SELECT m.id,
-               m.doc_id,
-               d.title,
-               m.symbol,
-               m.stance,
-               m.confidence,
-               m.horizon,
-               m.thesis,
-               m.evidence,
-               d.author,
-               s.name AS source_name,
-               d.published_at
-        FROM intel.doc_mentions m
-        JOIN intel.documents d ON d.id = m.doc_id
-        LEFT JOIN intel.sources s ON s.id = d.source_id
-        WHERE m.prompt_version = :pv
-        ORDER BY d.published_at DESC NULLS LAST, m.id DESC
-        """
+    """分页返回资讯抽取结果
+
+    - ``q``     关键字，匹配标题 / 论点 / 证据 / 标的
+    - ``stance`` bullish | neutral | bearish | all
+    - ``source`` 源名（下拉选项由本接口 ``sources`` 字段给出）| all
+    - ``page`` / ``pageSize`` 1-based 分页，pageSize 上限 100
+    """
+    page = max(1, page)
+    size = max(1, min(pageSize, MENTION_MAX_PAGE_SIZE))
+    where, params = _mention_where(q, stance, source)
+
+    total = int(
+        (
+            await db.execute(
+                text(f"SELECT count(*) {_MENTION_ROW_SQL} {where}"), params
+            )
+        ).scalar_one()
     )
-    res = await db.execute(sql, {"pv": PROMPT_VERSION})
-    rows = res.mappings().all()
-    data = [
+
+    list_params = {**params, "lim": size, "off": (page - 1) * size}
+    rows = (
+        await db.execute(
+            text(
+                "SELECT m.id, m.doc_id, d.title, m.symbol, m.stance, m.confidence,"
+                " m.horizon, m.thesis, m.evidence, d.author,"
+                " s.name AS source_name, d.published_at"
+                f" {_MENTION_ROW_SQL} {where}"
+                " ORDER BY d.published_at DESC NULLS LAST, m.id DESC"
+                " LIMIT :lim OFFSET :off"
+            ),
+            list_params,
+        )
+    ).mappings().all()
+
+    items = [
         {
             "id": str(r["id"]),
             "docId": str(r["doc_id"]),
@@ -69,7 +118,30 @@ async def list_mentions(
         }
         for r in rows
     ]
-    return Response.success(data=data)
+
+    # 来源下拉不随分页/筛选变动（否则第二页起下拉会只剩当前页的来源）
+    src_rows = (
+        await db.execute(
+            text(
+                "SELECT DISTINCT s.name FROM intel.sources s"
+                " JOIN intel.documents d ON d.source_id = s.id"
+                " JOIN intel.doc_mentions m ON m.doc_id = d.id"
+                " WHERE m.prompt_version = :pv AND s.name IS NOT NULL"
+                " ORDER BY s.name"
+            ),
+            {"pv": PROMPT_VERSION},
+        )
+    ).scalars().all()
+
+    return Response.success(
+        data={
+            "items": items,
+            "total": total,
+            "page": page,
+            "pageSize": size,
+            "sources": [s for s in src_rows if s],
+        }
+    )
 
 
 @router.get("/profiles", summary="作者/来源画像")
@@ -265,3 +337,116 @@ async def upload_articles(
         body["rejected"] = rejected + body.get("rejected", [])
         body["failed"] = body.get("failed", 0) + len(rejected)
     return Response.success(data=body)
+
+
+# --------------------------------------------------------------------------
+# P4-3 RSSHub 源管理（转发 data-cleaner）
+# --------------------------------------------------------------------------
+# 与 P4-1 上传同理：前端不直连 dc，一律经主后端转发。RSSHub 是第三方中继
+# （设计文档 §7.1），默认关闭；这里的端点只把网页上的增删改、启停、试拉、
+# "立即跑一轮"翻译成 dc 的同名调用，**业务规则一律留在 dc**，网关不重复实现
+# —— 否则就会出现"网页能删 dc 不让删"这类两套口径。
+
+
+class RsshubSourceIn(BaseModel):
+    name: str
+    url: str
+    enabled: bool = False
+    credibility: str = "low"
+
+
+class RsshubSourcePatch(BaseModel):
+    name: str | None = None
+    url: str | None = None
+    enabled: bool | None = None
+
+
+class RsshubTestIn(BaseModel):
+    url: str
+    limit: int = 10
+
+
+RSSHUB_TIMEOUT_SEC = 60.0
+# 一轮可能扫多个源（单源超时 15s + 入库），网关要给足，否则前端拿到 504 而 dc 还在跑
+RSSHUB_RUN_TIMEOUT_SEC = 300.0
+
+
+async def _proxy_rsshub(
+    method: str,
+    path: str,
+    *,
+    json_body: dict | None = None,
+    timeout: float = RSSHUB_TIMEOUT_SEC,
+):
+    """原样转发到 dc 的 ``/api/v1/intel/<path>``，并保留 dc 的错误码与提示
+
+    dc 的 4xx **都有业务含义**（400 = rsshub:// 没配 base URL、409 = 该源已有
+    文档不允许删），网关不能吞成 500，否则前端只能显示一句"操作失败"。
+    """
+    import httpx
+
+    url = f"{settings.INTEL_CLEANER_BASE_URL.rstrip('/')}/api/v1/intel/{path.lstrip('/')}"
+    headers = (
+        {"X-API-Key": settings.INTEL_CLEANER_API_KEY}
+        if settings.INTEL_CLEANER_API_KEY
+        else {}
+    )
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as cli:
+            resp = await cli.request(method, url, json=json_body, headers=headers)
+    except httpx.HTTPError as e:
+        return Response.fail(code=502, msg=f"无法连接 data-cleaner（{url}）：{e}")
+
+    if resp.status_code >= 400:
+        detail = ""
+        try:
+            detail = (resp.json() or {}).get("detail", "")
+        except Exception:  # noqa: BLE001
+            detail = resp.text[:200]
+        return Response.fail(code=resp.status_code, msg=detail or "data-cleaner 拒绝")
+    return Response.success(data=resp.json())
+
+
+@router.get("/rsshub/status", summary="RSSHub 接入状态（转发 dc）")
+async def rsshub_status(_user: User = Depends(get_current_user)):
+    return await _proxy_rsshub("GET", "rsshub/status")
+
+
+@router.get("/rsshub/sources", summary="RSSHub 源清单（转发 dc）")
+async def rsshub_list_sources(_user: User = Depends(get_current_user)):
+    return await _proxy_rsshub("GET", "rsshub/sources")
+
+
+@router.post("/rsshub/sources", summary="登记 RSSHub 源（转发 dc）")
+async def rsshub_add_source(
+    body: RsshubSourceIn, _user: User = Depends(get_current_user)
+):
+    return await _proxy_rsshub("POST", "rsshub/sources", json_body=body.model_dump())
+
+
+@router.patch("/rsshub/sources/{source_id}", summary="修改 RSSHub 源（转发 dc）")
+async def rsshub_update_source(
+    source_id: int,
+    body: RsshubSourcePatch,
+    _user: User = Depends(get_current_user),
+):
+    return await _proxy_rsshub(
+        "PATCH", f"rsshub/sources/{source_id}", json_body=body.model_dump(exclude_none=True)
+    )
+
+
+@router.delete("/rsshub/sources/{source_id}", summary="删除 RSSHub 源（转发 dc）")
+async def rsshub_delete_source(
+    source_id: int, _user: User = Depends(get_current_user)
+):
+    return await _proxy_rsshub("DELETE", f"rsshub/sources/{source_id}")
+
+
+@router.post("/rsshub/run", summary="立即跑一轮 RSSHub 摄取（转发 dc）")
+async def rsshub_run(_user: User = Depends(get_current_user)):
+    return await _proxy_rsshub("POST", "rsshub/run", timeout=RSSHUB_RUN_TIMEOUT_SEC)
+
+
+@router.post("/rsshub/test", summary="试探 feed URL 是否可拉通（转发 dc，不入库）")
+async def rsshub_test(body: RsshubTestIn, _user: User = Depends(get_current_user)):
+    return await _proxy_rsshub("POST", "rsshub/test", json_body=body.model_dump())

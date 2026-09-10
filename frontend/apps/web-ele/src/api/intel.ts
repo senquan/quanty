@@ -1,3 +1,17 @@
+import type {
+  AuthorProfile,
+  IntelUploadExtraction,
+  IntelUploadFileResult,
+  IntelUploadResult,
+  MentionPage,
+  MentionQuery,
+  RsshubRunResult,
+  RsshubSource,
+  RsshubSourceList,
+  RsshubStatus,
+  RsshubTestResult,
+} from '../views/data/news-analysis/types';
+
 /**
  * 资讯分析 intel 数据接口层
  *
@@ -7,22 +21,91 @@
  */
 import { requestClient } from '#/api/request';
 
-import type {
-  AuthorProfile,
-  IntelUploadExtraction,
-  IntelUploadFileResult,
-  IntelUploadResult,
-  NewsMention,
-} from '../views/data/news-analysis/types';
-
-/** 资讯抽取结果列表 */
-export async function getIntelMentionsApi(): Promise<NewsMention[]> {
-  return requestClient.get<NewsMention[]>('/intel/mentions');
+/**
+ * 资讯抽取结果（**服务端分页**）
+ *
+ * 数据随每日构建持续增长（已 800+ 条），全量下发既拖慢首屏，也让前端筛选失真
+ * （只能筛到已下载的那一页）。故关键字 / 倾向 / 来源 / 分页全部下推到后端，
+ * 返回 { items, total, page, pageSize, sources }。
+ */
+export async function getIntelMentionsApi(
+  params: MentionQuery = {},
+): Promise<MentionPage> {
+  return requestClient.get<MentionPage>('/intel/mentions', { params });
 }
 
 /** 作者/来源画像列表 */
 export async function getIntelProfilesApi(): Promise<AuthorProfile[]> {
   return requestClient.get<AuthorProfile[]>('/intel/profiles');
+}
+
+// --------------------------------------------------------------------------
+// P4-3 RSSHub 源管理（主后端转发 dc，前端不直连 dc）
+// --------------------------------------------------------------------------
+export async function getRsshubStatusApi(): Promise<RsshubStatus> {
+  return requestClient.get<RsshubStatus>('/intel/rsshub/status');
+}
+
+export async function listRsshubSourcesApi(): Promise<RsshubSourceList> {
+  return requestClient.get<RsshubSourceList>('/intel/rsshub/sources');
+}
+
+/** 登记一个 RSSHub 源（默认停用，用户确认能拉通再启用） */
+export async function addRsshubSourceApi(params: {
+  credibility?: string;
+  enabled?: boolean;
+  name: string;
+  url: string;
+}): Promise<RsshubSource> {
+  return requestClient.post<RsshubSource>('/intel/rsshub/sources', params);
+}
+
+/** 改名 / 改 URL / 启停（只传要改的字段） */
+export async function updateRsshubSourceApi(
+  id: number,
+  patch: {
+    credibility?: string;
+    enabled?: boolean;
+    name?: string;
+    url?: string;
+  },
+): Promise<{ id: number; updated: boolean }> {
+  // ⚠️ Vben 的 RequestClient 只暴露 get/post/put/delete，没有 patch
+  // （见 packages/effects/request/src/request-client/request-client.ts:99~139）。
+  // 后端这里是 PATCH 语义（局部更新，exclude_none），故走底层 request() 指定 method。
+  return requestClient.request<{ id: number; updated: boolean }>(
+    `/intel/rsshub/sources/${id}`,
+    { data: patch, method: 'PATCH' },
+  );
+}
+
+/** 删除源（该源已有文档时 dc 返回 409，前端应提示改为停用） */
+export async function deleteRsshubSourceApi(
+  id: number,
+): Promise<{ deleted: boolean; id: number }> {
+  return requestClient.delete<{ deleted: boolean; id: number }>(
+    `/intel/rsshub/sources/${id}`,
+  );
+}
+
+/** 立即跑一轮摄取（只拉已启用的源）；源多时较慢，放宽超时 */
+export async function runRsshubIngestApi(): Promise<RsshubRunResult> {
+  return requestClient.post<RsshubRunResult>(
+    '/intel/rsshub/run',
+    {},
+    { timeout: 300_000 },
+  );
+}
+
+/** 试探 feed URL 能否拉通（不入库、不写 health） */
+export async function testRsshubUrlApi(
+  url: string,
+  limit = 10,
+): Promise<RsshubTestResult> {
+  return requestClient.post<RsshubTestResult>('/intel/rsshub/test', {
+    limit,
+    url,
+  });
 }
 
 /**
