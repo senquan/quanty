@@ -69,12 +69,17 @@ def upsert_daily_basic(rows: list[dict]) -> int:
         VALUES (:symbol, :trade_date, :pe, :pe_ttm, :pb, :ps_ttm, :dv_ttm,
                 :turnover_rate, :turnover_rate_f, :total_mv, :circ_mv, :float_share, now())
         ON CONFLICT (symbol, trade_date) DO UPDATE SET
-            pe = EXCLUDED.pe, pe_ttm = EXCLUDED.pe_ttm, pb = EXCLUDED.pb,
-            ps_ttm = EXCLUDED.ps_ttm, dv_ttm = EXCLUDED.dv_ttm,
-            turnover_rate = EXCLUDED.turnover_rate,
-            turnover_rate_f = EXCLUDED.turnover_rate_f,
-            total_mv = EXCLUDED.total_mv, circ_mv = EXCLUDED.circ_mv,
-            float_share = EXCLUDED.float_share, updated_at = now()
+            pe = COALESCE(EXCLUDED.pe, daily_basic.pe),
+            pe_ttm = COALESCE(EXCLUDED.pe_ttm, daily_basic.pe_ttm),
+            pb = COALESCE(EXCLUDED.pb, daily_basic.pb),
+            ps_ttm = COALESCE(EXCLUDED.ps_ttm, daily_basic.ps_ttm),
+            dv_ttm = COALESCE(EXCLUDED.dv_ttm, daily_basic.dv_ttm),
+            turnover_rate = COALESCE(EXCLUDED.turnover_rate, daily_basic.turnover_rate),
+            turnover_rate_f = COALESCE(EXCLUDED.turnover_rate_f, daily_basic.turnover_rate_f),
+            total_mv = COALESCE(EXCLUDED.total_mv, daily_basic.total_mv),
+            circ_mv = COALESCE(EXCLUDED.circ_mv, daily_basic.circ_mv),
+            float_share = COALESCE(EXCLUDED.float_share, daily_basic.float_share),
+            updated_at = now()
         """
     )
     n = 0
@@ -83,6 +88,84 @@ def upsert_daily_basic(rows: list[dict]) -> int:
             conn.execute(sql, r)
             n += 1
     return n
+
+
+def bulk_upsert_daily_basic(rows: list[dict], page_size: int = 2000) -> int:
+    """批量写入 daily_basic（历史回补用）。逐列 COALESCE，部分列缺失不覆盖已有值。
+
+    直接走 psycopg2 execute_values，避免逐行调用存储过程（数百万行数量级差异）。
+    """
+    eng = _engine()
+    if eng is None or not rows:
+        return 0
+    from sqlalchemy import text
+
+    cols = ["symbol", "trade_date", "pe", "pe_ttm", "pb", "ps_ttm", "dv_ttm",
+            "turnover_rate", "turnover_rate_f", "total_mv", "circ_mv", "float_share"]
+    params = [{c: r.get(c) for c in cols} for r in rows]
+    sql = text(
+        """
+        INSERT INTO factor.daily_basic
+            (symbol, trade_date, pe, pe_ttm, pb, ps_ttm, dv_ttm,
+             turnover_rate, turnover_rate_f, total_mv, circ_mv, float_share)
+        VALUES
+            (:symbol, :trade_date, :pe, :pe_ttm, :pb, :ps_ttm, :dv_ttm,
+             :turnover_rate, :turnover_rate_f, :total_mv, :circ_mv, :float_share)
+        ON CONFLICT (symbol, trade_date) DO UPDATE SET
+            pe = COALESCE(EXCLUDED.pe, daily_basic.pe),
+            pe_ttm = COALESCE(EXCLUDED.pe_ttm, daily_basic.pe_ttm),
+            pb = COALESCE(EXCLUDED.pb, daily_basic.pb),
+            ps_ttm = COALESCE(EXCLUDED.ps_ttm, daily_basic.ps_ttm),
+            dv_ttm = COALESCE(EXCLUDED.dv_ttm, daily_basic.dv_ttm),
+            turnover_rate = COALESCE(EXCLUDED.turnover_rate, daily_basic.turnover_rate),
+            turnover_rate_f = COALESCE(EXCLUDED.turnover_rate_f, daily_basic.turnover_rate_f),
+            total_mv = COALESCE(EXCLUDED.total_mv, daily_basic.total_mv),
+            circ_mv = COALESCE(EXCLUDED.circ_mv, daily_basic.circ_mv),
+            float_share = COALESCE(EXCLUDED.float_share, daily_basic.float_share),
+            updated_at = now()
+        """
+    )
+    # 用 SQLAlchemy 原生 executemany（在 begin() 事务内），不要走裸 DBAPI 游标——
+    # 裸游标执行后连接归还连接池时会被 reset 回滚，导致写入丢失。
+    with eng.begin() as conn:
+        for i in range(0, len(params), page_size):
+            conn.execute(sql, params[i : i + page_size])
+    return len(params)
+
+
+def load_universe() -> list:
+    """返回 raw_bars 中全部 distinct symbol（tushare 风格，如 600519.SH）。"""
+    eng = _engine()
+    if eng is None:
+        return []
+    from sqlalchemy import text
+
+    try:
+        with eng.connect() as conn:
+            rows = conn.execute(
+                text("SELECT DISTINCT symbol FROM factor.raw_bars")).fetchall()
+        return [r[0] for r in rows]
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"load_universe 失败: {e}")
+        return []
+
+
+def load_trade_dates() -> list:
+    """返回 raw_bars 中全部 distinct 交易日(date 类型)，升序。"""
+    eng = _engine()
+    if eng is None:
+        return []
+    from sqlalchemy import text
+
+    try:
+        with eng.connect() as conn:
+            rows = conn.execute(
+                text("SELECT DISTINCT date(timestamp) AS d FROM factor.raw_bars ORDER BY 1")
+            ).fetchall()
+        return [r[0] for r in rows]
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"load_trade_dates 失败: {e}")
+        return []
 
 
 def upsert_trading_status(rows: list[dict]) -> int:

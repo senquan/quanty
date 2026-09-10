@@ -5,6 +5,10 @@
 - finance_reports：按报告期（默认最近 N 期）刷新，含 ann_date 供防前视对齐
 """
 from datetime import date, datetime
+from time import sleep
+
+import json
+from pathlib import Path
 
 from app.core.config import settings
 from app.core.logging import get_logger
@@ -171,3 +175,256 @@ def refresh_fundamental(trade_date: str | None = None) -> dict:
         "indicator": indicator,
         "duration_s": round((datetime.now() - t0).total_seconds(), 1),
     }
+
+
+# --------------------------------------------------------------------------- #
+# 历史回补（一次性）：finance_reports 从指定年份起所有报告期补全
+# --------------------------------------------------------------------------- #
+_GROWTH_HISTORY_STATE = (
+    Path(__file__).resolve().parent.parent.parent / "data" / "growth_history_state.json"
+)
+
+
+def all_periods_since(start_year: int) -> list[str]:
+    """枚举 start_year 起所有财报期末日(0331/0630/0930/1231, YYYYMMDD)，含当年。"""
+    today = date.today()
+    ends = [(3, 31), (6, 30), (9, 30), (12, 31)]
+    periods: list[str] = []
+    for y in range(start_year, today.year + 1):
+        for m, d in ends:
+            p = date(y, m, d)
+            if p < today:
+                periods.append(f"{y}{m:02d}{d:02d}")
+    return sorted(periods)
+
+
+def _load_growth_state() -> dict:
+    try:
+        if _GROWTH_HISTORY_STATE.exists():
+            return json.loads(_GROWTH_HISTORY_STATE.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001
+        pass
+    return {"done_periods": [], "done_indicator": False}
+
+
+def _save_growth_state(state: dict) -> None:
+    _GROWTH_HISTORY_STATE.parent.mkdir(parents=True, exist_ok=True)
+    _GROWTH_HISTORY_STATE.write_text(
+        json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+
+
+def backfill_growth_history(start_year: int = 2021, period_sleep: float = 1.0) -> dict:
+    """用 akshare 把 finance_reports 的成长列(rev/eps 同比, revenue, net_profit, eps)
+    从 start_year 起所有报告期补全。可断点续跑(state 记录已完成期)；每期 1 次
+    stock_yjbb_em 调用，失败隔离不影响其它期。
+
+    另补全 ROE/负债率/总资产（财务质量列，refresh_financial_indicator 按年遍历）。
+    幂等：upsert 按 (symbol, report_period) 冲突合并，重跑安全。
+    """
+    src = _source()
+    state = _load_growth_state()
+    done: set = set(state.get("done_periods", []))
+    periods = [p for p in all_periods_since(start_year) if p not in done]
+    total_rows = 0
+
+    for p in periods:
+        try:
+            df = src.fetch_growth_akshare_bulk([p])
+            if df is None or df.empty:
+                logger.warning(f"成长历史回补空({p})，跳过")
+            else:
+                n = fundamental_store.upsert_finance_reports(_rows(df))
+                total_rows += n
+                logger.info(f"成长历史回补完成({p}): {n} 行")
+            done.add(p)
+            state["done_periods"] = sorted(done)
+            _save_growth_state(state)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"成长历史回补失败({p}): {e}（留待续跑）")
+        sleep(period_sleep)
+
+    if not state.get("done_indicator"):
+        try:
+            res = refresh_financial_indicator(start_year=str(start_year))
+            total_rows += res.get("rows", 0)
+            state["done_indicator"] = True
+            _save_growth_state(state)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"财务指标历史回补失败: {e}（留待续跑）")
+
+    logger.info(
+        "finance_reports 历史回补完成",
+        extra={"task": "growth_history", "rows": total_rows, "periods": len(periods)},
+    )
+    return {"status": "done", "rows": total_rows, "periods_backfilled": len(periods)}
+
+
+# --------------------------------------------------------------------------- #
+# 历史回补（一次性）：估值历史（PB/PE_TTM 日频、股息率年度）经 akshare 补全
+# --------------------------------------------------------------------------- #
+_VAL_HISTORY_STATE = (
+    Path(__file__).resolve().parent.parent.parent / "data" / "valuation_history_state.json"
+)
+
+
+def _clean_num(v):
+    """float NaN/inf -> None（PG double 接受 NaN，但批量 upsert 前清理更稳）。"""
+    try:
+        if v is None:
+            return None
+        f = float(v)
+        if f != f or f in (float("inf"), float("-inf")):
+            return None
+        return f
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _load_val_state() -> dict:
+    try:
+        if _VAL_HISTORY_STATE.exists():
+            return json.loads(_VAL_HISTORY_STATE.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001
+        pass
+    return {"done_symbols": [], "done_dividend_years": []}
+
+
+def _save_val_state(state: dict) -> None:
+    _VAL_HISTORY_STATE.parent.mkdir(parents=True, exist_ok=True)
+    _VAL_HISTORY_STATE.write_text(
+        json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+
+
+def backfill_pb_pe_history(
+    symbols: list[str] | None = None,
+    sleep_sec: float = 0.3,
+    buf_size: int = 200_000,
+) -> dict:
+    """用 akshare 东财个股估值(stock_value_em)把 daily_basic.pb / pe_ttm / ps_ttm
+    从全历史补全（日频）。
+
+    逐标的抓取（每标的 1 次 stock_value_em 调用，同时返回 PB/PE_TTM/PS_TTM），
+    批量写入 daily_basic。可断点续跑（state 记录已完成 symbol）；单标的失败隔离，
+    留待下次续跑。ps_ttm 现经东财可得（VAL_PS_TTM 不再 unavailable）。
+    """
+    src = FundamentalSource(provider="akshare")
+    if symbols is None:
+        symbols = fundamental_store.load_universe()
+    if not symbols:
+        return {"status": "skipped", "reason": "无 universe"}
+    state = _load_val_state()
+    done: set = set(state.get("done_symbols", []))
+    todo = [s for s in symbols if s not in done]
+    total = len(symbols)
+    ok = skip = fail = 0
+    rows_buf: list[dict] = []
+
+    def _flush() -> None:
+        nonlocal rows_buf
+        if rows_buf:
+            fundamental_store.bulk_upsert_daily_basic(rows_buf)
+            rows_buf = []
+
+    for i, sym in enumerate(todo, 1):
+        try:
+            df = src.fetch_valuation_value_em(sym)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"估值历史回补异常({sym}): {e}")
+            fail += 1
+            continue
+        if df is None or df.empty:
+            skip += 1
+        else:
+            for r in df.to_dict("records"):
+                rows_buf.append({
+                    "symbol": sym,
+                    "trade_date": r.get("trade_date"),
+                    "pe": None,
+                    "pe_ttm": _clean_num(r.get("pe_ttm")),
+                    "pb": _clean_num(r.get("pb")),
+                    "ps_ttm": _clean_num(r.get("ps_ttm")),
+                    "dv_ttm": None,
+                    "turnover_rate": None,
+                    "turnover_rate_f": None,
+                    "total_mv": None,
+                    "circ_mv": None,
+                    "float_share": None,
+                })
+            ok += 1
+        done.add(sym)
+        if len(rows_buf) >= buf_size:
+            _flush()
+        if i % 200 == 0:
+            _flush()
+            state["done_symbols"] = sorted(done)
+            _save_val_state(state)
+            logger.info(
+                "估值历史回补进度",
+                extra={"task": "valuation_history", "done": i, "total": total,
+                       "ok": ok, "skip": skip, "fail": fail},
+            )
+        if sleep_sec:
+            sleep(sleep_sec)
+    _flush()
+    state["done_symbols"] = sorted(done)
+    _save_val_state(state)
+    return {"status": "done", "total": total, "ok": ok, "skip": skip, "fail": fail}
+
+
+def backfill_dividend_yield_history(years: list[int] | None = None) -> dict:
+    """用 akshare 东方财富分红送配把 daily_basic.dv_ttm（股息率）按年度补全。
+
+    每年 1 次 stock_fhps_em 调用取全 A 股息率，写入该年首个交易日
+    （factor_build 会按 symbol 前向填充到全年及之后）。可断点续跑。
+    """
+    src = FundamentalSource(provider="akshare")
+    if years is None:
+        years = list(range(2021, date.today().year + 1))
+    trade_dates = fundamental_store.load_trade_dates()
+    if not trade_dates:
+        return {"status": "skipped", "reason": "无 raw_bars 交易日"}
+    first_of_year: dict = {}
+    for d in trade_dates:
+        first_of_year.setdefault(d.year, d)
+    state = _load_val_state()
+    done: set = set(state.get("done_dividend_years", []))
+    total_rows = 0
+    for y in years:
+        if y in done:
+            continue
+        first_day = first_of_year.get(int(y))
+        if first_day is None:
+            logger.warning(f"无 {y} 交易日，跳过股息率")
+            done.add(y)
+            continue
+        try:
+            df = src.fetch_dividend_yield_em(y)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"股息率回补异常({y}): {e}")
+            continue
+        if df is None or df.empty:
+            logger.warning(f"股息率回补空({y})，跳过")
+            done.add(y)
+            state["done_dividend_years"] = sorted(done)
+            _save_val_state(state)
+            continue
+        rows = [
+            {
+                "symbol": r["symbol"],
+                "trade_date": first_day,
+                "pe": None, "pe_ttm": None, "pb": None, "ps_ttm": None,
+                "dv_ttm": _clean_num(r.get("dividend_yield")),
+                "turnover_rate": None, "turnover_rate_f": None,
+                "total_mv": None, "circ_mv": None, "float_share": None,
+            }
+            for r in df.to_dict("records")
+        ]
+        fundamental_store.bulk_upsert_daily_basic(rows)
+        total_rows += len(rows)
+        done.add(y)
+        state["done_dividend_years"] = sorted(done)
+        _save_val_state(state)
+        logger.info(f"股息率回补完成({y}): {len(rows)} 行")
+    return {"status": "done", "rows": total_rows, "years": sorted(done)}

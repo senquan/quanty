@@ -54,6 +54,10 @@ def _merge_fundamental(panel: pd.DataFrame) -> pd.DataFrame:
         db = db[[c for c in keep if c in db.columns]]
         db = db.drop_duplicates(subset=["symbol", "_d"], keep="last")
         panel = panel.merge(db, on=["symbol", "_d"], how="left")
+        # 股息率为年度披露值，仅在每年首个交易日有记录；按 symbol 前向填充至全年及之后
+        if "div_yield" in panel.columns:
+            panel = panel.sort_values(["symbol", "_d"])
+            panel["div_yield"] = panel.groupby("symbol")["div_yield"].ffill()
 
     # 2) finance_reports：成长同比 + ROE/负债率 + TTM每股收益，按披露日 as-of 前向填充
     fr = fundamental_store.load_finance_reports()

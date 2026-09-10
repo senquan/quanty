@@ -4,10 +4,10 @@
 - backfill_universe：遍历全 A 股代码池做增量更新（每日调度用）
 自动处理：首次全量 2010 起、之后只拉 [latest+1day, today]；限频 429 退避。
 """
+from collections import deque
 from datetime import datetime, timedelta
-from time import sleep
-
-import re
+from threading import Lock
+from time import sleep, time as _time
 
 from app.core.logging import get_logger
 from app.ingestion.registry import get_source
@@ -18,8 +18,11 @@ logger = get_logger(__name__)
 
 _DEFAULT_FULL_START = "2010-01-01"
 
-# 单标的最大重试次数（限频 / 网络抖动共用）
+# 单标的最大重试次数（网络抖动）
 _MAX_RETRY = 3
+
+# 命中限频后的最大重试次数（限频退避是预期路径，给足重试余量）
+_MAX_RATE_RETRY = 20
 
 # 网络抖动特征：SSL 断连、chunked 读取中断、连接重置、超时等
 _TRANSIENT_MARKERS = (
@@ -39,10 +42,58 @@ _TRANSIENT_MARKERS = (
     "ConnectionTimeout",
 )
 
+# 限频特征：pandadata 真实返回 500010「每分钟请求次数超限」，
+# 旧逻辑只匹配「限频」匹配不到，导致批量静默失败（2026-09-07/09-08 复盘）。
+_RATE_LIMIT_MARKERS = (
+    "限频",
+    "500010",
+    "每分钟请求次数超限",
+    "请求次数超限",
+    "rate limit",
+    "too many requests",
+    "429",
+)
+
 
 def _is_transient(msg: str) -> bool:
     """判断是否为可重试的瞬时网络错误。"""
     return any(m in msg for m in _TRANSIENT_MARKERS)
+
+
+def _is_rate_limited(msg: str) -> bool:
+    """判断是否为数据源限频错误（命中后需退避 + 收紧全局速率）。"""
+    low = msg.lower()
+    return any(m.lower() in low for m in _RATE_LIMIT_MARKERS)
+
+
+# ---------- 全局请求节流（pandadata 每分钟请求次数上限） ----------
+# 实测触限约 225/min；初值保守低于该值，命中限频后自适应下调。
+_RATE_LIMIT_PER_MIN = 100
+_RATE_WINDOW = 60.0
+_rate_lock = Lock()
+_rate_ts: deque[float] = deque()
+
+
+def _spend_permit() -> None:
+    """pandadata 发起请求前调用：必要时休眠以平滑到 _RATE_LIMIT_PER_MIN/分钟。"""
+    while True:
+        with _rate_lock:
+            now = _time()
+            while _rate_ts and now - _rate_ts[0] >= _RATE_WINDOW:
+                _rate_ts.popleft()
+            if len(_rate_ts) < _RATE_LIMIT_PER_MIN:
+                _rate_ts.append(now)
+                return
+            wait = _RATE_WINDOW - (now - _rate_ts[0]) + 0.05
+        sleep(max(wait, 0))
+
+
+def _tighten_rate() -> None:
+    """命中限频时下调全局速率并清空窗口，避免反复撞墙。"""
+    global _RATE_LIMIT_PER_MIN
+    with _rate_lock:
+        _RATE_LIMIT_PER_MIN = max(20, _RATE_LIMIT_PER_MIN // 2)
+        _rate_ts.clear()
 
 
 def _today() -> str:
@@ -73,16 +124,22 @@ def backfill_symbol(
 
     retry = 0
     while True:
+        if source_resolved == "pandadata":
+            _spend_permit()
         try:
             raw = src.fetch(symbol, start, today, "1d")
             break
         except Exception as e:  # noqa: BLE001
             msg = str(e)
-            if "限频" in msg and retry < _MAX_RETRY:
-                # 提取 retry_after 毫秒
-                m = re.search(r"(\d+)ms", msg)
-                wait = int(m.group(1)) / 1000 if m else 2
-                logger.warning(f"{symbol} 限频，{wait}s 后重试")
+            if _is_rate_limited(msg) and retry < _MAX_RATE_RETRY:
+                # pandadata 500010 每分钟请求次数超限：退避一个配额窗口，
+                # 等每分钟计数重置，并收紧全局速率后重试。
+                _tighten_rate()
+                wait = 60
+                logger.warning(
+                    f"{symbol} 命中限频，速率下调并{wait}s后重试 "
+                    f"({retry + 1}/{_MAX_RATE_RETRY}): {msg[:40]}"
+                )
                 sleep(wait)
                 retry += 1
                 continue
@@ -159,12 +216,30 @@ def backfill_universe(
 _STALE_DAYS = 4
 
 
+def _expected_last_trading_day(reference: datetime.date) -> datetime.date:
+    """返回 reference 之前（不含）最近一个交易日。
+
+    仅排除周末（与 is_trading_day 一致）；法定节假日即便漏跑，拉数也只会
+    拿到空集、不会污染数据，无需在此特殊处理。最多往前看 15 个自然日，
+    覆盖春节/国庆等长假期。
+    """
+    from app.tasks.daily_pipeline import is_trading_day
+
+    d = reference - timedelta(days=1)
+    for _ in range(15):
+        if is_trading_day(datetime(d.year, d.month, d.day)):
+            return d
+        d -= timedelta(days=1)
+    return reference - timedelta(days=1)
+
+
 def check_coverage(min_ratio: float = 0.95) -> dict:
     """检查最新交易日覆盖度是否达标。
 
     判定不达标的两种情形：
     1. 最新交易日标的数 < 上一交易日 * min_ratio（当天更新漏了一批）
-    2. 最新交易日距今超过 _STALE_DAYS 天（服务宕机导致漏跑）
+    2. 最新交易日早于"应已收盘的最近交易日"(expected)，或自然日距今超过
+       _STALE_DAYS 天（服务宕机导致漏跑）
     """
     cov = repository.latest_day_coverage(days=2)
     if not cov:
@@ -173,10 +248,16 @@ def check_coverage(min_ratio: float = 0.95) -> dict:
     latest, latest_count = cov[0]
     prev, prev_count = (cov[1] if len(cov) > 1 else (None, 0))
 
-    gap = (datetime.now().date() - datetime.strptime(latest, "%Y-%m-%d").date()).days
+    latest_date = datetime.strptime(latest, "%Y-%m-%d").date()
+    gap = (datetime.now().date() - latest_date).days
     ratio = round(latest_count / prev_count, 4) if prev_count else None
 
-    stale = gap > _STALE_DAYS
+    # 盲区修复（2026-09-07 复盘）：旧逻辑只按"自然日 gap > _STALE_DAYS"判定
+    # 停滞，周末后漏掉单个交易日时 gap 恰好等于 4，会被误判为"正常"而跳过
+    # 补齐。改为：latest 早于"应已收盘的最近交易日"(expected) 即视为停滞，
+    # 并保留 gap 阈值作为长宕机兜底。
+    expected = _expected_last_trading_day(datetime.now().date())
+    stale = latest_date < expected or gap > _STALE_DAYS
     thin = bool(prev_count) and latest_count < prev_count * min_ratio
 
     return {

@@ -12,7 +12,7 @@ sys.path.insert(0, os.getcwd())
 from sqlalchemy import create_engine, text
 
 from app.core.config import settings
-from app.factors.registry import compute_factor
+from app.factors.registry import compute_factor, get_factor
 from app.pipeline.runner import CleaningPipeline
 from app.storage.raw_store import repository
 from app.tasks.factor_build import _merge_fundamental
@@ -46,11 +46,17 @@ for col in ["amount", "eps_ttm", "industry", "list_date", "dividend_ttm", "roe",
     else:
         print(f"  {col}: (缺失列)")
 
-print("因子覆盖率:")
-for code in ["VAL_PE_TTM", "VOL_STD_20_ANN", "LIQ_AMOUNT_20", "VAL_DIV_YIELD",
-             "FND_ROE", "FND_DEBT_RATIO", "GRO_EPS_GROWTH_YOY"]:
+print("因子覆盖率(已剔除无历史数据源的因子):")
+codes = ["VAL_PE_TTM", "VAL_PB", "VAL_PS_TTM", "VAL_DIV_YIELD", "VOL_STD_20_ANN",
+         "LIQ_AMOUNT_20", "FND_ROE", "FND_DEBT_RATIO", "GRO_EPS_GROWTH_YOY"]
+excluded = [c for c in codes if getattr(get_factor(c), "unavailable", False)]
+for code in codes:
+    if code in excluded:
+        continue
     try:
         s = compute_factor(code, panel)
         print(f"  {code}: {s.notna().mean()*100:.1f}% ({int(s.notna().sum())}/{n})")
     except Exception as ex:
         print(f"  {code}: 计算失败 {ex}")
+if excluded:
+    print("已剔除(已知无历史数据源):", ", ".join(excluded))

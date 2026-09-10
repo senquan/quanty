@@ -32,6 +32,10 @@ class Factor(ABC):
     category: str  # momentum / volatility / technical / sentiment
     frequency: str  # Daily / Weekly / Monthly
     data_sources: list[str]  # 依赖列，如 ["adj_close"]
+    # 已知不可得因子：文档确认无历史数据源（如 PB/PS/股息率）。
+    # 其覆盖率不应计入"可得因子覆盖率分母"，避免指标被永久拉低（docs/memo/2026-09-02 §2.4）。
+    unavailable: bool = False
+    unavailable_reason: str = ""
 
     @abstractmethod
     def compute(self, df: pd.DataFrame) -> pd.Series:
@@ -45,4 +49,6 @@ class Factor(ABC):
             "category": self.category,
             "frequency": self.frequency,
             "data_sources": self.data_sources,
+            "unavailable": self.unavailable,
+            "unavailable_reason": self.unavailable_reason,
         }

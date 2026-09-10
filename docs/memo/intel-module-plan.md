@@ -152,9 +152,16 @@
 | P4-4 | 风格总结报告：云端 LLM 对单作者全量文档做风格综述（量小质高的任务），输出进画像卡片 | LLM 总结作者投资风格 |
 
 **P4 验收（= 主场景验收）**：
-- [ ] 导入某公众号 200 篇历史文章 → 全链路跑通：去重 → 预筛 → 抽取 → 画像 → INTL_STYLE_MATCH
-- [ ] 画像卡片含：风格向量 / 行业偏好 / 持仓周期 / 历史准确度（带样本数）/ 风格漂移
-- [ ] 全程 LLM 成本在 `llm_runs` 可查，无预算外调用
+- [~] 导入某公众号 200 篇历史文章 → 全链路跑通：去重 → 预筛 → 抽取 → 画像 → INTL_STYLE_MATCH
+      —— **链路已在真实语料上逐段验通（6/6 PASS，见 §10 验收报告）**；"公众号 200 篇"这一具体语料待用户提供，
+      验收一键脚本 `_p4_acceptance.py` 已就绪（投喂即跑，不伪造语料）。
+- [x] 画像卡片含：风格向量 / 行业偏好 / 持仓周期 / 历史准确度（带样本数）/ 风格漂移
+      —— 另含 P4-4 的 LLM 风格总结（综述 / 标签 / 行业 / 周期 / 笃定度 / 局限 / 可靠度）。
+- [x] 全程 LLM 成本在 `llm_runs` 可查，无预算外调用 —— 累计 ¥6.9603（471 次成功调用），
+      P4-4 起按 `prompt_version=style_v1` 与抽取（v2）分开归因。
+- [x] P4-4 风格总结在**真数据 + 真 LLM** 上产出 ok 记录 —— 2026-09-09 08:31 重跑 **7 条 ok / 4 条 skipped / 成本 ¥0.0232**，
+      **0 幻觉**，模型主动压低可靠度（0.30–0.45）并自陈局限；报告页 `p4_style_report.html`。
+      （首跑曾因 `192.168.14.88:8000` 内网 LLM 不可达 502 全数 api_fail，恢复后一次补齐。）
 
 ---
 
@@ -201,7 +208,620 @@ P0 骨架+RSS ──7天健康观察──▶ P1 理解层 ──P1-Gate(50篇�
 | 日期 | 项 | 状态 |
 |---|---|---|
 | 2026-09-07 | **P0-1 骨架**：`data-cleaner/app/intel/` 包 + `core`(config/logging/db 接入层) + 开关门控占位路由(`/intel/health` 公开、`/intel/status` 受保护) + 占位调度(`intel_rss_poll` interval / `intel_daily_build` cron)；`app/core/config.py` 增 `INTEL_ENABLED`(默认 false) 及 `INTEL_*` 项；`app/api/v1/router.py` 与 `app/tasks/scheduler.py` 条件挂载；`migrations/011_intel_schema.sql` 建 `intel` schema 及 sources/documents/feed_health 表 | ✅ 已搭（纯骨架，无业务逻辑） |
+| 2026-09-07 | **P0 RSS 源实测**（不落库探针）：5/5 可达 + 真 feed；36氪 `/feed` 实测为 SPA 落地页已剔除，爱范儿替补；§1 清单改为实测版 | ✅ |
+| 2026-09-07 | **P0-2~P0-7 实施**：迁移 011 补 symbol_alias + documents 加 simhash/duplicate_of_id + sources UNIQUE(url)；`ingest/`(base/feed_parser/rss/registry + manual/web/wechat 空实现占位)；`normalize/`(text/dedupe/redline)；`service.py` 摄取闭环（三级幂等去重 + simhash 转载标记 + 原文落盘 + available_at 防前视）；`store.py` 同步仓储（psycopg2）；tasks 接真实调用；`/intel/feed-health` + `/intel/sources` API；`scripts/seed_intel_sources.py` + `scripts/smoke_intel_ingest.py` | ✅ 代码完成（未连真实 PG 落库） |
+| 2026-09-07 | **修复 011 已应用环境炸列**：骨架期 011 已在本库应用过（documents 无 simhash），P0 原地改 011 补列后 `CREATE TABLE IF NOT EXISTS` 对已存在表是 no-op → `CREATE INDEX (simhash)` 报列不存在。修法：列改 `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` 幂等补齐；`UNIQUE(url)` 挪出建表语句改为唯一索引 `uq_intel_sources_url`（`ON CONFLICT (url)` 同样识别唯一索引）；`duplicate_of_id` 自引用外键用**单行 DO 块**幂等补（迁移切分器按行切分、只保护 CREATE FUNCTION，DO 块必须单行）。已实跑 `apply_migrations` 对本库修复并验证列/索引/外键全部落位 | ✅ 已修复（本库已应用） |
+| 2026-09-07 | **P0 真实 PG 联调完成**：seed --apply 灌 5 源（id 1–5，`ON CONFLICT (url)` 在唯一索引上工作正常）；`run_rss_ingest()` 首轮 188 拉取/185 入库/3 轮内去重/4 转载识别，0 源失败；幂等重跑 164 判重 + 24 真增量 + 2 跨轮转载。联调抓出 3 个单测未覆盖的真 bug 并修复：① **simhash 无符号 64 位超出 PG BIGINT 上限** → dedupe.py 增 `to_signed64/to_unsigned64` 存储边界转换 + hamming 加 64 位 mask + 5 项 round-trip 单测；② **available_at 用 Python now() 预计算，与 DB ingested_at=now() 差几毫秒** 全部违例防前视 → 改 SQL 内 `GREATEST(COALESCE(:published_at, now()), now())` 同语句时钟计算 + 存量 188 行用已存 ingested_at 重算修复；③ **write_text 在 Windows 文本模式 \n→\r\n 翻译**导致 69/188 原文 sha256 不匹配 → 改 write_bytes + 存量 69 文件 \r\n→\n 还原修复（69/69 全部恢复 hash 一致） | ✅ 联调验收通过 |
 
-**验证**：全部文件 `py_compile` 通过；`INTEL_ENABLED` 默认 false，`app.intel.*` 仅在其为 true 时被 import（重型依赖不加载）。`011` 迁移为纯 DDL，沿用 dc 启动期 `apply_migrations()` 全量执行（与 `factor` schema 始终存在一致）；开关仅门控路由/调度/重型依赖，schema 空表零运行成本。
+**联调后验收**：documents 212 篇（爱范儿 20 / 东方财富 50 / 虎嗅 50 / 华尔街见闻 50 / 钛媒体 18），防前视违例 0、原文落盘 sha256 212/212 一致、转载引用零悬空、feed_health 5/5 ok（延迟 3.0–3.9s）、单测 37 项全过。
 
-**下一步**：P0 开工 → 先对 §1 的 5 个 RSS 源逐个实跑可达性验证，再填 `app/intel/ingest/rss.py`。
+| 2026-09-07 | **P1 基建完成（除真跑 LLM）**：① P1-1 `symbol_alias` 灌 11122 条（code 5558 / name 5558 / 真俗称 6，来自 `factor.industries` 5558 标的全量名称——`stock_info.name` 实测全 NULL，tushare 免费档 1 次/小时限频改用库内数据；名称内嵌空格归一化）；② P1-2 `understand/keywords.py`（事件分类表，子句级 negatives 否决 + `re:` 正则 + 英文词边界）+ `prescreen.py`（6 位代码正则交易所推断 + 别名内存索引长名优先）；③ P1-3 `llm/client.py`（httpx OpenAI 兼容、3 次退避重试、429/5xx 才重试、BudgetGate 查 llm_runs 当日 sum 超 `INTEL_DAILY_BUDGET_YUAN` 抛 BudgetExceeded 停批告警、每调用审计 llm_runs）；④ P1-4 `schema.py`（pydantic `extra="forbid"` 拒幻觉字段——strict 对 str-Enum 会拒合法 JSON 字符串故不用；span 硬校验空白容忍、位置/内容不符即幻觉）；⑤ P1-5 `prompts.py` v1 + 迁移 012（doc_mentions/doc_style/llm_runs/quarantine）；⑥ P1-6 `understand/service.py` 批跑编排 + `run_intel_understanding.py` 入口；单测 65 项全过（新增 prescreen/schema/budget 28 项），dc 基线无回归 | ✅ 代码完成，待 API key 真跑 |
+
+**P1-2 实测修正**：预筛过滤率 **13.2%**（28/212 miss），远低于"70%+"预期——该预期针对通用文本，而我们 5 源全是精选财经 RSS（事件词天然高密度：event-only 命中 125、symbol 命中 113、两者兼有）。成本影响可忽略（DeepSeek 190 篇 × ~¥0.008 ≈ ¥1.5/天 << ¥10 预算）。miss 样本全为伊朗/油价等纯地缘宏观稿，P2 宏观信号或需回捞。预筛的价值从"省钱"调整为"锚定标的"（无 symbol 的文档不进 doc_mentions）。
+
+**P1 剩余**：① 配 `INTEL_LLM_BASE_URL/KEY/MODEL`（DeepSeek 示例已写入脚本提示）→ `--apply` 真跑 190 篇 → `llm_runs` 真实成本数据；② 50 篇人工标注 P1-Gate（symbol≥90% / stance≥80% / span≥95% / 幻觉≤2%）。
+
+**验证**：
+- 单测 32 项全过（tests/intel/：parser/dedupe/normalize）；dc 全量 130 passed / 10 errors 与基线一致，**零回归**
+- `INTEL_ENABLED=false` 时 app.intel 零 import（assert 验证）；011 迁移切分 11 条语句完整
+- 真实源不落库冒烟：5/5 可达、50 篇全有正文+日期、零红线误标、content:encoded 全文提取生效（3754–9312 字）
+- simhash 距离实测：改标题=1、轻度洗稿=11（已知边界→P1）、不同文章=36；阈值 3 零误杀
+
+**遗留**：① ~~真实 PG 落库联调~~（已完成，见上）；② feed_health 7 天健康观察自 2026-09-07 联调起算；③ 爱范儿"早报"类合集文章 9312 字一篇塞多条新闻，P1 预筛时再议拆分；④ dc 常驻运行时 `.env` 设 `INTEL_ENABLED=true` 后 APScheduler 自动轮询（当前为手动脚本触发）。
+
+**下一步**：7 天健康观察 → P1（理解层 + 50 篇人工标注 P1-Gate）。
+
+### P1 真跑 v2 改造 & P1-Gate 自动评估（2026-09-07 续）
+
+**v1 真跑三重复合根因（导致 68% 失败 / 仅 3 mention / 8+ quarantine）：**
+
+| # | 根因 | 现象 | 修复 |
+|---|---|---|---|
+| 1 | **vLLM Qwen3 `enable_thinking` 放错位置**：`.env` 原 `INTEL_LLM_EXTRA_BODY_JSON={"enable_thinking":false}` 被 client 合进 payload 顶层，vLLM Qwen3 忽略 → thinking 实际开启 | 长文 reasoning 烧满 `MAX_TOKENS=65536` → 空 content + 紧贴 150s 超时 + 429 拥塞（24 条 empty content，latency 全 138–150s） | `.env` 改为 `{"chat_template_kwargs":{"enable_thinking":false}}` + `INTEL_LLM_MAX_TOKENS=4096`；doc19 实测 150s/16384tok/空 → 1.8s/43tok/合法 JSON |
+| 2 | **mention 单数 + 规则过严**：v1 一篇一 mention，且"纯事实/盘中异动"判 null | 78 篇 ok 仅 3 mention；38 篇预筛命中却判 null（多标的系统性漏抽，召回失败） | `prompts.py` 升 **v2**：`mentions` 数组 + 放宽触发（纯事实/异动/业绩/回购也抽，stance=neutral/horizon=event）+ 显式限定仅 A 股(.SH/.SZ/.BJ) |
+| 3 | **span 严格偏移比对误杀**：Qwen 算错字符偏移（doc13 内容正确但 span_start/end 错）→ 正确抽取被 quarantine | 正确抽取落 quarantine | `schema.validate_span` 加**原文搜索还原层**：evidence 归一化后在原文 `find()`，命中即用真实偏移回写（容忍 Qwen 偏移误差）；找不到 → 拒（幻觉） |
+
+**代码改动（文件绝对路径）：**
+- `app/intel/understand/prompts.py`：整体重写 v2，`PROMPT_VERSION="v2"`，`mentions` 数组输出格式，规则 1 放宽，限定 A 股。
+- `app/intel/understand/schema.py`：`validate_span` 改返回 4 元组 `(ok, why, start, end)` 并加原文搜索还原；`parse_extraction` 返回 `(list[MentionExtraction], style, err)`，循环校验 + 写回真实偏移。
+- `app/intel/understand/service.py`：`_one` 解包适配 `(mentions, style, err)`；同 doc 内按 symbol 去重后循环落 `doc_mentions`；summary 按去重后条数累加。
+- `tests/intel/test_schema.py`：适配 v2 数组 + 4 元组断言（`mentions == []` / 失败路径 `mentions in (None, [])`）。单测 **64 passed**。
+
+**v2 全量重跑（task IrAyeH）已完成（640 篇语料中预筛命中 471 篇全部跑完）：**
+
+| 指标 | v1（旧，已弃用） | v2（最终，全量完成） |
+|---|---|---|
+| 覆盖文档（llm_runs ok） | 12–34（历史残留） | **471** |
+| doc_mentions | 6–7 | **378**（去重 symbol 277） |
+| quarantine | 16+ | **15**（本批）+1 历史 =16 |
+| api_fail | — | **0**（enable_thinking 修复后零超时/零 429） |
+| 成本 | — | **¥2.10**（594 candidates / 471 prescreen_hit / 232 no_mention） |
+| 失败率 | 68% | **0%** |
+
+**P1-Gate 自动指标（机器可测部分，`_p1_gate_eval.py` 跑 v2 过滤集）：**
+
+| 项 | 阈值 | 实测 | 结论 |
+|---|---|---|---|
+| symbol 合规率（A 股 .SH/.SZ/.BJ，长度 8–12） | ≥90% | 100% | ✅ PASS |
+| span 有效率（evidence 在送审原文） | ≥95% | 100% | ✅ PASS |
+| 幻觉率（evidence 不在原文） | ≤2% | 0% | ✅ PASS |
+| stance≥80%（人工标注） | ≥80% | **100%**（107/107） | ✅ PASS（老朱已标注，0 不一致 / 0 幻觉） |
+
+**标注样本**：`data-cleaner/p1_gate_sample.csv`（列：doc_id/title/原文关键句_人工填/llm_symbol/llm_stance/llm_thesis/llm_evidence/人工_标的/人工_倾向/人工_论断/是否幻觉）。全量 v2 mention 的 LLM stance 分布：**bullish 25 / neutral 345 / bearish 8**（中性偏多，符合财经 RSS 偏事实陈述特征，合理）。
+
+**结论**：v2 修复已彻底消除 v1 三重复合根因——召回量从 v1 个位数提到 **378 条**（约 60 倍）、失败率从 68% 降到 **0%**、api_fail 0、零幻觉。P1-Gate **四项全量 PASS**：symbol 100% / span 100% / 幻觉 0%（机器，378 条）+ stance 一致率 **100%**（人工标注 107 条，0 不一致 / 0 幻觉）。**P1-Gate 通过 → 进 P2 画像。** 详见 `docs/memo/intel-p1-gate-report.md`。
+
+**下一步**：① ✅ 重跑收尾 + 全量数字已出；② ✅ 老朱已标注 `p1_gate_sample.csv`（107 条，stance 100% 一致 / 0 幻觉）；③ ✅ **P1-Gate 通过，进 P2 画像**（报告见 `docs/memo/intel-p1-gate-report.md`）。
+
+### P2 画像基线构建（2026-09-07 晚）
+
+**基础设施（已落地）：**
+- `migrations/013_intel_profiles.sql`：`intel.author_profiles` 表（版本化、唯一索引 on key+type+version）
+- `app/intel/aggregate/profile.py`：聚合作者/源画像核心逻辑
+  - `_profile_key()`：author 非空用 author，否则 fallback 到 source_name
+  - `_aggregate_group()`：stance 分布 / top symbols / 时间加权风格向量（半衰期 180d） / 样本量红线
+  - `_calc_excess_returns()`：基于 `factor.raw_bars` 只读计算 20d/60d 超额收益（基准=沪深300 000300.SH）
+  - `_detect_drift()`：近 90d vs 全量 stance 分布漂移检测
+- `_p2_build_profiles.py`：运行入口 + CSV 报告导出
+
+**基线结果（v2 数据，11 个 profile）：**
+
+| profile_key | type | mentions | docs | symbols | bullish | neutral | bearish | 样本不足 |
+|---|---|---|---|---|---|---|---|---|
+| 东方财富股票 | source | **339** | 206 | 255 | 11 | 325 | 3 | Y (acc=0) |
+| 华尔街见闻 | source | 14 | 6 | 10 | 6 | 8 | 0 | Y |
+| 脑洞汽车 | author | 6 | 1 | 6 | 6 | 0 | 0 | Y |
+| 其他 8 个 author | author | 1–4 | 1–4 | 1–6 | 0–1 | 0–4 | 0–3 | Y |
+
+**关键限制（诚实声明）：**
+1. **accuracy_sample = 0**：数据仅覆盖 4 天（09-03~09-07），raw_bars 截止 09-04，无法计算 20d/60d 超额收益。需积累 ≥20 个交易日后重跑。
+2. **全量样本不足**：仅东方财富股票达 339 mentions（≥30），但 accuracy 样本仍为 0；其余 10 个 profile 均 <30 mentions。
+3. **风格漂移无法判断**：数据窗口 <90 天，漂移检测全部 false（正确行为，非 bug）。
+4. **neutral 占比 96%**（325/339）：财经 RSS 偏事实陈述特征延续到画像层，bullish/bearish 信号稀疏。
+
+**下一步**：① 等 raw_bars 更新至提及日+20 交易日后 → 重跑 `_p2_build_profiles.py` 出准确度数字；② 积累更多 author-level 数据（当前 353/378 mention 的 author 为 null）；③ P2-4 画像卡片 API（待前端需求）。
+
+#### P2-3 可审阅报告 + 自动重跑（2026-09-07 17:36 完成）
+
+**新增产物：**
+- `_p2_report_html.py`：从 `intel.author_profiles` 生成自包含 HTML 报告（纯 CSS 条形图，离线可读）。
+- `p2_baseline_report.html`：11 个 profile 的可视化报告（汇总卡片 + 全量表 + 重点画像 stance 分布 + Caveat）。
+- 自动化 `949413b2`：**每周一 09:00** 自动重跑 `_p2_build_profiles.py --skip-migration`，raw_bars 行情足够后下一次运行即自动补算 accuracy（win_rate / avg_excess），无需人工记。
+
+**报告要点（与 CSV 一致）：** 11 profile、总 mention 378；样本充足 0 个（全 <30 或 acc=0）；accuracy 全 0（行情窗口卡住，已用自动化兜底）；漂移检测全 false（窗口 <90d，正确行为）。
+
+**当前状态**：P2 基线基建闭环完成，仅 accuracy 受外部行情窗口阻塞，已由每周自动重跑机制兜底。待 raw_bars 积累足够后口径自动解锁。
+
+#### P2-4 后端 intel 路由打通真数据（2026-09-07 18:35 完成）
+
+**目标**：前端"资讯分析"板块从 mock 切到真实 intel 数据（Postgres `intel` schema）。
+
+**后端（`backend/`，FastAPI）：**
+- 新建 `app/api/api_v1/endpoints/intel.py`：
+  - `GET /api/v1/intel/mentions`：`doc_mentions` JOIN `documents` + `sources`，返回 camelCase（对齐前端 `NewsMention`），仅取 `prompt_version='v2'`；`source_name` 由 LEFT JOIN `intel.sources` 补出。
+  - `GET /api/v1/intel/profiles`：`author_profiles`，**按 `computed_at` 取每个 `profile_key` 最新版本**（profile_version 当前为 `v1` 基线，与理解层 `v2` 解耦）；补齐稀疏 `stance_dist` 缺失 key、`top_symbols`（`[{symbol,count}]`）压成 `string[]`。
+  - 复用 `get_db`（async Session）、`get_current_user` 认证、`Response.success()` 包装。
+- `app/api/api_v1/api.py`：`include_router(intel.router, tags=["资讯分析"])`，路由 `/intel/mentions`、`/intel/profiles` 已确认挂载。
+
+**前端（`frontend/apps/web-ele`）：**
+- 新建 `src/api/intel.ts`：`getIntelMentionsApi()` / `getIntelProfilesApi()`（`#/api/request` 的 `requestClient`，`responseReturn:'data'`）。
+- 改 `src/views/data/news-analysis/news-service.ts`：从 mock 切到真 API；组件零改动。
+
+**验证**：后端 py_compile + import 挂载 + 真实库 SQL（mentions 378 / profiles 11 形态正确）；前端 `npm run typecheck` 新模块 0 错误。
+**踩坑**：初版误用 `PROMPT_VERSION='v2'` 过滤 profiles，而 `author_profiles.profile_version` 实为 `v1` → 返回空；改为按 `computed_at` 取最新。
+
+#### P2-5 样本量红线收口（2026-09-07 晚）
+
+- `app/intel/aggregate/profile.py`：抽出纯函数 `is_sample_sufficient(total_mentions, accuracy_sample, threshold=30)`（P2-5 红线：两者任一 <30 即样本不足）；`build_profiles` 改用它置 `sample_insufficient`，去掉原 `ACCURACY_MIN_SAMPLE=10` 双阈值（统一为 30）。
+- `tests/intel/test_profile_sample.py`：**新增**（验收清单要求"样本不足逻辑有单测"），覆盖边界 + 矩阵参数化。
+- 前端 `author-profiles.vue`：accuracy 列改 `accuracyLabel`/`accuracyInsufficient` —— `0→待行情`（行情窗口未到）、`<30→样本不足`、`≥30→"N 样本·20/60d"`；达标显绿。
+- **技术债务 TD-001**：后端 `intel.py` 经 `get_db` 直读 dc 的 `intel` schema（与 dc 共用 `quant` 库）。已记入 `docs/memo/TECH_DEBT.md`，**按用户要求不改代码**，待 dc 有稳定对外接口后再解耦。
+
+**P2 完成度**：P2-1~P2-5 代码/基建全部落地；画像卡片准确度数字带样本态（样本不足/待行情/数字），样本红线有单测。唯一未达标验收项：**"抽 3 个作者×各 10 条提及，超额收益与手工行情核对一致"** —— 受 `factor.raw_bars` 行情窗口阻塞（提及日+20 交易日数据尚未产生），由每周一自动重跑（`949413b2`）在行情就绪后自动解锁，届时补做人工核对。
+**联调**：后端 `uvicorn main:app`（:8000）+ 前端 `pnpm dev` 登录后访问数据中心→资讯分析；CORS 若拦截需确认前端 dev 端口在 `ALLOWED_ORIGINS`。
+
+---
+
+### P3 — 因子化 + 回测接入（2026-09-08）
+
+#### 严重修复：raw_bars 口径写错（影响 P2 accuracy）
+
+写 P2 时凭记忆把行情查询写成 `freq='daily'`、基准 `000300.SH`，实测**两处都错**：
+
+| 项 | 错误写法 | 实际值 | 后果 |
+|---|---|---|---|
+| `freq` | `'daily'` | **`'1d'`** | 所有 raw_bars 查询**静默返回 0 行** → P2 accuracy 恒为 0 |
+| 基准 | `000300.SH` | 库里只有 **`000985.SZ`**（中证全指，1194 天） | 基准查询永远回退 |
+
+项目内 `backfill_0902.py` / `app/backtest/data.py` / `app/storage/raw_store.py` 一致用 `'1d'`，是我写 P2 时没核对。**修复后 `accuracy_sample` 从 0 → 1**（行情窗口仍是真限制，但至少不再是 bug）。已在 `profile.py` 加 `FREQ_DAILY = "1d"` 常量与注释警示。
+
+#### P3-0 建表与注册
+
+- `migrations/014_intel_factor_values.sql`：**`intel.factor_values`** 建表（唯一键 `(symbol, trade_date, factor_code, factor_version, prompt_version)` —— 版本化不覆盖，LLM 重跑不改写旧版本可见性）+ 5 个索引。
+- `factor.definitions` 注册 6 个 `INTL_*` 因子占位（`data_sources=['intel.doc_mentions']`）。
+
+**⚠️ 迁移执行约定（踩坑，2026-09-08）**：迁移文件**必须**用 `app.intel.store.run_sql_file()` 执行（DBAPI 原生），**不得**用 `engine.execute(text(sql))`。原因：013 迁移注释里写 `-- [{"count":8}]`，`:8` 被 `text()` 解析成 bind parameter，报 `A value is required for bind parameter '8'`——纯 DDL 无参数却要求传参，且冒号藏在行尾注释里极难定位。已由 `tests/intel/test_migrations_bindparams.py` 静态扫描全部 `.sql` 锁死（断言 `text(sql)._bindparams` 为空）。迁移注释里 JSON 示例一律写 `"键" = 值`。
+
+#### P3-1/P3-2 防前视（单测先行，符合 plan 要求）
+
+- `app/intel/factorize/availability.py`：`available_at = max(published_at, ingested_at)`；`build_factor_rows` / `upsert_factor_values`（ON CONFLICT 同版本覆盖）/ `fetch_visible_factor_values`（按 `available_at <= as_of` 裁剪）。
+- `tests/intel/test_factorize_antilookahead.py`：**10 passed**，含"LLM 重跑（新 prompt_version）不得改变旧版本可见性"。
+
+#### P3-3 六因子实现 + 落库
+
+`app/intel/factorize/factors.py`（纯函数，可测）+ `_p3_build_factors.py`：
+
+| 因子 | 定义 | 窗口 |
+|---|---|---|
+| `INTL_MENTION_HEAT_5` | 去重文档提及数 | 5 交易日 |
+| `INTL_SENTIMENT_10` | 净情绪 `(bull-bear)/total ∈ [-1,1]` | 10 交易日 |
+| `INTL_RESONANCE_5` | 不同来源数（跨源共振） | 5 交易日 |
+| `INTL_FIRST_MENTION` | 回看窗口内首次提及 → 1/0 | 60 交易日 |
+| `INTL_AUTHOR_CONVICTION` | 作者历史准确度；样本 <10 **降级为 LLM 置信度**（诚实降级，不伪造） | — |
+| `INTL_STYLE_MATCH` | 提及者 top_symbols 命中该标的比例 | — |
+
+**防前视增强**：`to_trade_date()` —— A 股 15:00 收盘，收盘后（或非交易日）入库的提及推到**下一交易日**；超出日历范围返回 `None`（宁缺勿前视）。另加 `extend_calendar()`：raw_bars 行情 T+0 滞后，不外推会让近期 mention **全部被丢弃**（实测 378 → 0 行），故按工作日外推至 mention 日期（近似日历，缺行情时回测自然跳过）。
+
+**落库结果**：**1764 行**（294 个 symbol×trade_date 组合 × 6 因子），覆盖 277 标的 × 2 交易日，防前视自检 **0 违例**。
+`tests/intel/test_factorize_factors.py`：**34 passed**（交易日映射 / 滚动窗口 / 六因子语义 / 降级 / 版本化 / 防前视不变式）。
+**全量 intel 单测：118 passed。**
+
+#### P3-4 IC 初检 + P3-5 成本复盘
+
+`_p3_eval.py`（Spearman 秩相关，T 日收盘买入 → T+w 收盘卖出，防前视对齐）：
+
+- **IC 全部"待解锁"**：因子日 09-07~09-08，行情末尾 09-04 → 无任何可用截面。**如实记录，不伪造数字**；等行情入库后重跑即出。
+- 因子取值概况（294 行/因子）：`AUTHOR_CONVICTION` mean 0.96（降级为置信度）、`FIRST_MENTION` 94% 为 1（语料仅 4 天，几乎全是首提）、`SENTIMENT_10` 非零仅 31/294（neutral 占绝对多数）、`STYLE_MATCH` 非零 44/294。均属数据现实。
+
+**P3-5 成本复盘（D2 决策落地）：**
+
+| version | status | runs | 成本(¥) | tokens | 平均延迟 |
+|---|---|---|---|---|---|
+| v1 | ok | 158 | 4.8646 | 817,084 | 36,372 ms |
+| v1 | api_fail | 37 | 0.0000 | 570,587 | 137,386 ms |
+| v2 | ok | 471 | 2.0957 | 809,272 | **3,151 ms** |
+
+累计 **¥6.96**；v2 单条 mention 成本 **≈¥0.0184**；关闭 thinking 后延迟降 **11.5 倍**、成本降 **57%**。
+**结论：批量抽取无需切本地 ollama**，云端性价比已足够（D2 决策关闭）。
+
+#### P3 状态
+
+- ✅ P3-0 建表 / P3-1 available_at / P3-2 防前视单测（10）/ P3-3 六因子（1764 行，单测 34）/ P3-5 成本复盘
+- ⏳ **IC 评估**（P3 验收项，非 P3-4）：数据窗口阻塞，已并入每周一自动重跑（`949413b2` 串联 P2 画像 + P3 因子 + IC 评估三步）
+- ✅ **P3-4 消费侧**（dc 因子选股/回测读 `intel.factor_values`，可选依赖）：已完成，见下
+
+#### P3-4 消费侧（2026-09-08 完成）
+
+新增 `app/intel/factorize/consumer.py`，作为 dc 回测 / 选股读取 INTL_* 因子的唯一入口：
+
+| 函数 | 用途 |
+|---|---|
+| `intel_factors_available()` | 表存在性探测（进程内缓存；异常即降级，不抛） |
+| `load_factor_panel(codes, symbols, start, end, as_of, ...)` | 多因子批量读取长表面板 |
+| `to_wide(panel, code)` | 长表 → 宽表（index=trade_date, columns=symbol） |
+| `merge_intel_factors(df, codes, as_of, ...)` | 合并进因子面板，返回 `(df, warnings)` |
+
+**两个硬约束**：
+
+1. **防前视**：`as_of` 以 `available_at <= as_of` 下推到 SQL。`as_of` 传 `date` 时按当日 **00:00** 处理（严格口径，恰是开盘决策能拿到的信息集）。真库实测：`as_of=2026-09-01 → 0 行`、`09-07 00:00 → 0 行`、`09-08 12:00 → 1764 行`。
+2. **可选依赖**：表缺失 / 查询异常 / 无数据 → 一律返回空结果 + `warnings`，**绝不抛异常**；`merge_intel_factors` 在降级时仍保留 INTL_* 列（值 NaN），调用方无需改代码。
+
+**验收第 3 条（intel 缺席不影响既有功能）已确认**：`app/factors`、`app/backtest`、`app/storage`、`app/strategy`、`app/pipeline` **零 import intel**；仅 `api/v1/router.py` 与 `tasks/scheduler.py` 在 `if settings.INTEL_ENABLED:` 内延迟导入，关闭时 intel 包（含 LLM SDK 重型依赖）完全不加载。
+
+**单测** `tests/intel/test_factorize_consumer.py` **12 passed**：覆盖降级不抛（表缺失 / 连接异常 / 缺列）、防前视 SQL 契约（假引擎断言 `available_at <=` 条件与参数下推）、date 归一化、版本过滤、宽表形态、按 (symbol, trade_date) 正确填值。
+
+**下一步**：① 等行情解锁后跑 IC → 决定因子去留；② 因子去留确定后，把 `merge_intel_factors` 真正接入回测/选股策略（消费 API 已就绪）；③ 之后进 P4（微信半自动 + 风格总结）。
+
+#### P4 微信半自动 + 风格总结（2026-09-08 起）
+
+##### P4-1 人工投喂路径（已完成）
+
+把 `manual.py` 从占位（NotImplementedError）实装为可投喂入口，复用 service 同一入库链路（规范化→去重→转载识别→落盘→入库），理解层/画像/因子对来源无差别自动接管。
+
+- `app/intel/ingest/manual.py`：`ManualSource.collect(target)` 自动判别输入形态——
+  - `.txt`/`.csv`（每行/每列一个 URL）→ 逐条 httpx 抓取解析（清单识别：全部行像 URL 才算清单，否则整篇当纯文本文章；csv 自动识别 url/link/链接 列）
+  - `.html`/`.htm`/`.mhtml`（浏览器导出/剪藏）→ bs4 抽 标题(og:title>tittle>h1) / 作者(article:author 等) / 时间(article:published_time 等) / 正文(article>main>body，剥 script/style/nav 等)
+  - `.txt`/`.md` → 整篇纯文本（html 转义后作 content_html）
+  - 目录 → 递归按扩展名分发
+  - mhtml 用 `email.message_from_bytes` 抽 text/html 部；时间统一 `astimezone(utc)` 对齐 TIMESTAMPTZ；单条 URL 抓取失败 → `fetch` 返回 `ok=False`（单源失败隔离），逐文件/逐 URL 错误在聚合层吞掉仅记 warning
+- `app/intel/service.py`：新增 `ensure_manual_source(name)`（按 `manual://<name>` 幂等 upsert `intel.sources`，source_type=manual，不参与 RSS 轮询）+ `run_manual_ingest(target, source_name=, limit=)`（登记源 → collect → 复用 `_ingest_one_source`）
+- `_p4_manual_ingest.py`：运行入口，`--target` / `--source-name` / `--limit` / `--dry-run`
+- `tests/intel/test_manual_ingest.py`：**11 passed** —— 清单(.txt/.csv) / 导出(HTML/mhtml) / 纯文本 / 目录分发 / 坏目标空返回 / fetch 隔离 / 时间解析鲁棒性 / 真实库入库集成（落库+raw_path sha 校验+二次投喂判重，带清理）
+- **全量 intel 单测：144 passed**（原 133 + P4-1 的 11），零回归
+
+**验证**：CLI dry-run 正确抽取标题/作者/+08:00→UTC 时间；真实 ingest 落 `intel.documents` 1 篇并回查一致；清理无残留。
+
+**下一步（P4 剩余）**：① P4-3 `rsshub.py` 可选源默认 disabled、health 标 degraded；② P4-4 风格总结报告（云端 LLM 对单作者全量文档综述，进画像卡片）。③ 全链路验收：导入某公众号 200 篇历史文章 → 去重→预筛→抽取→画像→INTL_STYLE_MATCH（理解层 `run_intel_understanding.py --apply` 对来源无差别接管）。
+
+### P4-2 `wechat.py` 目录 watch（已完成 2026-09-08）
+
+**设计**：微信半自动摄取（P4b）。微信导出文件与 manual 解析完全一致，故 `WeChatSource` 直接复用 `ManualSource` 解析，仅以 `source_type='wechat'` 作溯源区分（落 `intel.sources` 后理解层/画像/因子对来源无差别）。真正的"自动"在 `service.run_wechat_watch`：监听 `~/intel-inbox/`，按 **子目录=公众号** 分组（扁平文件归默认源 `wechat-inbox`），逐篇 ingest 后移入 `processed/` 作幂等标记（重跑只捡新文件；同内容因 content_hash 判重不重复入库）。
+
+**交付**：
+- `app/intel/ingest/wechat.py`：重写占位 → `WeChatSource` 实装（collect/fetch 委托 ManualSource，满足 FeedSource 契约）
+- `app/core/config.py`：新增 `INTEL_INBOX_DIR`(默认 `~/intel-inbox`) / `INTEL_INBOX_POLL_SEC`(30) / `INTEL_INBOX_DEFAULT_SOURCE`(`wechat-inbox`) / `INTEL_INBOX_COOLDOWN_SEC`(2.0)
+- `app/intel/service.py`：新增 `ensure_wechat_source(name)`（按 `wechat://<name>` 幂等 upsert）+ `run_wechat_ingest(target, source_name=, limit=)`（与 manual 同构，source_type=wechat）+ `run_wechat_watch(inbox=, once=, default_source=, cooldown_sec=, move_processed=)`（扫描→分组→入库→归档；`once=False` 循环轮询；跳过 mtime 距现在 < cooldown 的文件防读半截）
+- `_p4_wechat_watch.py`：运行入口 `--inbox` / `--once` / `--loop` / `--default-source` / `--cooldown` / `--no-move` / `--dry-run`
+- `tests/intel/test_wechat_watch.py`：**7 passed** —— 候选扫描(排除 processed/不支持扩展名) / cooldown 跳过正在写入 / 子目录分组+归档移动(mock ingest) / 缺失 inbox 优雅返回 / 单文件失败留原地重试 / 真实库入库集成(落库+回查+清理)
+- **全量 intel 单测：151 passed**（原 144 + P4-2 的 7），零回归
+
+**关键实现点**：① cooldown 检查对"mtime 略超前 now"的时钟/文件系统分辨率假象做 clamp（`age<0 → 0`），避免 cooldown=0 时刚落地的文件被误跳过；② 单文件 ingest 抛错不拖垮整轮、留原地等下轮重试；③ 归档用 `shutil.move` 保留子目录结构，同名碰撞追加 mtime 避免覆盖。
+
+### P4-3 RSSHub 可选源（已完成 2026-09-08）
+
+**设计**：微信公众号等第三方聚合为 RSS（RSSHub 自建/第三方实例）。稳定性与合规性不保证，故定位为**可选、默认关闭**的备选路径。解析复用 `feed_parser`（与 RSSSource 同），差异两点：① `url` 写 `rsshub://<route>` 时按 `settings.INTEL_RSSHUB_BASE_URL` 解析为真实 feed URL（未配置 base URL 时 fetch 直接 `ok=False`）；② 入库成功时 `feed_health` 记 **`degraded`**（而非 `ok`）——第三方中继，不假装稳。
+
+**交付**：
+- `app/intel/ingest/rsshub.py`：`RSSHubSource` 实装（source_type='rsshub'）；`resolve_rsshub_url()` 解析 `rsshub://`；失败返回 `ok=False` 单源隔离
+- `app/core/config.py`：新增 `INTEL_RSSHUB_BASE_URL`（默认空）
+- `app/intel/ingest/registry.py`：登记 `"rsshub": RSSHubSource`
+- `app/intel/service.py`：新增 `ensure_rsshub_source(name, url, enabled=False, credibility="low")`（`url` 支持 `rsshub://<route>`）+ `run_rsshub_ingest()`（只拉 enabled 的 rsshub 源，成功记 `degraded`、失败记 `failed`）
+- `_p4_rsshub_ingest.py`：运行入口 `--register --name --url [--enable]` / `--run`
+- `tests/intel/test_rsshub.py`：**7 passed** —— `rsshub://` 解析(含 base URL 缺失报错) / RSS 解析(mock httpx) / `run_rsshub_ingest` 成功入库后 `feed_health` 标 `degraded` + 真实落库集成 / 无 enabled 源返回 0
+- **全量 intel 单测：158 passed**（原 151 + P4-3 的 7），零回归
+
+**关键实现点**：① `rsshub://` 解析仅在配置了 base URL 时成立，未配置即 `ok=False`（不假装可用）；② `run_rsshub_ingest` 始终只 poll `enabled=TRUE` 的 rsshub 源，而 `ensure_rsshub_source` 默认 `enabled=False`，故**开箱即无 rsshub 源被拉取**（符合"默认 disabled"）；③ `feed_health.status` 无枚举约束，直接写入 `degraded` 文本值，dashboard 一眼可见"此源不可全信"。
+
+### P4-4 作者风格总结报告（已完成 2026-09-09）
+
+**设计**：与逐篇抽取（P1，量大利薄）不同，风格总结是**量小质高**任务——每位作者一次云端 LLM 调用，输入＝该作者的聚合统计（stance/horizon/top_symbols/准确度/漂移）＋近期观点样本（默认 40 条），输出＝2-4 句自然语言综述 + 结构化标签（风格/行业/持仓周期/笃定度/局限/可靠度）。成本在作者数量级而非文档数量级。
+
+**交付**：
+- `migrations/016_intel_style_summaries.sql`：新建 `intel.author_style_summaries`，唯一键 `(profile_key, profile_type, summary_version)`（版本化不覆盖，与 factor_values/author_profiles 同款纪律）；含 input_stats 输入快照与 model/tokens/cost_cny 成本快照
+- `app/intel/aggregate/style_summary.py`（新建）：`STYLE_PROMPT_VERSION="style_v1"` / `SUMMARY_VERSION="v1"`；`ensure_style_summary_table` / `load_profiles` / `fetch_author_mentions` / `build_style_prompt` / `parse_style_summary` / `upsert_style_summary` / `build_style_summaries` / `latest_summaries`
+- `app/intel/understand/llm/client.py`：`extract_once` 新增 `prompt_version` 参数（默认仍为抽取版），使风格总结成本在 `llm_runs` 里**与抽取分开归因**
+- `_p4_build_style_summaries.py`：运行入口（默认 dry-run；`--apply` 真跑；`--limit` / `--authors` / `--min-mentions` / `--profile-version` / `--summary-version`）
+- `backend/app/api/api_v1/endpoints/intel.py`：`/profiles` 加 `LEFT JOIN LATERAL` 取每位作者最新一条总结，新增 styleSummary/styleTags/styleSectors/styleHoldingPeriod/styleConviction/styleCaveats/styleConfidence/styleStatus 八个 camelCase 字段
+- 前端 `web-ele`：`types.ts` 加可选 style 字段；`components/author-profiles.vue` 新增「风格总结（LLM）」列（标签 chips + 3 行钳制摘要 + tooltip 展示行业/局限 + 可靠度；未生成时按 status 显示「样本不足·未生成 / LLM 调用失败 / 输出不合规 / 未生成」）
+- `tests/intel/test_style_summary.py`：**13 passed** —— prompt 构造 / JSON 解析（markdown 围栏、summary 必填、标签白名单过滤、confidence 夹紧、枚举非法置空、无 JSON 报错）/ mock LLM 全链路落库 / 样本不足 skip 不调 LLM / dry-run 不调 LLM / schema_fail 仍记成本 / prompt_version=style_v1 归因
+- **全量 intel 单测：171 passed**（原 158 + P4-4 的 13），零回归
+
+**关键实现点**：① 样本红线 `min_mentions`（默认 3）以下 skip，status=skipped 不浪费钱；② 预算闸 `BudgetExceeded` 停批并告警、不静默降级；③ 解析失败（schema_fail）**仍记成本**——钱已花；④ JSONB 列由 SQLAlchemy 驱动直接反序列化为 Python 对象，读回时不要 `json.loads`；⑤ 标签走白名单（12 个预设），模型自造标签被过滤，避免风格维度发散。
+
+**P4 结论**：P4-1~P4-4 全部完成。剩余事项：① 用真实公众号语料跑全链路验收（200 篇 → 去重→预筛→抽取→画像→INTL_STYLE_MATCH）；② 是否把 P4-4 并入每周一自动化（会产生周期性 LLM 成本，待定）。
+
+### P4 全链路验收（2026-09-09 执行）
+
+**验收脚本**：`_p4_acceptance.py` —— 默认零成本验收现状并输出 PASS/FAIL 表；带 `--ingest` 时跑完整链路
+（摄取 → 理解层抽取 → P2 画像 → P3 因子 → 验收）。**不生成任何合成语料**，缺语料时如实报 BLOCKED。
+
+**真实数据验收结果（6/6 PASS）**：
+
+| 阶段 | 结果 | 关键指标 |
+|---|---|---|
+| 1 摄取/去重 | PASS | 5302 篇文档，同源 content_hash 重复 **0**，转载标记 121 篇，raw_path 缺失 0 |
+| 2 预筛 | PASS | 抽样 **200 篇 → 60 篇命中标的（30%）**，其余为纯方法论/闲聊 |
+| 3 LLM 抽取 | PASS | 378 条 mention / 覆盖 224 篇，孤立 mention **0**，quarantine 24，成功调用 471 次，累计 ¥6.9603 |
+| 4 画像 | PASS | 11 个画像，`sum(total_mentions)=378` **==** mention 总数 378（归属一致性成立） |
+| 5 因子 | PASS | 1764 行 / 277 标的 / 6 个 INTL_* 因子；`INTL_STYLE_MATCH` 294 行（44 非零）；**防前视违例 0** |
+| 6 P4-4 风格总结 | PASS（补记） | 首跑因内网 LLM 502 全数 api_fail（¥0，已修复两个缺陷）；**08:31 恢复后重跑 7 条 ok / 4 条 skipped，成本 ¥0.0232，0 幻觉** |
+
+> 补记：最新一次跑批后文档数增至 5359（转载 124），累计成本 ¥6.9835（= 抽取 ¥6.9603 + 风格总结 ¥0.0232），其余指标不变。
+
+**投喂链路贯通性验证**（真实原文落盘文件 25 篇，走 P4-2 `run_wechat_ingest`）：
+入库 25 篇（new=25 / dup=0），其中 25 篇被 simhash 判为已存在原文的转载（`duplicate_of_id` 正确指向首发）；
+对这批做预筛：**24 篇 → 19 篇命中（79%）**，top 标的 301206.SZ / 605077.SH / 002597.SZ 等。验证后已清理测试源。
+
+**已验证 vs 待验证**：
+- ✅ 已验证：去重、预筛、抽取、画像、因子（含 INTL_STYLE_MATCH）、防前视、成本可查、P4-1/P4-2 投喂入库→预筛
+- ⏳ 待真实语料：公众号 200 篇走**完整**链路（目前只有 RSS 语料；库内无公众号语料，`~/intel-inbox` 未创建）
+
+**拿到公众号语料后的一键验收**：
+```bash
+# 1) 把导出的文章按公众号分目录放入（子目录=公众号名）
+mkdir -p ~/intel-inbox/公众号A && cp <导出的 html/mhtml> ~/intel-inbox/公众号A/
+# 2) 一键跑完整链路（摄取 → 抽取 → 画像 → 因子 → 验收）
+.venv/Scripts/python.exe _p4_acceptance.py --ingest ~/intel-inbox/公众号A \
+    --source-name 公众号A --extract-limit 200 --build-profiles --build-factors
+```
+
+### P4-4 首次真跑 & 失败保护（2026-09-09 补）
+
+**首次真跑结果（未成功，如实记录）**：`_p4_build_style_summaries.py --apply`
+→ `candidates=11, ok=0, skipped=4, failed=7, cost_cny=0`。
+11 个画像里 4 个样本不足（mentions<3）按设计跳过，**7 个送审全部 api_fail**，零成本（未产生费用）。
+
+| 根因 | 证据 |
+|---|---|
+| LLM 上游不可达 | `INTEL_LLM_BASE_URL=http://192.168.14.88:8000/v1`（办公室内网 vLLM）；`curl http://192.168.14.88:8000/v1/models` → **HTTP 502 `upstream connect failed: connection timed out`**，报错为 `重试 3 次仍失败`。人在上海出差，不在办公网内。 |
+| 对照：公网端点可达 | `token.sensenova.cn` / `api.deepseek.com` 均返回 401（可达、需鉴权）。所以**纯粹是内网盒子连不上**，不是配置错。 |
+
+**由此暴露并修复的两个真实缺陷**：
+
+1. **失败会洗掉已有成功总结（数据破坏风险）**
+   `upsert_style_summary` 唯一键 `(profile_key, profile_type, summary_version)`，`api_fail` / `schema_fail` 会直接 `DO UPDATE` 覆盖掉库里已有的 `ok` 记录 —— 一次网络抖动就把生成好的总结变成空白，前端画像卡片跟着空。
+   **修复**：`upsert_style_summary(rec, engine, protect_ok=True)` —— `status != 'ok'` 且库里已是 `ok` 时**拒绝写入**并 `logger.warning`，返回 `False`；主循环据此把 detail 标为 `api_fail_kept_previous` / `schema_fail_kept_previous`，并计入 `out["kept_previous"]`。人工强制重算可传 `protect_ok=False`。
+2. **后端 JOIN 漏了 `profile_type`**
+   `/profiles` 的 `LEFT JOIN LATERAL` 只按 `profile_key` 匹配，同名作者与源会串数据 → 已补 `AND s.profile_type = p.profile_type`。真库验证 11/11 行都正确带出 `style_status`。
+
+**附带改进**：dry-run 现在如实区分 `dry_run` 与 `dry_run_skip`（此前样本不足的作者也被列成 `dry_run`，看不出会不会被跳过）。
+
+**验收口径收紧**：`_p4_acceptance.py` 第 6 项不再"表存在即 PASS" —— `ok=0` 且存在 `api_fail` 时判 **FAIL 并标 BLOCKED**，避免上游挂了还显示绿灯。当前结果 **5/6**：
+
+| 阶段 | 结果 | 关键指标 |
+|---|---|---|
+| 1–5 | PASS | 同上次（documents 5359 / 预筛 30% / 378 mention / 11 画像 / 1764 因子行 / 防前视 0） |
+| 6 P4-4 风格总结 | **FAIL(BLOCKED)** | `summaries=11, ok=0, by_status={skipped:4, api_fail:7}` |
+
+**单测**：`test_style_summary.py` 13 → **16 passed**（新增：dry-run 标 dry_run_skip、api_fail 不覆盖已有 ok、protect_ok=False 可强制覆盖）；**intel 全量 171 → 174 passed**，零回归。
+
+**恢复路径**（LLM 可达后一条命令即可，成本预估 < ¥0.1）：
+```bash
+.venv/Scripts/python.exe _p4_build_style_summaries.py --apply
+# 已有 ok 记录不会被失败覆盖；重跑只补 failed 的那 7 个
+```
+
+**✅ LLM 恢复后重跑成功（2026-09-09 08:31，全链路闭环）**：`ok=7 / skipped=4 / failed=0 / kept_previous=0 / **cost ¥0.0232**`，
+7 次调用单次 3.0–4.4s（对比失败那次的 7×4 次重试耗时 5m52s）。验收回到 **6/6 PASS**。
+
+| 画像 | 类型 | 标签 | 行业 | 周期/笃定 | 可靠度 |
+|---|---|---|---|---|---|
+| 东方财富股票 | source | 事件驱动·行业景气·短线博弈 | 电子/半导体/新能源/化工/航运 | event / low | 0.40 |
+| 华尔街见闻 | source | 事件驱动·政策解读·龙头偏好 | 银行/黄金珠宝/科技/消费电子 | event / medium | 0.45 |
+| 脑洞汽车 | author | 成长股·行业景气·龙头偏好 | 汽车电子/半导体/功率器件/模拟芯片 | mid / high | 0.40 |
+| 红餐供应链指南 | author | 龙头偏好·行业景气·价值投资 | 食品饮料/调味品 | mid / high | 0.40 |
+| 郑廷旭 | author | 事件驱动·行业景气 | 汽车/消费电子 | event / low | 0.40 |
+| 小饭桌 | author | 事件驱动·行业景气 | 游戏/半导体/传媒 | event / low | 0.30 |
+| 鹏程说 | author | 事件驱动·政策解读·龙头偏好 | 银行/保险 | event / low | 0.30 |
+
+**质量核验（关键）**：**0 幻觉** —— 每条综述都能对上真实素材（红餐点名加加食品/千禾味业/中炬高新 vs 龙头海天味业；脑洞汽车点名 IGBT/NOR Flash/隔离驱动；鹏程说对应国有行定增注资）。
+模型**主动压低可靠度（0.30–0.45）并在 caveats 里自陈局限**（"样本仅一天/单日集中，无法判断长期风格"），说明 prompt 的防编造约束生效。
+注意 `conviction`（作者表述笃定度）与 `confidence`（结论可靠度）被正确区分——红餐 conviction=high 但 confidence=0.40。
+
+**报告产出**：`_p4_style_report.py` → `p4_style_report.html`（自包含单文件，纯读取、不写库不调 LLM），
+含概览（已生成/未生成/成本/延迟/平均可靠度）、每位作者卡片（标签·行业·可靠度条·综述·局限·成本）、
+未生成清单、llm_runs 成本归因表、以及"归纳≠真实长期风格、勿据此决策"的免责说明。
+
+**成本归因复核**：`llm_runs` 中 `style_v1` **35 行 / ¥0.0232**（28 行是失败重试的记账、tokens=0，7 行成功），
+与抽取 v1(¥4.8646)/v2(¥2.0957) 完全分离；全局累计 **¥6.9835**（¥6.9603 + ¥0.0232，差额精确对上）。
+
+**单测**：intel 全量重跑 **174 passed**（数据变化后仍零回归）。
+**后端出参验证**：`/profiles` 的 JOIN 在真库上 11/11 行正确带出 `style_status`（7 ok + 4 skipped）。
+
+### P4-1 批量上传（Web 拖拽投喂，2026-09-09）
+
+**背景**：P4-1 的解析能力早已有（`ManualSource` 支持 html/htm/mhtml/txt/md/csv），但入口只有 CLI
+（`_p4_manual_ingest.py --target <文件/目录>`）。本次补上**不用开终端**的批量上传通道，三处改动：
+
+| 层 | 文件 | 内容 |
+|---|---|---|
+| dc | `app/intel/api.py` `POST /api/v1/intel/upload` | multipart 多文件 + `source_name` / `source_type` / `dry_run`；复用 `run_manual_ingest`（P4-1）/ `run_wechat_ingest`（P4-2），**不重复实现解析** |
+| backend | `app/api/api_v1/endpoints/intel.py` `POST /api/v1/intel/upload` | 代转发到 dc（架构约定：前端不直连 dc，统一经主后端）；新增配置 `INTEL_CLEANER_BASE_URL`（默认 `http://127.0.0.1:8100`）/ `INTEL_CLEANER_API_KEY` |
+| 前端 | `web-ele` `views/data/news-analysis/components/article-upload.vue` | 新增「文章投喂」Tab：拖拽/多选、源名、来源类型（公众号/其他）、只试解析开关，结果按 选中/通过/新增/重复/转载/失败 统计 + 逐文件明细 |
+
+**设计纪律**：① 单文件失败**隔离**（其余继续，明细回传）；② 扩展名白名单 + 单文件 20MB + 一次 ≤200 个；
+③ 文件名清洗 `_safe_filename` 防路径穿越（`../../etc/passwd` → `passwd`）；④ 上传临时目录用完即删
+（原文另按 `content_hash` 独立落盘 `raw_path`，删除安全）；⑤ dry-run 只解析不写库。
+
+**两个易踩的坑**：
+- 前端 `requestClient` 默认 `Content-Type: application/json`，传 FormData 必须显式置 `undefined`
+  让浏览器自动补 multipart boundary，否则 422；Vben 内置 `uploader` 只支持单文件且硬编码无 boundary，故未用。
+- 默认 10s 超时不够（批量解析+入库），调用处显式放宽到 300s。
+
+**验证**：`tests/intel/test_upload_api.py` **12 passed**（html/纯文本/批量 3 文件/重复上传幂等 dup=1/
+扩展名拒收/混合部分拒收/dry-run 不写库/source_type 非法 400/wechat 溯源/默认源名/文件名清洗/临时目录清理）；
+另用 curl 打真实 HTTP 服务冒烟：2 文件 `new=2` 同一 `source_id`（源名幂等）、重复上传 `dup=1`、
+`.pdf` 返回 400、dry-run 返回解析标题；冒烟数据已清理。
+
+#### P4-1 补：zip 打包上传（服务端自动解压，2026-09-09）
+
+一次拖一个 zip（公众号批量导出的常见形态）即可，dc 侧自动解压后逐个入库。四道防护 + 一个还原：
+
+| 项 | 位置 | 说明 |
+|---|---|---|
+| Zip Slip | `app/intel/api.py::_extract_zip` | 逐条校验 `target.resolve()` 必须仍在解压目录内，否则跳过 |
+| zip bomb | 同上 | 单文件压缩比上限 200×、解压总量上限 200MB、条目上限 500 |
+| 噪音过滤 | 同上 | 目录 / `__MACOSX/` / 点开头文件 / `.DS_Store` 一律跳过；**嵌套 zip 不再二次解压**（明示为 rejected） |
+| 中文名还原 | `_decode_zip_name` | zip 只在 `flag_bits & 0x800` 时标注 UTF-8；Windows 资源管理器/好压打的包不置该位，名按 **cp437 存 gbk 字节**，直接读是 `╓╨╬─╬─╒┬.html`。按 cp437→gbk 还原，失败退 utf-8，再失败原样返回 |
+
+- 展示名形如 `bundle.zip!子目录/文章.html`，响应新增 `extracted`（zip 解出的文件数），便于核对"传 1 个包进来 25 篇"。
+- 坏 zip 只让自己失败（`解压失败：<异常>`），同批其他文件照常入库。
+- **三处白名单必须同步**：dc `UPLOAD_ALLOWED_EXT`、backend `UPLOAD_ALLOWED_EXT`、前端 `ACCEPT`
+  都补了 `.zip` —— 漏掉任何一处都会变成"网关就拦了，功能形同没有"。
+
+**两个调试中发现的真问题（已修）**：
+
+0. `failed` 计数把 dry-run 结果算成失败：原式 `len(results) - len(ok_rows) + len(rejected)`，
+   dry_run 的每条 status 是 `dry_run` 而非 `ok`，于是被全数计为失败 —— 实测
+   「3 篇试解析 + 1 个嵌套 zip」→ `failed=4`，前端误报"3 个文件失败"。
+   改为只数 `status == "error"` + 拒收项。
+1. `zipfile` **造不出** Windows 那种中文包 —— `ZipInfo._encodeFilenameFlags` 只要文件名非 ASCII
+   就强制 UTF-8 编码并置 0x800，手动清标志也会被加回去。测试里改为**先写等长 ASCII 占位名，
+   再原位替换成 gbk 字节**（长度不变，偏移量/CRC 都不用改）才能真正覆盖还原逻辑，否则测试等于没测。
+2. **`content_hash` 去重是跨源全局的**（`store.existing_document_keys` 只按 source 限定 external_id，
+   canonical_url / content_hash 均全局）。因此任何测试残留文档都会污染后续用例——乃至**下一次运行**，
+   表现为偶发 `new=0`。夹具 `_cleanup()` 已改为按源名列表清 `doc_mentions→documents→feed_health→sources`，
+   并把兜底源名「上传」一并纳入；临时目录清理用例也改为只看**本次是否新增**（历史垃圾不归它管）。
+
+**验证**：`tests/intel/test_upload_api.py` **22 passed**（原 12 + zip 7 + dry-run 计数回归 1 +
+临时目录唯一性 1 + 超期清扫 1：解压入库/噪音与嵌套 zip/Windows 中文名/Zip Slip 拦截/
+包内无可用文件 400/zip dry-run/坏 zip 隔离）；连跑 3 轮无抖动。**intel 全量 196 passed**。
+后端新增 `backend/tests/test_intel_upload_forward.py` **5 passed**（网关必须放行 `.zip`、
+白名单快照、拒收不转发、网关拒收回传前端、dc 不可达 502）—— **网关漏配在 dc 单测里永远测不出来**。
+
+**真机冒烟（dc 起来后 curl，非单测）**：一个含 `文章A.html` / `2026-09/文章B.html` /
+`2026-09/notes.txt` / `__MACOSX/._文章A.html` / `inner.zip` 的包 →
+`uploaded=1, extracted=3, accepted=3, new=3, failed=1`（嵌套 zip 被明示拒收），
+中文名与子目录路径完整保留；同一包再传一次 `new=0, dup=3`（内容 hash 幂等）；
+dry-run 返回三篇标题。冒烟数据已清理，库回到基线 6387 篇 / 5 个 RSS 源 / 0 孤儿。
+
+#### 临时目录清理：两个 Windows 专属坑（2026-09-09 下午）
+
+上传临时目录原先用 `shutil.rmtree(..., ignore_errors=True)`，`ignore_errors=True` **静默吞掉**
+PermissionError，跑几轮就堆十几个垃圾目录。换 `_rmtree_retry`（5 次退避重试 + 失败记 warning）
+后又暴露两个更隐蔽的问题，均已修并有测试守住：
+
+| 坑 | 现象 | 根因 | 修法 |
+|---|---|---|---|
+| **同名目录竞态** | 同一毫秒内的两个上传**共用**同一临时目录，后完成的 `rmtree` 把前一个请求正在读的文件删掉（并发上传文件凭空消失） | 目录名只取毫秒时间戳 | `f"{源名}-{毫秒}-{uuid4[:8]}"` |
+| **删父目录后重建同名目录** | 每跑一轮留下 20~30 个完整垃圾目录（含文件），`rmtree` 报成功但目录还在、10s 后仍在 | `_uploads/<源名>/<ts>` 两层结构里顺手 `parent.rmdir()` 删掉空的源名层；下次上传立刻 `mkdir` 同名目录，踩 Windows **delete-on-close** 竞态，此后 `rmtree` 全部静默失败 | 改成**扁平一层** `_uploads/<源名>-<毫秒>-<uuid8>`，只删这一个目录，既不删父目录也不留空壳 |
+
+判定方法（值得复用）：不要只看"跑完目录里还剩几个"，要用 **before/after 差集** —— 历史垃圾
+会把结论带偏（本次排查一度误判为"句柄未释放"，加 `gc.collect()` 看似有效，实则是第一次跑前
+`rm -rf` 了目录，与 gc 无关；去掉 gc 做干净对照后照样零残留，才排掉这个假因）。
+
+**还有一层：Windows 的"删除延迟"不是泄漏**。打点后实测 20/20 次清理均为
+`ok=True, exists=False`（Python 侧删除成功、无异常无 warning），但磁盘上目录项**仍可枚举**，
+且等 10s 也不消失、独立进程却能把它删掉（说明没有持久锁）。原因是实时防护在扫描期间以
+`FILE_SHARE_DELETE` 持有刚落盘的文件句柄：删除被接受并标记 pending，目录项要等扫描结束才真正
+消失（表现为"滞后一批"，所以会出现"跑前 51 条、跑后还是 51 条"—— 旧的消失、新的补上）。
+代码侧无需改删除逻辑，加一个**自愈清扫**即可：`_sweep_stale_uploads()` 在每次上传前清掉
+临时目录下超过 `UPLOAD_TMP_TTL_HOURS`（24h）的目录，测试
+`test_upload_sweeps_stale_temp_dirs` 守着（超期清、未超期不动）。
+
+> ⚠️ **临时目录已移出 inbox（2026-09-09 晚）**：原路径 `~/intel-inbox/_uploads/` 与 P4-2
+> 「inbox 子目录 = 公众号」的约定重叠，任何 inbox 监听都会把上传暂存的文件当成用户投放的
+> 文章抢先入库。现改为独立配置 `INTEL_UPLOAD_TMP_DIR = ~/intel-uploads/tmp`（且与 inbox
+> 一样扁平一层，不再有 `_uploads` 子层）。
+
+#### 上传后立即抽取（`extract=true`，2026-09-09 晚）
+
+上传原本只完成入库，理解层要另登服务器敲脚本。现接口支持 `extract=true`：入库后立刻对
+**本次新增**的文档跑理解层抽取（预筛 → LLM → `doc_mentions` / `doc_style`）。
+
+| 环节 | 实现 |
+|---|---|
+| 抽取范围 | `service._ingest_one_source` 的 stats 新增 `doc_ids`（本次真正插入的 id），上传接口汇总后经 `store.docs_for_understanding(..., doc_ids=)` 精确限定 —— **不碰历史欠账**，也不用按 id 区间猜 |
+| 成本控制 | 默认 `extract=false`（不花钱）；开启时受 `extract_limit`（dc 默认 50）限制，超出部分留待后续，**响应 `truncated` 明示**，不假装抽完 |
+| 失败隔离 | LLM 未配置 → `skipped`；LLM 不可达/异常 → `error`。**都不影响上传结果**（文档已入库），只在 `extraction` 字段里说明 |
+| 全新增时 | 全是重复/转载 → `skipped`，不白跑一轮 LLM |
+| 超时 | dc 侧同步跑（3~4s/篇，并发 4）；网关 `UPLOAD_EXTRACT_TIMEOUT_SEC=900`，前端 900s |
+
+三层链路都加了测试：dc 7 条（`tests/intel/test_upload_api.py`，fake 掉 LLM 不花钱）、
+后端 2 条（`tests/test_intel_upload_forward.py`，断言 `extract` 原样转发、`extract_limit=0`
+表示"用 dc 默认值"不该下发）。**dc 203 passed / 后端 33 passed**。
+
+真机验证（curl 打在跑的 dc）：`new=1, doc_ids=[9048], extraction.status=ok, extracted=1,
+cost_cny=0.002974`；改临时目录后复验同样通过。
+
+> ⚠️ **未解现象（待查）**：用 `TestClient` 在**独立脚本进程**里打同一接口时，上传恒定返回
+> `new=0, dup=1`，而文档实际已入库、判重查询能查到"本篇自己"（打点确认 `insert_document`
+> 未被调用过）。已排除：inbox 监听（目录移出后依旧）、源复用（换全新源名依旧）、
+> heredoc 执行方式（改用文件脚本依旧）。**pytest 与真机 uvicorn 服务两条路径均正常**，
+> 故判定为脚本进程环境的特有问题，不影响生产；根因未定位，留档待查。
+
+#### 19:30 每日构建实装（2026-09-09 晚）：空占位 → 真跑
+
+`app/intel/tasks.py` 里的 `intel_daily_build`（周一至周五 19:30）原先**只打一行日志**，
+上传/摄取后必须人工登服务器跑三步脚本。现编排抽到 `app/intel/daily_build.py`，
+定时任务与 CLI 走**同一个** `run_daily_build()`（不再有"脚本一套、定时另一套"的分叉）。
+
+| 步骤 | 做什么 | 花钱 | 失败影响 |
+|---|---|---|---|
+| 1 抽取 | `understand.service.run_understanding_batch(limit=INTEL_DAILY_BUILD_EXTRACT_LIMIT)` | ✅ 唯一花钱的一步（受 `INTEL_DAILY_BUDGET_YUAN` 二次约束） | 只记 `errors`，画像/因子照跑 |
+| 2 画像 | `aggregate.profile.build_profiles()` | 否 | 同上 |
+| 3 因子 | `daily_build.build_factors()` → `intel.factor_values` | 否 | 同上 |
+| 4 广播 | `ws.events.emit_factor_updated(codes, reason="intel_daily_build")` | 否 | 广播失败不影响已落库数据 |
+
+- **重活隔离**：`run_in_executor` + `asyncio.wait_for(INTEL_DAILY_BUILD_TIMEOUT_SEC=3600)`，
+  与 dc 盘后流水线同款；WS 广播**回到事件循环线程**再发（同步 emit 不能丢进 executor）。
+- **未配置 LLM = skipped 而不是 error**（很多环境只是不想花钱），画像/因子（零 LLM）照常刷新。
+- 摘要 `steps/extract|profiles|factors`、`errors`、`cost_cny`、`factor_codes` 全进日志；
+  `factor_codes` 为空时不广播（不给 backend 发空 code 列表）。
+- `_p3_build_factors.py` 的计算逻辑已改为调用 `build_factors()`，P3 CLI 输出与改动前一致
+  （1764 行 / 277 标的 × 2 交易日 / 防前视违例 0）。
+
+新增配置（`app/core/config.py`）：`INTEL_DAILY_BUILD_ENABLED`（默认 true）、
+`_HOUR=19` / `_MINUTE=30`、`_EXTRACT_LIMIT=200`、`_TIMEOUT_SEC=3600`、`_EMIT_WS=true`、
+`_EXTRACT=true`、`_PROFILES=true`。
+
+> ⚠️ **画像重算的副作用（实测，需知悉）**：`intel.author_profiles` 是**同版本覆盖**
+> （老值不可复现），每日重算会让 `INTL_AUTHOR_CONVICTION` 跟着变 —— 2026-09-09 首次跑
+> 该均值从 **0.9612 → 0.5683**（东方财富股票一个源占 339/378 mention，`win_rate_20d` 0.5443
+> 主导了均值）。副作用是**设计内**的（画像本就该滚动更新），但意味着**历史 trade_date 的
+> 因子行会被今天的画像改写**（`factor_values` 唯一键是 symbol+trade_date+factor+version，
+> 重跑覆盖同版本行）。想冻结画像就设 `INTEL_DAILY_BUILD_PROFILES=false`。
+> 严格回测若要复现历史截面，后续应把画像按 `as_of` 版本化（**未做，待决策**）。
+
+**验证**：
+- 单测 `tests/intel/test_daily_build.py` **17 passed**（三步全跑/未配置跳过/抽取异常不阻断/
+  画像异常不阻断/预算中止 `budget_stopped`/空因子不广播/limit 覆盖/防前视违例计数/
+  注册默认 19:30/注册读配置/关闭不注册/广播与不广播四种组合/整体异常不打死调度器）。
+  **intel 全量 220 passed**。
+- 真机注册路径（只 `register_jobs()` 不 start，不拉 RSS）：
+  `intel_daily_build cron[day_of_week='mon-fri', hour='19', minute='30']`，
+  落在 `industry_refresh 18:40` 之后，与 `daily_eod_pipeline 17:15` 不冲突。
+- 手动入口 `_p4_daily_build.py`（等价于定时任务）：`--no-extract` 零成本跑通
+  画像 11 个 + 因子 1764 行（dry-run），`--emit` 可手动广播。
+
+> ⚠️ **dc 需重启才生效**：当前跑的还是旧 `tasks.py`（空占位）。重启会照例触发 APScheduler
+> 的 RSS 真实入库，请挑时间重启。
+
+---
+
+#### 🐞 严重修复：文件名带方括号 → 整批文章静默丢失（2026-09-09 晚）
+
+**现象**：老朱从前端上传 `分红养老之路.zip`（18MB / 228 个条目 / 226 个 `.html`），
+界面提示"导入成功"，但库里只进了 **3 篇**，抽取/画像毫无动静。
+
+**根因**（`ValueError: Invalid IPv6 URL`）：
+
+1. 微信导出工具把时间戳写进文件名：`[2025-07-01-1922]红利投资6月回顾及7月展望.html`
+2. `_parse_exported()` 用 `f"file://{p.resolve()}"` 拼 URL → `file://C:\...\[2025-...]...html`
+3. `urlsplit()` 把 netloc 里的 **`[`** 当成 IPv6 字面量起头，未见闭合 `]` 即抛
+   `ValueError: Invalid IPv6 URL`（抛在 `normalize/text.py:canonical_url`）
+4. 异常被 `manual.py:_parse_file_multi` 的 `except Exception` **吞掉**，只记一条 warning，
+   返回 `[]` → `parsed=0`
+5. 外层 `_ingest_file` 仍返回 `status="ok"`（`new=0`）→ **前端据此显示"导入成功"**
+
+即：**错误被两层静默吞掉，用户看到的"成功"是假的**。只有 `.md`/`.mhtml` 等 3 个
+不带方括号的文件侥幸入库（`documents` id 8686~8688，14:15 那一批）。
+
+**修复**（三处，`app/intel/ingest/manual.py` + `app/intel/normalize/text.py`）：
+
+| 位置 | 改动 | 作用 |
+|---|---|---|
+| `manual._file_uri()`（新增） | `p.resolve().as_uri()` 取代 f-string | 百分号编码 `[`/`]`/空格/中文 → `file:///C:/.../%5B2025-...%5D...`，URL 合法 |
+| `normalize.text.canonical_url()` | `urlsplit` 包 `try/except ValueError`，失败原样返回 | 规范化是尽力而为，**绝不因解析失败让整篇文档消失** |
+| `manual._looks_like_url()` | 同样包 try，畸形 netloc 返回 `False` | 谓词函数不该抛异常 |
+
+**顺带修复：发布时间拿不到**（修完解析后发现 `published_at=None`）。
+微信导出页的时间在 `<em id="publish_time">2025年07月01日 19:22</em>`，没有任何
+meta / `<time datetime>`；`_parse_published()` 本来**就支持** `YYYY年MM月DD日 HH:MM`
+格式，只是没去这个元素里找。补两级降级：
+
+1. `_extract_published()` 增加 `id in (publish_time / publish-time / publishTime / publish_time_box)`
+2. `_parse_exported()` 兜底 `_date_from_filename()`：从 `[2025-07-01-1922]` 取日期
+
+> 没有这两级，228 篇横跨 14 个月的文章会全部退化成"入库时间=今天"，
+> 既失真又让防前视检查失去意义（可用 `available_at` 全部相同来识别）。
+
+**验证**（真实语料 `E:\Soft\分红养老之路.zip`）：
+
+```
+修复前：collect → 0 条，日志 "manual 解析失败 ...: ValueError: Invalid IPv6 URL"
+修复后：collect → 1 条，title=红利投资6月回顾及7月展望，body=54728 chars，
+        author=散户森，published_at=2025-07-01 19:22:00+00:00
+```
+
+- 新增 5 条单测（`tests/intel/test_manual_ingest.py`）：方括号文件名可解析、
+  页内 `publish_time` 解析、文件名日期兜底、`canonical_url` 对方括号 URI 不抛、
+  `_looks_like_url` 不抛。**intel 全量 225 passed**。
+- 真机入库：`run_manual_ingest` 走目录投喂（与上传同一条链路）
+  → `fetched=228 new=214 dup=14 reposts=16`，18.3s。
+
+> ℹ️ 未走 HTTP 上传端点做全量验证：228 篇 × 250KB 的 bs4 解析在一个请求里
+> 做不完（实测 >580s 超时）。上传端点与目录投喂最终调用同一个
+> `run_manual_ingest`，且方括号/中文名/zip 解压已有单测覆盖。
+> 真要传大包建议：① 后端 `UPLOAD_EXTRACT_TIMEOUT_SEC` 已放宽到 900s；
+> ② 或先解压成目录投喂（更快、可分批、有进度）。

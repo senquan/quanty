@@ -83,6 +83,69 @@ class FundamentalSource(BaseSource):
             logger.warning(f"daily_basic 抓取失败({trade_date}): {e}")
             return pd.DataFrame(columns=cols)
 
+    def fetch_valuation_value_em(self, symbol: str) -> "pd.DataFrame":
+        """akshare 东财个股估值(stock_value_em)：按标的返回完整日频历史。
+
+        一次调用同时拿齐市净率(PB) / 市盈率(TTM) / 市销率(PS_TTM)，比百度股市通
+        (stock_zh_valuation_baidu)更优——后者不支持市销率(市销率接口报错)。
+        返回列：symbol, trade_date, pb, pe_ttm, ps_ttm（未取到为 NaN）。
+        symbol 为 tushare 风格(600519.SH)，调用前 split('.')[0] 取 6 位码。
+        """
+        cols = ["symbol", "trade_date", "pb", "pe_ttm", "ps_ttm"]
+        try:
+            import akshare as ak
+        except ImportError:
+            logger.warning("未安装 akshare，估值历史降级为空")
+            return pd.DataFrame(columns=cols)
+        ak_code = str(symbol).split(".")[0]  # 6 位纯数字代码
+        try:
+            buf = io.StringIO()
+            with redirect_stderr(buf):
+                df = ak.stock_value_em(symbol=ak_code)
+            if df is None or df.empty:
+                return pd.DataFrame(columns=cols)
+            out = pd.DataFrame({
+                "symbol": symbol,
+                "trade_date": pd.to_datetime(df["数据日期"], errors="coerce").dt.date,
+                "pb": pd.to_numeric(df.get("市净率"), errors="coerce"),
+                "pe_ttm": pd.to_numeric(df.get("PE(TTM)"), errors="coerce"),
+                "ps_ttm": pd.to_numeric(df.get("市销率"), errors="coerce"),
+            })
+            return out[cols]
+        except Exception as e:  # noqa: BLE001
+            logger.debug(f"东财估值抓取失败({symbol}): {e}")
+            return pd.DataFrame(columns=cols)
+
+    def fetch_dividend_yield_em(self, year: int) -> "pd.DataFrame":
+        """东方财富分红送配：按年度返回全 A 股息率。
+
+        返回列：symbol, report_year, dividend_yield, cash_div_per_10sh。
+        dividend_yield 为小数（0.0125=1.25%），与 daily_basic.dv_ttm 口径一致。
+        symbol 映射为 tushare 风格（600519.SH）以对齐 raw_bars/daily_basic。
+        """
+        cols = ["symbol", "report_year", "dividend_yield", "cash_div_per_10sh"]
+        try:
+            import akshare as ak
+        except ImportError:
+            logger.warning("未安装 akshare，股息率降级为空")
+            return pd.DataFrame(columns=cols)
+        try:
+            buf = io.StringIO()
+            with redirect_stderr(buf):
+                df = ak.stock_fhps_em(date=f"{int(year)}1231")
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"akshare 分红送配失败({year}): {e}")
+            return pd.DataFrame(columns=cols)
+        if df is None or df.empty:
+            return pd.DataFrame(columns=cols)
+        out = pd.DataFrame({
+            "symbol": df["代码"].map(lambda c: _from_akshare_code(str(c))),
+            "report_year": int(year),
+            "dividend_yield": pd.to_numeric(df.get("现金分红-股息率"), errors="coerce"),
+            "cash_div_per_10sh": pd.to_numeric(df.get("现金分红-现金分红比例"), errors="coerce"),
+        })
+        return out[cols]
+
     def fetch_trading_status_market(self, trade_date: str, provider: str | None = None) -> "pd.DataFrame":
         """按交易日抓取全市场交易状态（涨跌停/涨跌幅/停牌）。
 
