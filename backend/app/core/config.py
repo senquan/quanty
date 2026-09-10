@@ -44,6 +44,12 @@ class Settings(BaseSettings):
     # 驱动因子可用性（available）随 dc 上下线自动刷新。多副本部署时仅一个实例开启。
     ENABLE_CLEANER_POLL: bool = True
     CLEANER_POLL_INTERVAL_SEC: int = 30
+    # ---- intel 投喂通道（P4-1 批量上传）----
+    # 上传要复用 data-cleaner 的解析链路（ManualSource 只在 dc 侧），
+    # 且架构约定前端不直连 dc，故由 backend 代转发 multipart 到 dc 的
+    # POST /api/v1/intel/upload。dc 未配置 API_KEYS 时鉴权自动放行，留空即可。
+    INTEL_CLEANER_BASE_URL: str = "http://127.0.0.1:8100"
+    INTEL_CLEANER_API_KEY: str = ""
     # 组合盘后估值：交易日 15:30 从 dc 拉行情、更新持仓市值、记录日快照。
     # 多副本部署时仅一个实例开启；快照表另有唯一约束兜底幂等。
     ENABLE_PORTFOLIO_VALUATION: bool = True

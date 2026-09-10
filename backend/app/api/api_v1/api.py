@@ -1,6 +1,6 @@
 from fastapi import APIRouter
 from app.api.api_v1.endpoints import auth, user, users, quant, roles, menu, menus, trading
-from app.api.api_v1.endpoints import cleaner, factor_library, factor_strategy, watchlist
+from app.api.api_v1.endpoints import cleaner, factor_library, factor_strategy, watchlist, intel
 from app.api.api_v1.endpoints import portfolios
 
 api_router = APIRouter()
@@ -18,3 +18,4 @@ api_router.include_router(cleaner.router, tags=["清洗服务"])
 api_router.include_router(factor_library.router, tags=["因子库"])
 api_router.include_router(factor_strategy.router, tags=["因子策略"])
 api_router.include_router(watchlist.router, prefix="/watchlist", tags=["自选股"])
+api_router.include_router(intel.router, tags=["资讯分析"])
