@@ -90,6 +90,9 @@ backend/_manual_*.py
 
 # 运行状态与报告产物
 data-cleaner/data/*_state.json
-data-cleaner/data/_repair_*.out
+data-cleaner/data/*.out
+data-cleaner/data/missing_symbols.json
+data-cleaner/data/ws/*.json
+data-cleaner/data/ws/*.jsonl
 data-cleaner/p2_baseline_report.html
 data-cleaner/p4_style_report.html
