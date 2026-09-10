@@ -11,5 +11,10 @@
     "title": "Dashboard",
     "analytics": "Analytics",
     "workspace": "Workspace"
+  },
+  "data": {
+    "title": "Data Center",
+    "factor": "Factor Library",
+    "news": "News Analysis"
   }
 }

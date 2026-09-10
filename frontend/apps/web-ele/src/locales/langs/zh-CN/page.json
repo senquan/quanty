@@ -29,7 +29,8 @@
   },
   "data": {
     "title": "数据中心",
-    "factor": "因子库"
+    "factor": "因子库",
+    "news": "资讯分析"
   },
   "risk": {
     "title": "风险控制",

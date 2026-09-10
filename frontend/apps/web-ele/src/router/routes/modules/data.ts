@@ -22,6 +22,16 @@ const routes: RouteRecordRaw[] = [
           title: $t('page.data.factor'),
         },
       },
+      {
+        name: 'NewsAnalysis',
+        path: '/data/news-analysis',
+        component: () => import('#/views/data/news-analysis/index.vue'),
+        meta: {
+          affixTab: false,
+          icon: 'lucide:newspaper',
+          title: $t('page.data.news'),
+        },
+      },
     ],
   },
 ];

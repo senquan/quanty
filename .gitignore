@@ -31,6 +31,7 @@ npm-debug.log*
 *.swp
 *.swo
 *~
+.git*
 
 # OS
 .DS_Store
@@ -65,3 +66,30 @@ test_*
 # AI temp
 *.txt
 _t_*.py
+
+# Data Cleaner Raw Data
+data-cleaner/data/ws/*.json
+data-cleaner/data/intel/raw/*
+data-cleaner/_upload_fenhong/*
+
+# Credentials（含加密凭据与 token，禁止入库）
+data-cleaner/user.json
+
+# 一次性调试/探针脚本（保留 P1~P4 CLI 入口 _p[1-4]_*.py）
+data-cleaner/_dbg_*.py
+data-cleaner/_diag_*.py
+data-cleaner/_test_*.py
+data-cleaner/_verify_0*.py
+data-cleaner/_q_*.py
+data-cleaner/_poll_*.py
+data-cleaner/_repair_*.py
+data-cleaner/_rebuild_*.py
+data-cleaner/_manual_*.py
+data-cleaner/_oa.json
+backend/_manual_*.py
+
+# 运行状态与报告产物
+data-cleaner/data/*_state.json
+data-cleaner/data/_repair_*.out
+data-cleaner/p2_baseline_report.html
+data-cleaner/p4_style_report.html
