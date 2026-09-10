@@ -50,8 +50,9 @@ class MsgType:
     """消息类型常量。
 
     方向说明：
-    - dc → backend：hello/bye、ping/pong、event.*
-    - backend → dc：welcome、pong、ack、resync.request、strategy.compute、error
+    - dc → backend：hello/bye、ping/pong、event.*、command.response
+    - backend → dc：welcome、pong、ack、resync.request、command.request、
+      strategy.compute、error
     """
 
     # ---- 连接与保活 ----
@@ -78,6 +79,11 @@ class MsgType:
     RESYNC_REQUEST = "resync.request"                      # 请求补发（自 last_seq 起）
     STRATEGY_COMPUTE = "strategy.compute"                  # 【预留】提交策略请求计算
     ERROR = "error"                                        # 错误 / nack
+
+    # ---- backend → dc：命令（请求-响应，corr_id 关联）----
+    COMMAND_REQUEST = "command.request"                    # 下发命令
+    # ---- dc → backend：命令响应 ----
+    COMMAND_RESPONSE = "command.response"                  # 命令结果（corr_id 回填）
 
     #: dc → backend 的**事件推送**类：需要 seq 与 ack 保障（outbox 缓冲 + 断线补发）
     PUSH_TYPES: frozenset[str] = frozenset(
@@ -263,4 +269,44 @@ def pipeline_payload(
         "step": step,
         "progress": progress,
         "detail": detail or {},
+    }
+
+
+# ---------- 命令（请求-响应）载荷 ----------
+
+
+def command_payload(*, cmd: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+    """command.request 载荷：backend 下发的命令。
+
+    响应通过信封 `corr_id` 关联，故载荷内不再重复携带请求 id。
+    """
+    return {"cmd": cmd, "params": params or {}}
+
+
+def command_result_payload(
+    *,
+    cmd: str,
+    ok: bool,
+    data: dict[str, Any] | None = None,
+    error: dict[str, Any] | None = None,
+    accepted: bool = False,
+    done: bool = True,
+    task_id: str | None = None,
+    progress: float | None = None,
+) -> dict[str, Any]:
+    """command.response 载荷：命令结果。
+
+    - `accepted=True, done=False`：长任务已受理（含 `task_id`），终态稍后以**同一
+      corr_id** 再发一条 `done=True` 的响应（见 docs/plans/2026-09-10.ws-coverage-repair.md）。
+    - `done=True`：终态；`ok` 表示成功与否，`data` / `error` 二选一。
+    """
+    return {
+        "cmd": cmd,
+        "ok": ok,
+        "accepted": accepted,
+        "done": done,
+        "task_id": task_id,
+        "data": data or {},
+        "error": error or {},
+        "progress": progress,
     }

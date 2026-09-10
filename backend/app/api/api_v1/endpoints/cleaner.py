@@ -11,6 +11,9 @@
 - POST   /{code}/sync        拉取并入库该服务的因子口径
 - POST   /{code}/factors/enable   批量勾选/取消入库因子
 - GET    /factors/registry    聚合因子底册（可选 service_code / only_enabled 过滤）
+- GET    /{code}/coverage             查看 dc 最新交易日数据完整度（经 WS 命令）
+- POST   /{code}/coverage/repair      指令 dc 执行修复/回填补全（异步）
+- GET    /{code}/coverage/repair/status  查看修复进度 / 最近结果
 """
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
@@ -30,6 +33,9 @@ from app.schemas.cleaner import (
 from app.schemas.response import Response
 from app.core import credential
 from app.services import cleaner_gateway as gw
+from app.services import coverage_proxy
+from app.ws import commands
+from app.ws.registry import registry
 
 router = APIRouter(prefix="/cleaner", tags=["cleaner"])
 
@@ -157,6 +163,82 @@ async def poll_service_qos(
     qos = await gw.poll_qos(svc)
     await db.commit()
     return Response.success(data=qos)
+
+
+def _ws_snapshot(service_code: str) -> dict:
+    """取该服务连接上的最近覆盖度/修复快照（命令终态即使 Future 超时也会落这里）。"""
+    for conn in registry.all():
+        if conn.service_code == service_code:
+            return {
+                "last_coverage": conn.last_coverage,
+                "last_repair": conn.last_repair,
+            }
+    return {"last_coverage": None, "last_repair": None}
+
+
+@router.get("/{service_code}/coverage", summary="数据完整度（最新交易日覆盖度）")
+async def get_coverage(
+    service_code: str,
+    min_ratio: float = 0.95,
+    db: AsyncSession = Depends(get_db),
+    _: None = Depends(_ensure_tables),
+    _user: User = Depends(get_current_user),
+):
+    svc = await gw.get_service(db, service_code)
+    if not svc:
+        raise HTTPException(status_code=404, detail="服务不存在")
+    try:
+        data = await coverage_proxy.check(service_code, min_ratio=min_ratio)
+    except coverage_proxy.CoverageUnavailableError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    except commands.CommandTimeoutError:
+        raise HTTPException(status_code=504, detail="dc 响应超时")
+    return Response.success(data=data)
+
+
+@router.post("/{service_code}/coverage/repair", summary="指令 dc 修复/回填补全（异步）")
+async def trigger_coverage_repair(
+    service_code: str,
+    source: str | None = None,
+    force: bool = True,
+    min_ratio: float = 0.95,
+    db: AsyncSession = Depends(get_db),
+    _: None = Depends(_ensure_tables),
+    _user: User = Depends(get_current_user),
+):
+    svc = await gw.get_service(db, service_code)
+    if not svc:
+        raise HTTPException(status_code=404, detail="服务不存在")
+    try:
+        data = await coverage_proxy.repair(
+            service_code, source=source, min_ratio=min_ratio, force=force
+        )
+    except coverage_proxy.CoverageUnavailableError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    except commands.CommandTimeoutError:
+        raise HTTPException(status_code=504, detail="dc 响应超时")
+    return Response.success(data=data, msg="修复已受理，正在后台执行")
+
+
+@router.get("/{service_code}/coverage/repair/status", summary="修复进度 / 最近结果")
+async def coverage_repair_status(
+    service_code: str,
+    db: AsyncSession = Depends(get_db),
+    _: None = Depends(_ensure_tables),
+    _user: User = Depends(get_current_user),
+):
+    svc = await gw.get_service(db, service_code)
+    if not svc:
+        raise HTTPException(status_code=404, detail="服务不存在")
+    snap = _ws_snapshot(service_code)
+    try:
+        data = await coverage_proxy.repair_status(service_code)
+    except coverage_proxy.CoverageUnavailableError as e:
+        # 离线时仍回快照，便于看到"最后一次已知结果"
+        return Response.success(data={"online": False, "reason": str(e), **snap})
+    except commands.CommandTimeoutError:
+        raise HTTPException(status_code=504, detail="dc 响应超时")
+    return Response.success(data={"online": True, **data, **snap})
 
 
 @router.post("/{service_code}/sync", summary="拉取并入库因子口径")
