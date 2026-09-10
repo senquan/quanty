@@ -8,11 +8,12 @@ services:
       POSTGRES_DB: quant_db
       POSTGRES_USER: quant_user
       POSTGRES_PASSWORD: quant_password
-    ports:
-      - "5432:5432"
+    # 不对宿主/公网暴露端口（仅容器网络可达）。
+    # 如需本机 psql 调试，改为 "127.0.0.1:5432:5432"（只绑回环，勿用 0.0.0.0）。
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ./backend/init:/docker-entrypoint-initdb.d
+      # 注：原先挂的 ./backend/init:/docker-entrypoint-initdb.d 已移除
+      #（该目录不存在，且部署时是用 pg_restore 恢复 dump，不依赖 init 脚本）。
     networks:
       - quant-network
 
@@ -24,8 +25,7 @@ services:
       POSTGRES_DB: factor_db
       POSTGRES_USER: quant_user
       POSTGRES_PASSWORD: quant_password
-    ports:
-      - "5433:5432"
+    # 同上：不对宿主暴露；如需调试改 "127.0.0.1:5433:5432"
     volumes:
       - postgres_factor_data:/var/lib/postgresql/data
     networks:
@@ -43,8 +43,25 @@ services:
       ENABLE_TRADING_SCHEDULER: "true"
       BROKER_MODE: "paper"
       BROKER_DRY_RUN: "true"
+      # WS 长连接：backend 为服务端，dc 主动连入（覆盖度命令通道 /
+      # 因子变更广播 / QoS 推送）。关闭则相关能力静默失效。
+      WS_ENABLED: "true"
+      # 内部令牌（**权威字段**）：必须与 data-cleaner 的 STRATEGY_INTERNAL_TOKEN 一致。
+      # 生产通过宿主环境变量 WS_TOKEN 注入（勿用默认值）。
+      STRATEGY_INTERNAL_TOKEN: ${WS_TOKEN:-strat_int_change_me}
+      # 前端经 frontend 的 nginx 同源反代 /api → backend，浏览器不发跨域请求；
+      # 若前端独立域名直连后端，再在此补 ALLOWED_ORIGINS。
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:8080}
+      # WS 在线时跳过 HTTP 轮询（降为 5min 兜底）
+      CLEANER_POLL_SKIP_CONNECTED: "true"
+      # 因子底册同步（单实例开启）
+      ENABLE_FACTOR_SYNC: "true"
+      # intel 上传代转发目标（容器内地址）
+      INTEL_CLEANER_BASE_URL: http://data-cleaner:8100
+    # 只绑宿主回环：backend 由 frontend 的 nginx 经容器网络访问，无需公网直连；
+    # 本机调试可直接 curl 127.0.0.1:8000。
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     depends_on:
       - postgres
     networks:
@@ -54,8 +71,7 @@ services:
   redis:
     image: redis:7-alpine
     container_name: quant-redis
-    ports:
-      - "6379:6379"
+    # 不对宿主暴露；如需调试改 "127.0.0.1:6379:6379"
     networks:
       - quant-network
 
@@ -69,8 +85,15 @@ services:
       FACTOR_DATA_DIR: /data/factors
       DEBUG: "False"
       TZ: Asia/Shanghai
-    ports:
-      - "8100:8100"
+      # WS 长连接：dc 作客户端连入 backend 服务端。
+      # WS_SERVICE_CODE 必须与 backend 注册的 cleaner_services.service_code 一致，
+      # 否则命令通道按 service_code 找不到连接（覆盖度查看/修复会返回 503）。
+      WS_ENABLED: "true"
+      BACKEND_WS_URL: ws://backend:8000/ws/dc
+      WS_INSTANCE_ID: dc-1
+      WS_SERVICE_CODE: cleaner_dev
+      STRATEGY_INTERNAL_TOKEN: ${WS_TOKEN:-strat_int_change_me}
+    # dc 仅内网可达（backend 经容器网络访问 8100），不对宿主/公网暴露端口。
     volumes:
       - factor_data:/data/factors
     depends_on:
@@ -79,6 +102,23 @@ services:
     networks:
       - quant-network
     command: ["sh", "-c", "python -c \"import asyncio, app.storage.db as d; asyncio.run(d.apply_migrations())\" && uvicorn app.main:app --host 0.0.0.0 --port 8100"]
+
+  frontend:
+    # QuanT 前端（@vben/web-ele）：nginx 托管静态资源，并把 /api 同源反代到 backend
+    # （前端构建用 VITE_GLOB_API_URL=/api/v1，故无 CORS 问题）。
+    # 注意 build context 必须是 frontend/（monorepo 需根 pnpm 工作区文件）。
+    build:
+      context: ./frontend
+      dockerfile: apps/web-ele/Dockerfile
+    container_name: quant-frontend
+    # 只绑宿主回环，由宿主 Nginx/Caddy 承接 443/TLS 后转发（唯一公网入口）。
+    # 若不用宿主反代，可改回 "8080:8080" 并用安全组限制来源。
+    ports:
+      - "127.0.0.1:8080:8080"
+    depends_on:
+      - backend
+    networks:
+      - quant-network
 
 volumes:
   postgres_data:

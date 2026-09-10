@@ -19,9 +19,13 @@ class Settings(BaseSettings):
     # CORS
     ALLOWED_ORIGINS: str = "http://localhost:3000,http://localhost:5173"
 
-    # 策略内部下单令牌（data-cleaner 调仓任务携带 X-Internal-Token 调用 /trading/orders/internal）
+    # 内部令牌（**权威字段**，两侧必须一致）：
+    #   ① dc 拨入 /ws/dc 的握手校验（app/ws/server.py）
+    #   ② dc 调用 backend 内部端点（如 /trading/orders/internal）的 X-Internal-Token
     STRATEGY_INTERNAL_TOKEN: str = ""
-    # WebSocket 集成令牌（backend ↔ data-cleaner 长连接握手校验，与 dc 的 WS_TOKEN 一致）
+    # 【遗留·未被读取】早期文档称其为 WS 握手令牌，实际代码不读该字段。
+    # 保留声明仅为兼容既有 .env：pydantic-settings 对 Settings 未声明却出现在
+    # .env 中的键会报错导致无法导入（见 docs/plans/2026-09-05.portfolio.md §…）。
     STRAT_INTEGRATION_TOKEN: str = ""
 
     # 交易：默认模式（paper / live）与模拟盘初始资金
