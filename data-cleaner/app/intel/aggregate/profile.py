@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+import bisect
 import json
 import math
 from datetime import datetime, timezone, timedelta
@@ -190,48 +191,114 @@ def _aggregate_group(rows: list[dict], ref_time: datetime | None = None) -> dict
     }
 
 
-def _fetch_raw_bar(
-    symbol: str, timestamp: datetime, engine=None,
-) -> dict | None:
-    """从 factor.raw_bars 取指定日期的行（用于计算后续收益）"""
-    if engine is None:
-        engine = get_engine()
-    with engine.connect() as c:
-        row = c.execute(
-            text("""
-                SELECT timestamp, close, hfq_close, adj_factor
-                FROM factor.raw_bars
-                WHERE symbol = :sym AND timestamp >= CAST(:ts AS date)
-                  AND freq = '1d'
-                ORDER BY timestamp ASC
-                LIMIT 1
-            """),
-            {"sym": symbol, "ts": timestamp},
-        ).mappings().first()
-    return dict(row) if row else None
+# ---------------------------------------------------------------------------
+# 超额收益基础设施（D-1 于 2026-09-10 修复）
+#
+# ⚠️ 历史缺陷：旧实现个股端 ``ORDER BY timestamp ASC LIMIT 1``、基准端
+# ``LIMIT 2`` + ``rows[-1]/rows[0]``，**EXCESS_WINDOWS 根本没参与计算** ——
+# 取到的永远是「提及日之后第一个交易日」，于是
+# ``avg_excess_20d ≡ avg_excess_60d ≡ 次日收益``（实测 14/14 画像两值完全相同；
+# 而 600674.SH 真实 60 日 −9.14% 与次日 +1.08% **符号相反**）。
+#
+# 修复后的两条铁律：
+#   1. 窗口长度必须由 EXCESS_WINDOWS 决定，靠**日历偏移**取得，不是 LIMIT 1；
+#   2. 个股与基准共用**同一套交易日历**（基准序列同时当日历用），个股按日历
+#      截止日取最后一根 bar —— 个股停牌不会把窗口拉长，两端区间严格等长。
+# ---------------------------------------------------------------------------
+
+_WINDOW_SLACK_DAYS = 20  # 无基准日历时，按自然日估算的兜底余量
 
 
-def _fetch_benchmark_returns(
-    start_date: datetime, window_days: int, engine=None,
-) -> float | None:
-    """取基准指数在 [start_date, start_date+window_days] 的收益率"""
+def _window_slack_days(window: int) -> int:
+    """window 个交易日 ≈ window*7/5 自然日，再留 1.5 倍余量 + 20 天（长假/停牌）"""
+    return int(window * 7 / 5 * 1.5) + _WINDOW_SLACK_DAYS
+
+
+def _align_tz(ts: datetime, ref_tz) -> datetime:
+    """把 ts 的 tz 语义对齐到基准序列，避免 naive/aware 比较抛 TypeError。
+
+    只替换 tzinfo 标签、不动时钟 —— 与旧实现 ``CAST(:ts AS date)`` 的按日期比较等价。
+    """
+    if ref_tz is None:
+        # 没有参照物（基准序列为空）时保持原样：凭空改 tzinfo 只会制造新的比较错误
+        return ts
+    if ts.tzinfo is None:
+        return ts.replace(tzinfo=ref_tz)
+    return ts
+
+
+def _load_benchmark_series(engine=None) -> tuple[list, list[float]]:
+    """一次性加载基准收盘序列（升序）—— 它同时充当**交易日历**。
+
+    中证全指覆盖全日历（不停牌），用它定位「第 w 个交易日」比按个股 bar 数偏移可靠：
+    个股停牌时按 bar 数偏移会把 20 日窗口悄悄拉成 23 日。
+    """
     if engine is None:
         engine = get_engine()
-    end_date = start_date + timedelta(days=window_days * 7 // 5)  # 粗略转交易日
     with engine.connect() as c:
         rows = c.execute(
             text("""
-                SELECT close FROM factor.raw_bars
-                WHERE symbol = :sym AND freq = '1d'
-                  AND timestamp >= CAST(:start AS date) AND timestamp <= CAST(:end AS date)
+                SELECT timestamp, close
+                FROM factor.raw_bars
+                WHERE symbol = :sym AND freq = :frq
+                  AND close IS NOT NULL AND close > 0
                 ORDER BY timestamp ASC
-                LIMIT 2
             """),
-            {"sym": BENCHMARK_SYMBOL, "start": start_date, "end": end_date},
+            {"sym": BENCHMARK_SYMBOL, "frq": FREQ_DAILY},
         ).mappings().all()
-    if len(rows) < 2:
-        return None
-    return (rows[-1]["close"] / rows[0]["close"] - 1) * 100
+    ts = [r["timestamp"] for r in rows]
+    px = [float(r["close"]) for r in rows]
+    return ts, px
+
+
+def _fetch_symbol_bars(
+    symbol: str, start_ts, end_ts, engine=None,
+) -> list[dict]:
+    """取个股在 [start_ts, end_ts] 的日线（升序），一次查询覆盖所有窗口"""
+    if engine is None:
+        engine = get_engine()
+    with engine.connect() as c:
+        rows = c.execute(
+            text("""
+                SELECT timestamp, close, hfq_close, adj_factor
+                FROM factor.raw_bars
+                WHERE symbol = :sym AND freq = :frq
+                  AND timestamp >= :start AND timestamp <= :end
+                ORDER BY timestamp ASC
+            """),
+            {
+                "sym": symbol,
+                "frq": FREQ_DAILY,
+                "start": start_ts,
+                "end": end_ts,
+            },
+        ).mappings().all()
+    return [dict(r) for r in rows]
+
+
+def _bar_price(bar: dict) -> tuple[float | None, bool]:
+    """取收盘价，复权优先。返回 ``(价格, 是否用了 hfq)``。
+
+    ⚠️ hfq_close 缺失时降级到未复权 close，会在除权日产生**假跳空**（D-2）。
+    回填完成后这条分支不应再被走到；一旦走到会打 warning 并计入返回值。
+    """
+    px = bar.get("hfq_close")
+    if px:
+        return float(px), True
+    px = bar.get("close")
+    return (float(px), False) if px else (None, False)
+
+
+def _fetch_raw_bar(
+    symbol: str, timestamp: datetime, engine=None,
+) -> dict | None:
+    """取个股在 timestamp（含）之后的第一根日线 —— 即「提及日建仓价」那根 bar。
+
+    保留原签名供外部/旧调用方使用；新的窗口计算走 ``_fetch_symbol_bars``。
+    """
+    end = timestamp + timedelta(days=_WINDOW_SLACK_DAYS)
+    bars = _fetch_symbol_bars(symbol, timestamp, end, engine)
+    return bars[0] if bars else None
 
 
 def _calc_excess_returns(
@@ -242,15 +309,21 @@ def _calc_excess_returns(
     返回：
       avg_excess_20d, avg_excess_60d, accuracy_sample_size, win_rate_20d, win_rate_60d
     """
-    result = {
-        "avg_excess_20d": None,
-        "avg_excess_60d": None,
-        "accuracy_sample_size": 0,
-        "win_rate_20d": None,
-        "win_rate_60d": None,
-    }
-    excess_20: list[float] = []
-    excess_60: list[float] = []
+    result = {f"avg_excess_{w}d": None for w in EXCESS_WINDOWS}
+    result.update({f"win_rate_{w}d": None for w in EXCESS_WINDOWS})
+    result["accuracy_sample_size"] = 0
+
+    if not rows:
+        return result
+
+    bench_ts, bench_px = _load_benchmark_series(engine)
+    if not bench_ts:
+        logger.warning("基准序列为空，超额收益退化为绝对收益")
+    max_w = max(EXCESS_WINDOWS)
+    excess: dict[int, list[float]] = {w: [] for w in EXCESS_WINDOWS}
+    fallback_no_hfq = 0  # 用了未复权 close 兜底的 mention 数（D-2 应为 0）
+
+    ref_tz = bench_ts[0].tzinfo if bench_ts else None
 
     for r in rows:
         pub = r.get("published_at")
@@ -260,61 +333,75 @@ def _calc_excess_returns(
             pub = datetime.fromisoformat(pub)
         sym = r["symbol"]
 
-        # 取提及日及之后的行情
-        bar = _fetch_raw_bar(sym, pub, engine)
-        if bar is None:
+        # 1) 在交易日历上定位提及日：第一个 >= pub 的交易日
+        pub_cmp = _align_tz(pub, ref_tz)
+        if bench_ts:
+            idx = bisect.bisect_left(bench_ts, pub_cmp)
+            if idx >= len(bench_ts):
+                continue  # 提及日晚于全部行情 → 无样本
+            start_ts = bench_ts[idx]
+            last_idx = min(idx + max_w, len(bench_ts) - 1)
+            end_ts = bench_ts[last_idx]
+        else:
+            # 无基准：退化为按自然日估算（仍按窗口取第 w 根，不再退回次日）
+            start_ts = pub_cmp
+            end_ts = pub_cmp + timedelta(days=_window_slack_days(max_w))
+
+        # 2) 个股在区间内的全部日线（一次查询覆盖所有窗口）
+        bars = _fetch_symbol_bars(sym, start_ts, end_ts, engine)
+        if not bars:
             continue
-        mention_close = bar.get("hfq_close") or bar.get("close")
-        if not mention_close or mention_close == 0:
+        base_px, used_hfq = _bar_price(bars[0])
+        if not base_px:
             continue
+        if not used_hfq:
+            fallback_no_hfq += 1
 
-        for window in EXCESS_WINDOWS:
-            end_date = pub + timedelta(days=int(window * 7 / 5 * 1.5))  # 留余量
-            try:
-                with (engine or get_engine()).connect() as c:
-                    later = c.execute(
-                        text("""
-                            SELECT hfq_close, close FROM factor.raw_bars
-                            WHERE symbol = :sym AND freq = '1d'
-                              AND timestamp > CAST(:pub AS date) AND timestamp <= CAST(:end AS date)
-                            ORDER BY timestamp ASC
-                            LIMIT 1
-                        """),
-                        {"sym": sym, "pub": pub, "end": end_date},
-                    ).mappings().first()
-                if later is None:
-                    continue
-                later_close = later.get("hfq_close") or later.get("close")
-                if not later_close or later_close == 0:
-                    continue
-                ret = (later_close / mention_close - 1) * 100  # 百分比
+        bar_ts = [b["timestamp"] for b in bars]
 
-                # 基准收益
-                bench = _fetch_benchmark_returns(pub, window, engine)
-                if bench is not None:
-                    excess = ret - bench
-                else:
-                    excess = ret  # 无基准时用绝对收益代替
-
-                if window == 20:
-                    excess_20.append(excess)
-                else:
-                    excess_60.append(excess)
-            except Exception:
+        # 3) 逐窗口：个股与基准都取 [idx, idx+window] 这一段，严格等长
+        for w in EXCESS_WINDOWS:
+            ti = idx + w if bench_ts else w
+            if bench_ts and ti >= len(bench_ts):
+                continue  # 行情不足 w 个交易日 → 该 mention 不计入该窗口
+            cut = bench_ts[ti] if bench_ts else None
+            if cut is not None:
+                j = bisect.bisect_right(bar_ts, cut) - 1
+            else:
+                j = min(w, len(bars) - 1)
+            if j <= 0:
+                continue  # 区间内个股无进展（停牌/退市）
+            end_px, _ = _bar_price(bars[j])
+            if not end_px:
                 continue
 
-    result["accuracy_sample_size"] = len(excess_20)  # 以 20d 窗口为准
+            ret = (end_px / base_px - 1) * 100  # 个股窗口收益（%）
+            if bench_ts:
+                bench_ret = (bench_px[ti] / bench_px[idx] - 1) * 100
+            else:
+                bench_ret = 0.0
+            excess[w].append(ret - bench_ret)
 
-    if excess_20:
-        result["avg_excess_20d"] = round(sum(excess_20) / len(excess_20), 2)
-        result["win_rate_20d"] = round(
-            sum(1 for x in excess_20 if x > 0) / len(excess_20), 4
+    result["accuracy_sample_size"] = len(excess[EXCESS_WINDOWS[0]])
+
+    for w in EXCESS_WINDOWS:
+        vals = excess[w]
+        if not vals:
+            continue
+        result[f"avg_excess_{w}d"] = round(sum(vals) / len(vals), 2)
+        result[f"win_rate_{w}d"] = round(
+            sum(1 for x in vals if x > 0) / len(vals), 4
         )
-    if excess_60:
-        result["avg_excess_60d"] = round(sum(excess_60) / len(excess_60), 2)
-        result["win_rate_60d"] = round(
-            sum(1 for x in excess_60 if x > 0) / len(excess_60), 4
+
+    if fallback_no_hfq:
+        logger.warning(
+            f"[D-2] {fallback_no_hfq} 条 mention 的建仓价降级用了未复权 close "
+            f"（hfq_close 缺失）→ 除权日会产生假跳空，请回填 hfq_close 后重算"
         )
+    logger.info(
+        "窗口样本量："
+        + ", ".join(f"{w}d={len(excess[w])}" for w in EXCESS_WINDOWS)
+    )
 
     return result
 

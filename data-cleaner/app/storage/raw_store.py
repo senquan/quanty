@@ -86,6 +86,7 @@ class RawBarRepository:
         written = len(df)
 
         # PG upsert（调用 migrations 中的 factor.upsert_raw_bars 存储过程）
+        pg_ok = False
         if self._engine is not None:
             try:
                 from sqlalchemy import text
@@ -124,11 +125,20 @@ class RawBarRepository:
                                 ),
                             },
                         )
+                pg_ok = True
             except Exception as e:  # noqa: BLE001
                 logger.error(f"PG upsert 失败，回退 parquet: {e}")
                 self._pq_upsert(df)
         else:
             self._pq_upsert(df)
+
+        # 与 bulk_upsert 同理：增量源（pandadata）不给复权因子，新行 hfq_close 恒为
+        # NULL，写入后按本次涉及的 symbol 定向补（k 常数法）。
+        # ⚠️ 2026-09-10：每日增量走的是本方法（backfill.py 调 repository.upsert），
+        # 只给 bulk_upsert 加钩子会让「今天新入库的行」继续缺 hfq —— 两条路径都要补。
+        # 失败只告警，18:10 的定时任务还会兜底一次。
+        if pg_ok and "symbol" in df.columns:
+            self._backfill_hfq(df["symbol"].unique().tolist())
 
         return written
 
@@ -186,9 +196,13 @@ class RawBarRepository:
                 close      = EXCLUDED.close,
                 volume     = EXCLUDED.volume,
                 source     = EXCLUDED.source,
-                adj_factor = EXCLUDED.adj_factor,
-                hfq_close  = EXCLUDED.hfq_close,
-                amount     = EXCLUDED.amount
+                -- ⚠️ 增量源（pandadata）没有复权因子接口，这几列传进来恒为 NULL。
+                -- 若直接写 EXCLUDED.x，每次重拉同一交易日都会把已回填的值冲回 NULL
+                -- （D-2 实测：回填归零后几分钟内又被冲掉 160 行）。
+                -- 用 COALESCE 保留库内已有值；源端真给了新值时照常更新。
+                adj_factor = COALESCE(EXCLUDED.adj_factor, factor.raw_bars.adj_factor),
+                hfq_close  = COALESCE(EXCLUDED.hfq_close,  factor.raw_bars.hfq_close),
+                amount     = COALESCE(EXCLUDED.amount,     factor.raw_bars.amount)
         """
         written = 0
         try:
@@ -207,7 +221,23 @@ class RawBarRepository:
         except Exception as e:  # noqa: BLE001
             logger.error(f"bulk_upsert 失败，回退逐行 upsert: {e}")
             return self.upsert(df)
+
+        # 增量源不提供复权因子 ⇒ 新行的 hfq_close 恒为 NULL。写入后立即按本次
+        # 涉及的 symbol 定向补上（k 常数法），否则「每过一天多缺一天」。
+        # 失败不影响主流程 —— 18:10 的定时任务还会兜底补一次。
+        self._backfill_hfq(df["symbol"].unique().tolist())
         return written
+
+    def _backfill_hfq(self, symbols: list[str]) -> None:
+        """写入后定向补 hfq_close，失败只告警（有定时任务兜底）"""
+        if not symbols or self._engine is None:
+            return
+        try:
+            from app.tasks.hfq_refresh import backfill as _fill
+
+            _fill(self._engine, symbols=symbols)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"hfq_close 写入后回填失败（定时任务会兜底）: {e}")
 
     def update_amounts(self, rows: list[tuple]) -> int:
         """仅回填成交额(amount)，不动 OHLCV/volume（避免改动既有量纲）。

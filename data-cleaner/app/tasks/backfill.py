@@ -8,6 +8,7 @@ from collections import deque
 from datetime import datetime, timedelta
 from threading import Lock
 from time import sleep, time as _time
+from typing import Callable
 
 from app.core.logging import get_logger
 from app.ingestion.registry import get_source
@@ -17,6 +18,34 @@ from app.storage.raw_store import repository
 logger = get_logger(__name__)
 
 _DEFAULT_FULL_START = "2010-01-01"
+
+# ---------- 修复单飞锁（WS 命令 与 8:30 定时任务 共用） ----------
+# 修复是重操作（全市场增量，实测数十分钟且受数据源限频），必须互斥：
+# 同一时刻只允许一个修复在跑，避免两路并发打满限频、互相拖垮。
+_repair_guard = Lock()
+_repair_running = False
+
+
+def try_begin_repair() -> bool:
+    """尝试占用修复名额；已有修复在跑则返回 False（调用方应回 busy）。"""
+    global _repair_running
+    with _repair_guard:
+        if _repair_running:
+            return False
+        _repair_running = True
+        return True
+
+
+def end_repair() -> None:
+    """释放修复名额（与 try_begin_repair 配对，可跨线程调用）。"""
+    global _repair_running
+    with _repair_guard:
+        _repair_running = False
+
+
+def is_repair_running() -> bool:
+    """当前是否有修复在进行（供 coverage.repair.status）。"""
+    return _repair_running
 
 # 单标的最大重试次数（网络抖动）
 _MAX_RETRY = 3
@@ -166,8 +195,12 @@ def backfill_universe(
     full: bool = False,
     batch_size: int = 200,
     progress_key: str = "raw_backfill_progress",
+    on_progress: Callable[[dict], None] | None = None,
 ) -> dict:
-    """遍历全 A 股（或指定列表）做增量更新。返回汇总。"""
+    """遍历全 A 股（或指定列表）做增量更新。返回汇总。
+
+    :param on_progress: 每 batch 回调一次进度（供 WS 命令回推）；须线程安全。
+    """
     if symbols is None:
         try:
             symbols = get_a_share_universe()
@@ -194,6 +227,20 @@ def backfill_universe(
                 "backfill progress",
                 extra={"done": i, "total": total, "ok": ok, "err": err},
             )
+            if on_progress is not None:
+                try:
+                    on_progress(
+                        {
+                            "done": i,
+                            "total": total,
+                            "ok": ok,
+                            "empty": empty,
+                            "skip": skip,
+                            "err": err,
+                        }
+                    )
+                except Exception as e:  # noqa: BLE001 - 进度回调失败不得中断回填
+                    logger.warning(f"backfill on_progress 回调失败（已忽略）: {e}")
     summary = {
         "status": "done",
         "source": source,
@@ -274,16 +321,24 @@ def check_coverage(min_ratio: float = 0.95) -> dict:
 
 
 def verify_and_repair(
-    source: str = "pandadata", min_ratio: float = 0.95
+    source: str = "pandadata",
+    min_ratio: float = 0.95,
+    *,
+    force: bool = False,
+    on_progress: Callable[[dict], None] | None = None,
 ) -> dict:
-    """校验最新交易日覆盖度；不达标则跑一轮增量补齐，并回读结果。"""
+    """校验最新交易日覆盖度；不达标（或 force）则跑一轮增量补齐，并回读结果。
+
+    :param force: 即使校验通过也强制执行一轮补齐（供 backend 主动指令回填）。
+    :param on_progress: 回填进度回调（每 batch 调用一次）；须线程安全。
+    """
     result = check_coverage(min_ratio)
-    if not result["need_repair"]:
+    if not result["need_repair"] and not force:
         logger.info("覆盖度校验通过", extra=result)
         return result
 
-    logger.info(f"覆盖度不达标，触发增量补齐: {result}")
-    summary = backfill_universe(source=source, full=False)
+    logger.info(f"覆盖度不达标（或强制执行），触发增量补齐: {result}")
+    summary = backfill_universe(source=source, full=False, on_progress=on_progress)
     result["repair"] = {
         k: summary.get(k)
         for k in ("status", "total", "ok", "empty", "skip", "error")

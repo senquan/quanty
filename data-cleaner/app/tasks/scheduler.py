@@ -67,6 +67,14 @@ async def _daily_verify_backfill_job() -> None:
         "定时任务启动: 日线覆盖度校验",
         extra={"task": "scheduled_verify_backfill", "source": source},
     )
+    # 与 WS 指令共用单飞锁：已有修复在跑（如 backend 刚下发指令）就跳过本轮，
+    # 避免两路同时做全市场回填、互相打满数据源限频。
+    if not backfill_task.try_begin_repair():
+        logger.info(
+            "已有修复在进行，跳过本轮定时覆盖度校验",
+            extra={"task": "scheduled_verify_backfill"},
+        )
+        return
     try:
         import asyncio
 
@@ -103,6 +111,8 @@ async def _daily_verify_backfill_job() -> None:
             )
     except Exception as e:  # 不阻断调度器
         logger.error(f"覆盖度校验失败: {e}", extra={"task": "scheduled_verify_backfill"})
+    finally:
+        backfill_task.end_repair()
 
 
 async def _weekly_metrics_job() -> None:
@@ -170,6 +180,36 @@ async def _industry_refresh_job() -> None:
         logger.error(f"行业分类刷新失败: {e}", extra={"task": "scheduled_industry"})
 
 
+async def _hfq_backfill_job() -> None:
+    """增量回填 raw_bars.hfq_close（D-2 根治）。
+
+    每日增量入库走 pandadata（无复权因子接口）⇒ hfq_close 天然为 NULL，
+    不补就每天多缺一天，下游 IC 会把「价格列是空的」误报成「行情未覆盖」。
+    排在 17:15 盘后流水线之后（18:10），保证当天行情已入库。
+    """
+    from app.tasks.hfq_refresh import backfill
+
+    logger.info("定时任务启动: hfq_close 增量回填", extra={"task": "hfq_refresh"})
+    try:
+        summary = await asyncio.wait_for(
+            asyncio.get_event_loop().run_in_executor(None, backfill),
+            timeout=1800,
+        )
+    except asyncio.TimeoutError:
+        logger.error("hfq_close 回填超时（>1800s），本轮放弃",
+                     extra={"task": "hfq_refresh"})
+        return
+    except Exception as e:  # noqa: BLE001
+        logger.error(f"hfq_close 回填失败: {type(e).__name__}: {e}",
+                     extra={"task": "hfq_refresh"})
+        return
+    logger.info(
+        f"hfq_close 回填完成：{summary['before']['rows']} → "
+        f"{summary['after']['rows']} 行",
+        extra={"task": "hfq_refresh", "updated": summary["updated"]},
+    )
+
+
 def register_jobs() -> None:
     # 每日盘后流水线：拉数据 → 因子更新 → 效能评估（顺序执行）
     # max_instances=1 + coalesce：任务耗时长（全市场增量可达数小时），
@@ -216,6 +256,20 @@ def register_jobs() -> None:
         trigger="interval",
         seconds=30,
         id="heartbeat",
+        replace_existing=True,
+    )
+    # hfq_close 增量回填（D-2）：排在 17:15 盘后流水线之后，保证当天行情已入库。
+    # 不补的话每过一天多缺一天，下游 IC 会把「价格列是空的」误报成「行情未覆盖」。
+    scheduler.add_job(
+        _hfq_backfill_job,
+        trigger="cron",
+        hour=18,
+        minute=10,
+        day_of_week="mon-fri",
+        id="hfq_backfill",
+        misfire_grace_time=7200,
+        max_instances=1,
+        coalesce=True,
         replace_existing=True,
     )
     scheduler.add_job(
