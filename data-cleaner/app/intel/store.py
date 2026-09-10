@@ -208,6 +208,67 @@ def upsert_source(src: dict) -> int:
     return int(row)
 
 
+# --------------------------------------------------------------------------
+# 源管理（P4-3 RSSHub 前端管理页）
+#
+# upsert_source 的 ON CONFLICT (url) **刻意不更新 enabled**：批量 seed 时不应
+# 把用户手工停掉的源重新打开。因此启用/停用/改名/改址都要走这里的显式 UPDATE。
+# --------------------------------------------------------------------------
+def count_documents_by_source(source_id: int) -> int:
+    """该源下已入库文档数（删除前的守卫：有文档的源不允许删，避免破坏溯源）"""
+    with get_engine().connect() as c:
+        return int(
+            c.execute(
+                text("SELECT count(*) FROM intel.documents WHERE source_id = :sid"),
+                {"sid": source_id},
+            ).scalar_one()
+        )
+
+
+def update_source(
+    source_id: int,
+    *,
+    name: str | None = None,
+    url: str | None = None,
+    enabled: bool | None = None,
+    credibility: str | None = None,
+) -> bool:
+    """按 id 局部更新源（只动传入的字段），返回是否命中行
+
+    url 变更会撞 sources.url 唯一约束，由调用方先把冲突转成 409；这里不吞异常，
+    让 HTTP 层看到 IntegrityError 以便给出"该 URL 已被别的源占用"的明确提示。
+    """
+    sets: list[str] = []
+    params: dict = {"sid": source_id}
+    if name is not None:
+        sets.append("name = :name")
+        params["name"] = name
+    if url is not None:
+        sets.append("url = :url")
+        params["url"] = url
+    if enabled is not None:
+        sets.append("enabled = :enabled")
+        params["enabled"] = bool(enabled)
+    if credibility is not None:
+        sets.append("credibility = :credibility")
+        params["credibility"] = credibility
+    if not sets:
+        return False
+
+    with get_engine().begin() as c:
+        res = c.execute(
+            text(f"UPDATE intel.sources SET {', '.join(sets)} WHERE id = :sid"), params
+        )
+        return bool(res.rowcount)
+
+
+def delete_source(source_id: int) -> bool:
+    """删除源（仅当其下无文档；有文档的源请先禁用——原文与 doc_mentions 都要保留溯源）"""
+    with get_engine().begin() as c:
+        res = c.execute(text("DELETE FROM intel.sources WHERE id = :sid"), {"sid": source_id})
+        return bool(res.rowcount)
+
+
 # ---- 理解层（P1）：doc_mentions / doc_style / llm_runs / quarantine ----
 
 def insert_mention(m: dict) -> int:

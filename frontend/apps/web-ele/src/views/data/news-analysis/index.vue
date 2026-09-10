@@ -1,5 +1,5 @@
 <script lang="ts" setup>
-import type { AuthorProfile, NewsMention } from './types';
+import type { AuthorProfile } from './types';
 
 import { onMounted, ref } from 'vue';
 
@@ -8,25 +8,31 @@ import { ElAlert, ElTabPane, ElTabs } from 'element-plus';
 import ArticleUpload from './components/article-upload.vue';
 import AuthorProfiles from './components/author-profiles.vue';
 import NewsList from './components/news-list.vue';
+import RsshubManager from './components/rsshub-manager.vue';
 import { newsService } from './news-service';
 
-const mentions = ref<NewsMention[]>([]);
 const profiles = ref<AuthorProfile[]>([]);
 const loading = ref(false);
 const activeTab = ref('mentions');
 
-async function load() {
+// 资讯抽取由 NewsList 自己分页拉取（服务端分页），上传完成后只需让它回第一页重拉
+const newsList = ref<InstanceType<typeof NewsList> | null>(null);
+
+async function loadProfiles() {
   loading.value = true;
   try {
-    const [m, p] = await Promise.all([newsService.getMentions(), newsService.getProfiles()]);
-    mentions.value = m;
-    profiles.value = p;
+    profiles.value = await newsService.getProfiles();
   } finally {
     loading.value = false;
   }
 }
 
-onMounted(load);
+function onUploadDone() {
+  newsList.value?.reload();
+  loadProfiles();
+}
+
+onMounted(loadProfiles);
 </script>
 
 <template>
@@ -38,18 +44,21 @@ onMounted(load);
       show-icon
       class="mb-3"
       title="样本与准确度说明"
-      description="当前为前端 mock 数据，形态对齐 intel 模块真实产出。样本量普遍 <30、accuracy 待 raw_bars 后续行情（约 10 月初）自动补算，结论仅供参考。"
+      description="样本量普遍 <30、accuracy 待 raw_bars 后续行情（约 10 月初）自动补算，结论仅供参考。"
     />
 
     <ElTabs v-model="activeTab" type="border-card">
       <ElTabPane label="资讯抽取" name="mentions">
-        <NewsList :mentions="mentions" />
+        <NewsList ref="newsList" />
       </ElTabPane>
       <ElTabPane label="作者 · 来源画像" name="profiles">
         <AuthorProfiles :profiles="profiles" />
       </ElTabPane>
       <ElTabPane label="文章投喂" name="upload">
-        <ArticleUpload @done="load" />
+        <ArticleUpload @done="onUploadDone" />
+      </ElTabPane>
+      <ElTabPane label="RSSHub 源" name="rsshub">
+        <RsshubManager />
       </ElTabPane>
     </ElTabs>
   </div>
