@@ -167,7 +167,7 @@ def main() -> int:
                 prows = c.execute(
                     text(
                         """
-                        SELECT symbol, timestamp, hfq_close FROM factor.raw_bars
+                        SELECT symbol, timestamp, hfq_close, close FROM factor.raw_bars
                         WHERE freq = :fq AND symbol = ANY(:syms)
                           AND timestamp >= :d0 AND timestamp <= :d1
                         ORDER BY symbol, timestamp
@@ -181,10 +181,11 @@ def main() -> int:
                     },
                 ).mappings().all()
 
+            # 同时取 hfq 与 close：hfq 缺失时按 symbol 整段降级，避免混口径
             px: dict[str, dict] = defaultdict(dict)
             for p in prows:
                 d = p["timestamp"].date() if hasattr(p["timestamp"], "date") else p["timestamp"]
-                px[p["symbol"]][d] = p["hfq_close"]
+                px[p["symbol"]][d] = (p["hfq_close"], p["close"])
 
             fac: dict[object, dict[str, float]] = defaultdict(dict)
             for r in frows:
@@ -193,6 +194,7 @@ def main() -> int:
 
             ics = []
             skipped_dates = 0
+            fallback_syms: set[str] = set()  # 用未/前复权 close 兜底的标的
             for td, fmap in fac.items():
                 rmap = {}
                 for sym in fmap:
@@ -203,9 +205,15 @@ def main() -> int:
                     later = [d for d in sorted(series) if d > td]
                     if len(later) < w:
                         continue
-                    p0, p1 = series[td], series[later[w - 1]]
-                    if p0 and p1:
-                        rmap[sym] = p1 / p0 - 1.0
+                    h0, c0 = series[td]
+                    h1, c1 = series[later[w - 1]]
+                    # ⚠️ 口径必须两端一致：hfq 优先；hfq 缺失时整段降级到 close，
+                    # 但**绝不能 hfq 配 close**（除权日会产生假跳空）。两端都缺则跳过。
+                    if h0 and h1:
+                        rmap[sym] = h1 / h0 - 1.0
+                    elif c0 and c1:
+                        rmap[sym] = c1 / c0 - 1.0
+                        fallback_syms.add(sym)
                 if len(rmap) < 3:
                     skipped_dates += 1
                     continue
@@ -216,9 +224,15 @@ def main() -> int:
             if ics:
                 any_ic = True
                 mean_ic = sum(ics) / len(ics)
+                tail = ""
+                if fallback_syms:
+                    tail = (
+                        f"  ⚠️ {len(fallback_syms)} 只标的用 close 兜底"
+                        f"（hfq 缺失，建议跑 backfill_hfq_incremental.py --apply）"
+                    )
                 print(
                     f"  {code:26s} w={w:2d}  IC均值={mean_ic:+.4f}  "
-                    f"截面数={len(ics)}  跳过(行情不足)={skipped_dates}"
+                    f"截面数={len(ics)}  跳过(行情不足)={skipped_dates}{tail}"
                 )
             else:
                 print(
@@ -227,13 +241,31 @@ def main() -> int:
                 )
 
     if not any_ic:
+        # 如实区分两种成因，别再把「价格列是空的」说成「行情没覆盖」
+        with engine.connect() as c:
+            miss = c.execute(
+                text(
+                    """
+                    SELECT count(*) n, count(DISTINCT symbol) syms,
+                           max(timestamp)::date dmax
+                    FROM factor.raw_bars WHERE freq = :fq AND hfq_close IS NULL
+                    """
+                ),
+                {"fq": F.FREQ_DAILY},
+            ).mappings().first()
         print(
-            "\n⚠️ 结论：IC 全部待解锁。原因 —— 因子值落在 "
-            f"{min(r['dmin'] for r in rows)} ~ {max(r['dmax'] for r in rows)}，"
-            f"而行情末尾为 {last_bar}，"
-            "\n   因子日尚无（或尚无 w 日后的）行情。属数据窗口限制，非因子缺陷。"
-            "\n   行情入库后重跑本脚本即可出数（已并入每周自动化）。"
+            "\n⚠️ 结论：IC 全部待解锁。成因（按可能性排序）："
+            f"\n   1) 因子日 {min(r['dmin'] for r in rows)} ~ "
+            f"{max(r['dmax'] for r in rows)} 之后不足 w 个交易日"
+            f"（行情末尾 {last_bar}）→ 属数据窗口限制，非因子缺陷；"
         )
+        if miss and miss["n"]:
+            print(
+                f"   2) ⚠️ hfq_close 缺失 {miss['n']} 行 / {miss['syms']} 只"
+                f"（截至 {miss['dmax']}）→ 先跑 "
+                f"backfill_hfq_incremental.py --apply 再重算；"
+            )
+        print("   行情补齐后重跑本脚本即可出数（已并入每周自动化）。")
 
     # 3) P3-5 成本复盘
     print("\n=== P3-5 LLM 成本复盘 ===")
