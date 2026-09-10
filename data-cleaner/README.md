@@ -91,7 +91,7 @@ uvicorn app.main:app --host 0.0.0.0 --port 8100 --reload
 > ```powershell
 > $env:PYTHONUTF8 = '1'
 > ```
-> 推荐直接用仓库根的一键脚本（已内置该变量并后台拉起 backend + 本服务）：`powershell -File scripts/start_dev.ps1`。另需确保 `.env` 的 `WS_TOKEN` 与 backend `.env` 的 `STRAT_INTEGRATION_TOKEN` 一致，否则 WS 长连接握手鉴权失败。
+> 推荐直接用仓库根的一键脚本（已内置该变量并后台拉起 backend + 本服务）：`powershell -File scripts/start_dev.ps1`。另需确保本服务 `.env` 的 `STRATEGY_INTERNAL_TOKEN` 与 backend `.env` 的 `STRATEGY_INTERNAL_TOKEN` **一致**（backend 在 `app/ws/server.py` 校验该字段），否则 WS 长连接握手鉴权失败。（注：早期文档写的 `WS_TOKEN` 并不存在，是死配置。）
 
 > 注意：当前因子实现均为纯 pandas/numpy，`requirements.txt` 默认不含 `TA-Lib`。若未来需接入 TA-Lib，需在镜像内安装其 C 库（`apt-get install -y libta-lib-dev` 或源码编译）后再取消 `requirements.txt` 中注释行。
 

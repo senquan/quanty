@@ -34,12 +34,15 @@ async def lifespan(_: FastAPI):
     except Exception as e:  # noqa: BLE001
         logging.getLogger(__name__).error("api_key 重加密迁移失败: %s", e)
 
-    # WS 鉴权令牌判空：启用 WS 却未配置令牌 = 握手不校验，属不安全降级
+    # WS 鉴权令牌判空：启用 WS 却未配置令牌 = 握手不校验，属不安全降级。
+    # 注意字段口径：握手校验读的是 STRATEGY_INTERNAL_TOKEN（app/ws/server.py），
+    # 而非遗留的 STRAT_INTEGRATION_TOKEN——判空必须与校验同源，否则会「看似配了令牌、
+    # 实际不校验」且不告警（2026-09-10 修正）。
     if getattr(settings, "WS_ENABLED", False) and not getattr(
-        settings, "STRAT_INTEGRATION_TOKEN", ""
+        settings, "STRATEGY_INTERNAL_TOKEN", ""
     ):
         logging.getLogger(__name__).warning(
-            "WS_ENABLED=true 但 STRAT_INTEGRATION_TOKEN 为空，WS 握手将不校验令牌！请配置。"
+            "WS_ENABLED=true 但 STRATEGY_INTERNAL_TOKEN 为空，WS 握手将不校验令牌！请配置。"
         )
 
     start_scheduler()
