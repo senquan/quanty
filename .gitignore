@@ -79,7 +79,7 @@ data-cleaner/user.json
 data-cleaner/_dbg_*.py
 data-cleaner/_diag_*.py
 data-cleaner/_test_*.py
-data-cleaner/_verify_0*.py
+data-cleaner/_verify_*.py
 data-cleaner/_q_*.py
 data-cleaner/_poll_*.py
 data-cleaner/_repair_*.py
