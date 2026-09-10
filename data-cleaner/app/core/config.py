@@ -79,8 +79,58 @@ class Settings(BaseSettings):
     INTEL_LLM_MODEL: str = ""
     # 成本护栏：LLM 日预算（元），超限停批并告警（不静默降级）
     INTEL_DAILY_BUDGET_YUAN: float = 10.0
+    # LLM 抽取：送审文本最大字符数（超长截断，成本护栏）；价目按每百万 tokens 人民币
+    INTEL_LLM_MAX_INPUT_CHARS: int = 8000
+    INTEL_LLM_MAX_TOKENS: int = 4096          # reasoning 模型思考+输出上限，太小会空 content
+    INTEL_LLM_TIMEOUT_SEC: float = 120.0      # reasoning 模型长文可到 60s+，60 不够
+    INTEL_LLM_CONCURRENCY: int = 4            # 批抽取并发数
+    INTEL_LLM_TPM_BACKOFF_SEC: float = 60.0   # 429 tpm 配额耗尽时的退避（等一个配额窗口）
+    INTEL_LLM_JSON_MODE: bool = False         # response_format json_object；vLLM+Qwen3.6 实测病态，默认关
+    # 额外请求体（JSON 字符串，空=不发送）。vLLM Qwen3 混合思考模型需
+    # {"enable_thinking": false}——否则思考烧光 max_tokens、content 为空
+    INTEL_LLM_EXTRA_BODY_JSON: str = ""
+    INTEL_LLM_PRICE_IN_CNY_PER_M: float = 2.0
+    INTEL_LLM_PRICE_OUT_CNY_PER_M: float = 8.0
     # RSS 轮询间隔（秒），准实时摄取
     INTEL_RSS_POLL_SEC: int = 300
+    # 原文落盘目录（磁盘契约：item 级原文 HTML，文件名=content_hash）
+    INTEL_RAW_DIR: str = "./data/intel/raw"
+    # 转载识别：64 位 simhash 汉明距离阈值（经典 3）；比对回看窗口（天）
+    INTEL_SIMHASH_HAMMING: int = 3
+    INTEL_DEDUPE_WINDOW_DAYS: int = 30
+    # 拉取：单源超时（秒）/ 并发线程数 / 每源单轮最大条目
+    INTEL_HTTP_TIMEOUT_SEC: float = 15.0
+    INTEL_FETCH_WORKERS: int = 8
+    INTEL_PER_SOURCE_LIMIT: int = 50
+    # P4-2 微信半自动：目录 watch（浏览器插件/剪藏落地 ~/intel-inbox/ 自动入库）
+    INTEL_INBOX_DIR: str = "~/intel-inbox"
+    INTEL_INBOX_POLL_SEC: int = 30          # once=False 时的轮询间隔（秒）
+    INTEL_INBOX_DEFAULT_SOURCE: str = "wechat-inbox"  # 扁平文件（无子目录）归入的源名
+    INTEL_INBOX_COOLDOWN_SEC: float = 2.0   # 跳过 mtime 距现在 < 该值的文件（防读到半截）
+    # P4-1 上传临时目录：**必须**与 inbox 分开。
+    # 上传接口把文件暂存后解析入库，若落在 ~/intel-inbox/ 下，任何 inbox 监听
+    # （P4-2 watch 的约定是"子目录=公众号"）都会把 _uploads/<源名>-<ts>/ 当成用户
+    # 投放的文章**抢先入库**，于是上传接口自己再入库时判重命中 → 报 dup、且拿不到
+    # 本次 doc_ids（上传后自动抽取会静默不抽）。目录分开是根治办法。
+    INTEL_UPLOAD_TMP_DIR: str = "~/intel-uploads/tmp"
+    # P4-3 RSSHub 可选源（默认关闭）：自建/第三方实例 base URL；
+    # 源的 url 写 rsshub://<route> 时按此解析为真实 feed URL
+    INTEL_RSSHUB_BASE_URL: str = ""
+    # 每日情报构建（原 19:30 空占位，已实装）：抽取 → 画像 → 因子 → WS 因子变更广播
+    # 抽取受 INTEL_DAILY_BUDGET_YUAN 二次约束（BudgetGate 逐调用拦截，不会超支）。
+    INTEL_DAILY_BUILD_ENABLED: bool = True
+    INTEL_DAILY_BUILD_HOUR: int = 19
+    INTEL_DAILY_BUILD_MINUTE: int = 30
+    INTEL_DAILY_BUILD_EXTRACT_LIMIT: int = 200  # 每轮最多送 LLM 的篇数（超出留待下一轮）
+    # 抽取开关：关掉后 19:30 只刷画像与因子（零成本）。默认开——不抽取的话
+    # 新入库的原文永远停在"未理解"状态（本模块存在的意义就是这条链）。
+    INTEL_DAILY_BUILD_EXTRACT: bool = True
+    # 画像是否每轮重算：author_profiles 是**同版本覆盖**（老值不可复现），重算后
+    # INTL_AUTHOR_CONVICTION 会随之变化（实测 9-09 重算：mean 0.9612 → 0.5683）。
+    # 想冻结画像（停掉这个副作用）就把它关掉，抽取与因子照跑。
+    INTEL_DAILY_BUILD_PROFILES: bool = True
+    INTEL_DAILY_BUILD_TIMEOUT_SEC: int = 3600   # 单轮硬超时（防拖垮 dc 盘后流水线）
+    INTEL_DAILY_BUILD_EMIT_WS: bool = True      # 构建后广播 factor_updated（backend 增量同步）
 
     # Application
     DEBUG: bool = True

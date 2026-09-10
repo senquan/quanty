@@ -1,6 +1,6 @@
 """定时任务调度（APScheduler）
 
-- 每个交易日 18:00: 触发一次全量清洗+因子计算流水线（由 pipeline 路由逻辑复用）
+- 每个交易日 17:15: 触发一次全量清洗+因子计算流水线（由 pipeline 路由逻辑复用）
 - 每周六 09:00: 重算因子效能指标（更长回看窗口）
 - 每 30s: 心跳写入 Redis factor:heartbeat（容器存活探针可由此外部读取），
   并同时经 WebSocket 推送 event.status 给 backend
@@ -177,8 +177,8 @@ def register_jobs() -> None:
     scheduler.add_job(
         _daily_eod_pipeline_job,
         trigger="cron",
-        hour=18,
-        minute=30,
+        hour=17,
+        minute=15,
         day_of_week="mon-fri",
         id="daily_eod_pipeline",
         # 服务晚启动（重启/宕机恢复）2 小时内仍补跑一次，避免整天漏数据
