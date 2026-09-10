@@ -825,3 +825,209 @@ meta / `<time datetime>`；`_parse_published()` 本来**就支持** `YYYY年MM�
 > `run_manual_ingest`，且方括号/中文名/zip 解压已有单测覆盖。
 > 真要传大包建议：① 后端 `UPLOAD_EXTRACT_TIMEOUT_SEC` 已放宽到 900s；
 > ② 或先解压成目录投喂（更快、可分批、有进度）。
+
+### P4-5 资讯抽取页服务端分页 + RSSHub 前端管理页（2026-09-10）
+
+**背景**：资讯抽取结果已从 0 涨到 **797 条**（`intel.doc_mentions`，prompt_version=v2），
+前端原实现一次性全量下发再由前端筛选，既拖慢首屏，也让"搜索到的结果"只覆盖
+已下载那一页。RSSHub（P4-3）此前**只有 CLI**（`_p4_rsshub_ingest.py`），网页上没有
+任何入口，等于"功能存在但用户看不到"。
+
+**交付一：资讯抽取页 20 行一页（服务端分页）**
+
+| 层 | 文件 | 改动 |
+|---|---|---|
+| 后端 | `backend/app/api/api_v1/endpoints/intel.py` | `/intel/mentions` 支持 `q / stance / source / page / pageSize`，返回 `{items,total,page,pageSize,sources}`；筛选与 count 共用 `_mention_where()`，**两份 SQL 不漂移**；`pageSize` 默认 20、上限 100 |
+| 前端 | `src/api/intel.ts`、`news-service.ts`、`types.ts` | 新增 `MentionQuery` / `MentionPage`；`getMentions(params)` |
+| 前端 | `components/news-list.vue` | 改为服务端分页：关键字 350ms 防抖、改筛选回第一页、以服务端返回的 page 为准（防停在空页） |
+| 前端 | `index.vue` | 只保留画像加载；上传完成后通过 `ref` 调 `newsList.reload()` |
+
+真库冒烟：`total=797` / 首页 20 行；关键字「茅台」24 条；`bullish`+华尔街见闻 6 条；
+来源下拉 6 个；越界页返回 0 行（不报错）。
+
+**交付二：RSSHub 管理页（新 tab「RSSHub 源」）**
+
+dc 新增端点（`app/intel/api.py`）→ 主后端同构转发（`endpoints/intel.py` 的
+`_proxy_rsshub()`）→ 前端 `components/rsshub-manager.vue`：
+
+| 端点 | 作用 | 关键判定 |
+|---|---|---|
+| `GET /rsshub/status` | base URL 是否配置、源数量 | 未配置时前端顶部警示，`rsshub://` 相关操作禁用 |
+| `GET /rsshub/sources` | 源清单（含解析后真实 URL、文档数、最近 health） | 第三方中继成功也标 `degraded`，前端如实显示「降级（第三方中继）」 |
+| `POST /rsshub/sources` | 登记源 | **默认 `enabled=False`**；`rsshub://` 但没配 base URL → 400 早失败 |
+| `PATCH /rsshub/sources/{id}` | 改名/改 URL/启停/可信度 | URL 撞唯一约束 → 409 |
+| `DELETE /rsshub/sources/{id}` | 删除源 | **该源已有文档 → 409**（删了 doc_mentions 溯源就断），提示改为停用 |
+| `POST /rsshub/test` | 探活 | **不入库、不写 feed_health** |
+| `POST /rsshub/run` | 立即跑一轮摄取 | 只拉已启用的源 |
+
+`store.py` 补 `update_source()` / `delete_source()` / `count_documents_by_source()`。
+
+> 坑记录：`upsert_source` 的 `ON CONFLICT (url)` **刻意不更新 `enabled`**（批量 seed
+> 不该把用户手工停掉的源重新打开），所以新增接口必须显式补一次 `update_source(enabled=...)`，
+> 否则"页面上勾了启用，库里还是停用"。已由 `test_add_source_enabled_true_is_persisted` 守住。
+
+**测试**：
+- `data-cleaner/tests/intel/test_rsshub_api.py`：**12 passed**（含 409 守卫、默认停用、
+  upsert enabled 对齐、探活不入库）
+- `backend/tests/test_intel_rsshub_forward.py`：**7 passed**（URL/method/body 转发、
+  **dc 的 400/409 原样透传**而不是被吞成 500、dc 不可达 → 502）
+- `backend/tests/test_intel_mentions_paging.py`：**5 passed**（where 拼接与分页常量）
+- `data-cleaner` intel 全量 **237 passed**；`vue-tsc` news-analysis 零错误；
+  eslint `--fix` 后新建/改动文件零告警（顺带修了同目录既有文件的排序类告警，纯风格）
+
+**真机冒烟**（dc 8100，已热加载新端点）：POST → GET → PATCH → DELETE 全通，
+探活对不可达 URL 正确返回 `ok=false` + 错误原因；冒烟源已删除，库内 rsshub 源归零。
+
+> ⚠️ **TestClient 环境坑**：测 async 端点（走 `current_session()`/asyncpg）时，
+> client fixture 必须 **会话级 + `with` 上下文**——每个 client/每次请求换 loop 都会
+> 让 asyncpg 连接池里上次建的连接挂在旧 loop 上，报
+> `InterfaceError: another operation is in progress`，表现为"只有第一个用例过"。
+
+### P0 缺陷修复：D-1 画像窗口失效 + D-2 hfq 断供（2026-09-10）
+
+审计（`docs/memo/intel-audit-2026-09-10.md`）挖出的两个 P0，本次全部修复并回归。
+
+#### D-1 超额收益 20/60 日实际算的是「次日」
+
+**根因**：`app/intel/aggregate/profile.py` 里 `EXCESS_WINDOWS=[20,60]` **根本没参与计算**。
+
+| 位置 | 原代码 | 后果 |
+|---|---|---|
+| 个股端 `:281` | `ORDER BY timestamp ASC LIMIT 1` | 取到「提及日之后第 1 个交易日」 |
+| 基准端 `:228` | `LIMIT 2` + `rows[-1]/rows[0]` | 同样是次日收益 |
+| `:271` 循环 | `for window in EXCESS_WINDOWS:` 但 window 只用来算 `end_date` 上界 | 窗口长度未进入取数逻辑 |
+
+于是 `avg_excess_20d ≡ avg_excess_60d ≡ 次日收益`（14/14 画像两值相同）。
+证伪样本 `600674.SH`（提及 2025-07-02）：次日 −0.37% / 20 日 +0.71% / 60 日 **−9.47%**，符号相反。
+
+**修法**：删掉两个错误函数，改为**基准序列同时充当交易日历**：
+
+1. `_load_benchmark_series()` 一次性载入中证全指（1197 根）到内存；
+2. `bisect` 定位提及日在日历上的 `idx`；
+3. 个股与基准都取 `[idx, idx+window]` —— 个股按日历截止日取**最后一根 bar**，
+   停牌自动跳过，两端区间严格等长（按 bar 数偏移会把 20 日窗口悄悄拉成 23 日）。
+
+新增 `tests/intel/test_profile_excess_windows.py` **14 passed**，含 4 条针对性回归：
+20d≠60d、不等于次日收益、停牌不拉长窗口、行情不足时该窗口为 None（而非退回次日）。
+
+真库复验：`{'avg_excess_20d': -0.76, 'avg_excess_60d': -3.91}` —— 不再相等。
+
+#### D-2 hfq_close 断供（根因比审计结论更深）
+
+审计原判「自 09-07 起断供」，实际断供的是**最近 3 个交易日**（14,098 行）。
+先定性：`close` 与 `hfq_close` 的假跳空检测均为 **0 条** ⇒ `close` 已是 qfq，
+**不是未复权**，所以真正风险不是「假跳空」而是**窗口内 base 用 hfq、end 降级用 qfq 的口径混用**。
+
+挖到两层根因：
+
+| 层 | 机制 | 修法 |
+|---|---|---|
+| ① 没人补 | `backfill_hfq.py` 是一次性脚本（09-06 跑完），增量入库走 pandadata（无复权因子接口）⇒ 新行 `hfq_close` 恒为 NULL，每过一天多缺一天 | 新建 `app/tasks/hfq_refresh.py` + 定时任务 **18:10**（17:15 盘后流水线之后） |
+| ② 补了也被冲 | 存储过程 `factor.upsert_raw_bars`（007 迁移）与 `raw_store.bulk_upsert` 都写 `hfq_close = EXCLUDED.hfq_close`；增量源传 NULL ⇒ **把已回填的值冲回 NULL**（实测回填归零后几分钟内又被冲掉 160 行） | 迁移 `017_hfq_preserve.sql`：改 `COALESCE(EXCLUDED.x, factor.raw_bars.x)`；`raw_store.bulk_upsert` 同步改；并在写入后调 `_backfill_hfq()` 定向补 |
+
+回填用 **k 常数法**（k = hfq/qfq，每标的常数，实测 cv ≈ 1e-14）：
+`UPDATE raw_bars SET hfq_close = close * k WHERE symbol = :s` —— 每标的 1 条 SQL，不必逐行重拉。
+k 取重叠日期的**中位数**抗噪。akshare 真值抽样校验 12/12 通过（最大偏差 0.0033%；
+除权嫌疑股 `600076.SH` −0.054%）。
+
+`_p3_eval.py` 同步修：原只取 `hfq_close`，NULL 时静默跳过却把原因写成「行情未覆盖因子日」；
+现改为**按 symbol 整段降级**（两端同为 hfq 或同为 close，**绝不 hfq 配 close**），并如实报告两种成因。
+
+**结果**：缺失 14,098 → **0**；IC 的 w=1 已出数（`INTL_FIRST_MENTION` +0.2252 等），
+兜底告警消失；w=5/20 仍待解锁属**因子日距今不足窗口的真实限制**（因子仅覆盖 3 个交易日）。
+
+**重跑链路**：画像（`excess_20d=+1.17%` vs `excess_60d=+4.28%`，不再相等）→ 因子（2502 行 / 386 标的）→ IC。
+⚠️ 画像重跑会**同版本覆盖**历史值（已知设计），老画像不可复现。
+
+**测试**：dc 全量 **395 passed**（新增 19 条：D-1 14 条 + hfq 5 条）。
+`tests/test_analytics.py::test_backtest` 失败经还原到 HEAD 验证为**既有失败**，与本次无关。
+
+> ⚠️ **需重启 dc 才完全生效**：`raw_store.bulk_upsert` 里新增的「写入后定向补 hfq」是 Python 改动，
+> 当前进程仍是旧代码；COALESCE 属数据库层已立即生效，故已补的值不会再被冲掉。
+> 不重启的后果只是「当天新行要等 18:10 定时任务补」，不会丢数据。
+
+### D-2 补漏：每日增量走的是 `upsert()` 不是 `bulk_upsert()`（2026-09-10 重启后验证）
+
+**现象**：dc 重启后复查，hfq 缺失从 0 一路涨到 40 → 80 → 260 → 1076 行（全市场
+补录推进到哪，缺到哪）。说明「写入后自动补」在真实增量链路上**没生效**。
+
+**根因**：写入路径找错了。全项目只有一处调用点
+`app/tasks/backfill.py:159` → `repository.upsert(raw)` —— **逐行调存储过程**
+`factor.upsert_raw_bars`，**不走 `bulk_upsert`**。上一轮只给 `bulk_upsert` 加了
+补 hfq 钩子，等于给一条没人走的路装了护栏。
+
+| 路径 | 谁在走 | 上一轮 | 现在 |
+|---|---|---|---|
+| `bulk_upsert()` | 历史补录（一次性） | ✔ 有钩子 | ✔ |
+| `upsert()` | **每日增量**（backfill.py:159） | ✘ 漏了 | ✔ 补上（`pg_ok` 标志 + 同款钩子） |
+
+已加 3 条测试钉死两条路径（`test_hfq_backfill.py`）：
+`test_upsert_row_path_fills_hfq` / `test_bulk_upsert_path_fills_hfq` /
+`test_upsert_does_not_wipe_existing_hfq`。
+
+**两个性能坑（同一轮发现并修掉）**
+
+1. **`_UPDATE_SQL` 的 CTE 没按 symbols 过滤** —— 即使传了 2 只标的，k 的
+   `percentile_cont` 仍对全表 613 万行 GROUP BY。写入侧每写一批就调一次，
+   等于每次入库都全表聚合一次。加过滤后**定向补 2 只 0.11s**（此前几十秒）。
+2. **全库回填必须分批** —— 一次全表聚合实测跑 20 分钟不结束，且多个回填查询
+   **互相行锁阻塞**（一次堆积 3 个：21 分钟 / 8 分钟 / 3 分钟，还与 dc 的
+   `CREATE INDEX` 叠加）。改为按标的 **200 只一批**，`backfill(symbols=None)`
+   内部先查缺失 symbol 再分批 → **1076 行秒级补完**。
+
+**重启后验证结果**
+
+| 项 | 结果 |
+|---|---|
+| `hfq_close` 缺失 | **0**（补录跑满 5558/5558 后再补一次，归零） |
+| COALESCE 覆盖保护 | 4/4 通过（新行自动补 / NULL 不冲掉旧值 / 传新值照常更新 / bulk 同款） |
+| 画像 20d vs 60d | 有样本的 1 条 `1.17` vs `4.28`，**相等数为 0**；另 13 条因提及日距今不足 20 交易日 → `NULL` + `sample_insufficient=true`（旧实现会给一个假的「次日收益」） |
+| IC | w=1 出数；**兜底告警 0 条**；w=5/20 待解锁 = 因子日距今不足窗口的真实限制 |
+| 定时任务 | `hfq_backfill` 已注册 cron **18:10**（在 17:15 盘后流水线之后） |
+
+> ⚠️ **还要再重启一次 dc 才算闭环**：`upsert()` 的钩子是 Python 改动，当前进程
+> 仍是旧代码。不重启的后果只是「当天新入库的行要等 18:10 定时任务补」，不丢数据；
+> COALESCE 属数据库层，已立即生效，补过的值不会被冲掉。
+
+**测试**：`tests/intel` **259 passed**（含新增 3 条）。
+全量 `pytest tests` 有 27 failed / 10 errors，经二分定位为**环境问题**：
+`tests/intel/test_upload_api.py` 首个用例就挂在
+`[safe-delete][SAFE_DELETE_BULK_CONFIRM_REQUIRED] {"count":367,"threshold":50}` ——
+pytest 临时目录 `pytest-of-Senquan/garbage-*` 堆积到 367 个，超过环境批量删除
+阈值 50，清理被拦导致 tmp_path fixture 失败。证据：单独跑 `tests/intel` 259 passed；
+把 `upsert` 钩子临时禁用后失败数不变（27 → 27），证明与本次改动无关。
+
+> ⚠️ **新坑：沙箱里用 bash `cp` 恢复文件会被静默回滚**。做「备份 → `git checkout`
+> 对比 → `cp` 恢复」时，`cp` 返回成功、echo 也打印了，但文件仍是 HEAD 版，
+> 随后才以 `AttributeError: 对象没有 xxx 属性` 暴露。**恢复关键改动要用编辑工具
+> 重做，并立刻 `git diff --stat` 确认落盘。**
+
+---
+
+### 2026-09-10 重启后验收（D-1 / D-2 闭环）
+
+dc 主进程（监听 8100，**pid 47312，15:05:07 启动**）晚于本次代码最后改动
+（`app/tasks/backfill.py` 14:44:15）→ 确认加载的是带 `upsert()` 钩子的新代码。
+
+| 项 | 结果 | 判据 |
+|---|---|---|
+| `hfq_close` 断供 | **0** | 全库 6,140,633 行 `freq='1d'`，缺失 0；近 10 个交易日逐日 missing=0 |
+| 画像 20d vs 60d | **相等数 0** | 14 条画像里 13 条 `sample_insufficient`（提及日集中在 09-03~09-09，距今不足 20 交易日 → 如实 NULL，旧实现会给假的「次日收益」）；唯一有样本的「散户森」`20d=1.17 / 60d=4.28`，胜率 0.5302 vs 0.5772 也分离了 |
+| IC | **w=1 六个因子全部出数** | `MENTION_HEAT_5 -0.1598` / `FIRST_MENTION +0.1863` / `SENTIMENT_10 +0.0082` / `RESONANCE_5 -0.0405` / `AUTHOR_CONVICTION +0.0218` / `STYLE_MATCH -0.0233`；截面数 1~2，无兜底告警 |
+| **`upsert()` 钩子（真机）** | **✅ 生效** | 手动触发 `POST /api/v1/raw/backfill {symbols:[000001.SZ, 600519.SH]}`，写入 **09-10 新行**（11.85 / 1285.13），`hfq_close` 同步为 1786.10 / 11415.18 —— 增量源 pandadata 不给复权因子，这两个值只能来自钩子。全序列 `hfq_close/close` 的 **cv = 5e-15**（浮点极限），k 完全恒定 |
+
+**关于 IC 的 w=5 / w=20 仍显示「待解锁」**：这是**真实的数据窗口限制**，不是
+hfq 缺失造成的假象。因子日区间只有 `2026-09-07 ~ 2026-09-10`，要算 w=5 需要
+09-14 的行情，尚未发生。区分方法：修复前是 **w=1 都出不了数**（价格列全空），
+现在 w=1 全部出数 —— 说明价格链路已通。
+
+**本轮新修的前端类型错误（`pnpm typecheck`）**
+
+| 文件 | 错误 | 修法 |
+|---|---|---|
+| `src/api/intel.ts:46,47,56,57,86,87` | `RsshubSourceList` / `RsshubSource` / `RsshubRunResult` 未导入 | 补进顶部 `import type` |
+| `src/api/intel.ts:70` | `Property 'patch' does not exist on type 'RequestClient'` | Vben 的 `RequestClient` 只暴露 `get/post/put/delete/request`（见 `packages/effects/request/src/request-client/request-client.ts:99~139`），改走 `requestClient.request(url, { data, method: 'PATCH' })` |
+
+修完后 `pnpm typecheck` 报错数 **32 → 25**，且 `news-analysis/**` 与 `api/intel.ts`
+**零错误**；剩余 25 个分布在 `views/data/dashboard`、`market`、`quant`、`risk`
+等模块，属既有历史错误，与本次改动无关。
