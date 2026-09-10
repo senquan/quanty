@@ -93,6 +93,8 @@ class WSClient:
         self._stopping = False
         self._resync_from: int | None = None
         self._last_seen = 0.0
+        # 直发（send_now）产生的短命任务，持引用防被 GC
+        self._ephemeral: set[asyncio.Task] = set()
 
     # ---------------- 构造助手 ----------------
 
@@ -195,6 +197,36 @@ class WSClient:
         metrics.set_gauge("ws_outbox_depth", float(self._outbox.depth()))
         self._wake()
         return rec.id
+
+    def send_now(
+        self,
+        type: str,  # noqa: A002 - 与信封字段名保持一致
+        payload: dict[str, Any],
+        *,
+        corr_id: str | None = None,
+    ) -> None:
+        """**直接**在当前连接上发送一条消息（绕过 outbox）。
+
+        用于命令响应这类**必须携带 `corr_id`** 的消息：outbox 构信封时不带
+        corr_id（见 `_flush`），故不能复用 `send()`。
+
+        线程安全、永不抛异常；未连接时静默丢弃（正确性由调用方重试 /
+        `coverage.repair.status` 轮询兜底）。
+        """
+        loop = self._loop
+        if loop is None or not loop.is_running():
+            return
+        env = protocol.envelope(type, payload, corr_id=corr_id)
+
+        def _schedule() -> None:
+            task = asyncio.ensure_future(self._safe_send(self._ws, env))
+            self._ephemeral.add(task)
+            task.add_done_callback(self._ephemeral.discard)
+
+        try:
+            loop.call_soon_threadsafe(_schedule)
+        except RuntimeError as e:  # 循环已关闭
+            logger.debug(f"WS 直发失败（循环已关闭）: {e}")
 
     def _wake(self) -> None:
         """跨线程唤醒发送协程（在事件循环线程中执行 Event.set）。"""
@@ -365,7 +397,8 @@ class WSClient:
             logger.warning(f"发送 hello 失败（将随重连重试）: {e}")
 
     async def _on_message(self, ws: Any, env: dict[str, Any]) -> None:
-        """处理 backend 下发消息：ack / ping / resync.request / welcome / error。"""
+        """处理 backend 下发消息：ack / ping / resync.request / welcome / error /
+        command.request。"""
         mtype = env.get("type")
         payload = env.get("payload") or {}
 
@@ -399,6 +432,13 @@ class WSClient:
                 f"backend 返回错误: {payload.get('code')} - {payload.get('message')}"
             )
             metrics.inc("ws_error_message_total")
+            return
+
+        if mtype == protocol.MsgType.COMMAND_REQUEST:
+            # 懒导入：避免 client ↔ commands ↔ backfill 的导入期耦合
+            from app.ws import commands
+
+            await commands.handle(self, env)
             return
 
         logger.debug(f"忽略未处理消息类型: {mtype}")

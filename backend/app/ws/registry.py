@@ -25,6 +25,8 @@ from typing import Any
 
 from fastapi import WebSocket
 
+from app.ws import protocol
+
 logger = logging.getLogger(__name__)
 
 
@@ -44,6 +46,11 @@ class Connection:
     last_pipeline: dict[str, Any] | None = None
     # 最近处理的消息 id（供落库时追溯来源，避免改动 handler 签名）
     last_message_id: str | None = None
+    # 最近一条消息的 corr_id（命令响应经此与 send_command 的 Future 关联）
+    last_corr_id: str | None = None
+    # 最近一次覆盖度快照 / 修复状态（coverage.* 命令结果落地处）
+    last_coverage: dict[str, Any] | None = None
+    last_repair: dict[str, Any] | None = None
     # 简易限流：当前窗口内的消息计数
     window_start: float = field(default_factory=time.time)
     window_msgs: int = 0
@@ -62,6 +69,13 @@ class Connection:
             self.window_msgs = 0
         self.window_msgs += 1
         return self.window_msgs > limit_per_min
+
+    async def send(self, env: dict[str, Any]) -> None:
+        """向本连接发送一条信封；失败仅记日志（不断开连接）。"""
+        try:
+            await self.ws.send_text(protocol.encode(env))
+        except Exception as e:  # noqa: BLE001
+            logger.debug(f"WS 发送失败 instance_id={self.instance_id}: {e}")
 
 
 class ConnectionRegistry:

@@ -47,6 +47,8 @@ async def dispatch(conn: Connection, env: dict[str, Any]) -> None:
 
     # 记录最近消息 id，供落库时追溯（signal / execution_report 会用到）
     conn.last_message_id = msg_id
+    # 记录 corr_id，供命令响应与 send_command 的 Future 关联（同样避免改签名）
+    conn.last_corr_id = env.get("corr_id")
 
     handler = _HANDLERS.get(mtype or "")
     if handler is None:
@@ -153,6 +155,40 @@ async def _on_pipeline(conn: Connection, payload: dict[str, Any]) -> None:
             "task": payload.get("task"),
             "step": payload.get("step"),
             "progress": payload.get("progress"),
+        },
+    )
+
+
+async def _on_command_response(conn: Connection, payload: dict[str, Any]) -> None:
+    """命令响应 —— backend 下发的命令（coverage.*）的回复。
+
+    处理顺序很关键：**先**用 corr_id 唤醒等待中的调用方（`send_command`），
+    **再**落连接快照。长任务（`coverage.repair`）的终态常在首个 `accepted`
+    响应之后**晚到**，此时 Future 已结束（`resolve` 返回 False），结果只剩
+    快照可依（供 `/repair/status` 读取）。
+    """
+    from app.ws import commands
+
+    corr_id = conn.last_corr_id or ""
+    resolved = commands.resolve(corr_id, payload)
+    snapshot = {
+        **payload,
+        "instance_id": conn.instance_id,
+        "received_at": datetime.now().isoformat(),
+    }
+    if payload.get("cmd") == "coverage.check":
+        conn.last_coverage = snapshot
+    elif payload.get("cmd") == "coverage.repair":
+        conn.last_repair = snapshot
+    logger.info(
+        "命令响应",
+        extra={
+            "instance_id": conn.instance_id,
+            "cmd": payload.get("cmd"),
+            "ok": payload.get("ok"),
+            "accepted": payload.get("accepted"),
+            "done": payload.get("done"),
+            "resolved": resolved,
         },
     )
 
@@ -394,4 +430,5 @@ _HANDLERS: dict[str, HandlerFn] = {
     protocol.MsgType.EVENT_FACTOR_UPDATED: _on_factor_updated,
     protocol.MsgType.EVENT_SIGNAL_GENERATED: _on_signal_generated,
     protocol.MsgType.EVENT_EXECUTION_REPORT: _on_execution_report,
+    protocol.MsgType.COMMAND_RESPONSE: _on_command_response,
 }
