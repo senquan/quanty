@@ -86,6 +86,11 @@ data-cleaner/_upload_fenhong/*
 data-cleaner/user.json
 
 # 一次性调试/探针脚本（保留 P1~P4 CLI 入口 _p[1-4]_*.py）
+#
+# 分类口径（D-13）：
+#   - `_p[1-4]_*.py`  = 长期 CLI 入口，**入库**（上面几条规则刻意不覆盖它们）
+#   - `_dbg_/_diag_/_test_/_q_/_poll_/_repair_/_rebuild_/_manual_` = 一次性探针，忽略
+#   - `_verify_*` 大多是探针，但**极少数是长期验收工具** → 见下方例外
 data-cleaner/_dbg_*.py
 data-cleaner/_diag_*.py
 data-cleaner/_test_*.py
@@ -97,8 +102,13 @@ data-cleaner/_rebuild_*.py
 data-cleaner/_manual_*.py
 data-cleaner/_oa.json
 backend/_manual_*.py
-# 例外：长期保留的验收工具（不是一次性探针），要入库
+# 例外：长期保留的验收工具（可重复跑、有维护价值），要入库
+# （`!` 例外必须放在上面的通用规则**之后**才生效 —— gitignore 是最后匹配胜出）
 !data-cleaner/_verify_d4_task.py
+# D-4 定时任务在运行进程生效的验收（上一条）
+# D-8 画像超额收益人工核对工具（3 作者 × 10 提及独立复算 + 三点可复核样例）
+!data-cleaner/_d8_verify.py
+!data-cleaner/_d8_spotcheck.py
 
 # 运行状态与报告产物
 data-cleaner/data/*_state.json
