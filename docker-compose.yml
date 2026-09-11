@@ -1,9 +1,20 @@
 version: '3.8'
 
+# 统一日志策略：json-file + 轮转（每容器最多 10 × 50MiB）。
+# 目的：容器日志**长期落盘**且不撑爆磁盘；排查问题时能查到重启前的历史。
+# （2026-09-11 排查 WS 长连接静默失效时，曾因日志被覆盖而取不到首次触发的证据，
+#   见 docs/memo/2026-09-11.ws-reconnect-reliability.md §6）
+x-logging: &default-logging
+  driver: "json-file"
+  options:
+    max-size: "50m"
+    max-file: "10"
+
 services:
   postgres:
     image: postgres:15
     container_name: quant-postgres
+    logging: *default-logging
     environment:
       POSTGRES_DB: quant_db
       POSTGRES_USER: quant_user
@@ -21,6 +32,7 @@ services:
     # data-cleaner 专用库（factor schema）。与 backend 分库，两服务只能通过 HTTP 交互。
     image: postgres:15
     container_name: quant-postgres-factor
+    logging: *default-logging
     environment:
       POSTGRES_DB: factor_db
       POSTGRES_USER: quant_user
@@ -34,6 +46,7 @@ services:
   backend:
     build: ./backend
     container_name: quant-backend
+    logging: *default-logging
     environment:
       DATABASE_URL: postgresql+asyncpg://quant_user:quant_password@postgres:5432/quant_db
       SECRET_KEY: your-secret-key-change-in-production
@@ -71,6 +84,7 @@ services:
   redis:
     image: redis:7-alpine
     container_name: quant-redis
+    logging: *default-logging
     # 不对宿主暴露；如需调试改 "127.0.0.1:6379:6379"
     networks:
       - quant-network
@@ -78,6 +92,7 @@ services:
   data-cleaner:
     build: ./data-cleaner
     container_name: quant-data-cleaner
+    logging: *default-logging
     environment:
       # 指向独立的 factor 库，不是 backend 的 quant_db
       DATABASE_URL: postgresql+asyncpg://quant_user:quant_password@postgres-factor:5432/factor_db
@@ -111,6 +126,7 @@ services:
       context: ./frontend
       dockerfile: apps/web-ele/Dockerfile
     container_name: quant-frontend
+    logging: *default-logging
     # 只绑宿主回环，由宿主 Nginx/Caddy 承接 443/TLS 后转发（唯一公网入口）。
     # 若不用宿主反代，可改回 "8080:8080" 并用安全组限制来源。
     ports:
