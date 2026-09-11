@@ -229,8 +229,8 @@ async def list_profiles(
     db: AsyncSession = Depends(get_db),
     _user: User = Depends(get_current_user),
 ):
-    # 画像版本（profile_version）独立于理解层 prompt_version（当前为 v1 基线），
-    # 故不按字面量过滤，而是取每个 profile_key 最新 computed_at 的版本，
+    # 画像版本：D-9 起按 as_of（知识截止日）版本化 —— 历史行不再被覆盖，
+    # 故此处取每个 profile_key 的**最新 as_of**（而不是 computed_at：那只是写入时间）。
     # 未来 P2 重建产生新版本时接口自动展示最新画像。
     # P4-4：LEFT JOIN LATERAL 取每位作者最新一条 LLM 风格总结（migrations/016），
     # 未生成总结时风格字段为 null，前端可不渲染。
@@ -239,7 +239,7 @@ async def list_profiles(
         SELECT p.profile_key, p.profile_type, p.total_mentions, p.total_docs,
                p.unique_symbols, p.stance_dist, p.top_symbols, p.date_first,
                p.date_last, p.sample_insufficient, p.accuracy_sample_size,
-               p.drift_detected,
+               p.drift_detected, p.profile_version, p.as_of,
                ss.summary       AS style_summary,
                ss.style_tags    AS style_tags,
                ss.sectors       AS style_sectors,
@@ -258,8 +258,8 @@ async def list_profiles(
             ORDER BY s.computed_at DESC
             LIMIT 1
         ) ss ON true
-        WHERE (p.profile_key, p.computed_at) IN (
-            SELECT profile_key, max(computed_at)
+        WHERE (p.profile_key, p.as_of) IN (
+            SELECT profile_key, max(as_of)
             FROM intel.author_profiles
             GROUP BY profile_key
         )
@@ -276,6 +276,8 @@ async def list_profiles(
             {
                 "profileKey": r["profile_key"],
                 "profileType": r["profile_type"],
+                "profileVersion": r["profile_version"],
+                "asOf": r["as_of"].isoformat() if r["as_of"] else None,
                 "totalMentions": r["total_mentions"] or 0,
                 "totalDocs": r["total_docs"] or 0,
                 "uniqueSymbols": r["unique_symbols"] or 0,

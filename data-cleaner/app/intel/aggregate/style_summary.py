@@ -71,7 +71,11 @@ def ensure_style_summary_table(engine=None) -> None:
 
 
 def load_profiles(profile_version: str = "v1", engine=None) -> list[dict]:
-    """取指定 profile_version 的画像（每个 key 取最新 computed_at 的一条）"""
+    """取指定 profile_version 的画像（每个 key 取**最新 as_of** 的一条）
+
+    D-9 起按 as_of 版本化：历史行不再被覆盖，故"最新"必须按 as_of 判定
+    （computed_at 只是写入时间，同日重跑会刷新）。
+    """
     if engine is None:
         engine = get_engine()
     with engine.connect() as c:
@@ -84,8 +88,8 @@ def load_profiles(profile_version: str = "v1", engine=None) -> list[dict]:
                        sample_insufficient, drift_detected
                 FROM intel.author_profiles p
                 WHERE p.profile_version = :pv
-                  AND (p.profile_key, p.computed_at) IN (
-                      SELECT profile_key, max(computed_at)
+                  AND (p.profile_key, p.as_of) IN (
+                      SELECT profile_key, max(as_of)
                       FROM intel.author_profiles
                       WHERE profile_version = :pv
                       GROUP BY profile_key
