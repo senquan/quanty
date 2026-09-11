@@ -14,7 +14,9 @@ import sys, csv, psycopg2
 sys.path.insert(0, ".")
 from app.intel.understand.schema import _norm_ws
 
-URL = "postgresql://postgres:abdxJMPj7SWf@127.0.0.1:5432/quant"
+# ⚠️ 口令绝不进源码：统一从 app 配置（settings.DATABASE_URL，读 .env）取。
+from app.intel.store import _sync_url
+URL = _sync_url().replace("+psycopg2", "")
 conn = psycopg2.connect(URL)
 cur = conn.cursor()
 

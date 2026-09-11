@@ -22,10 +22,18 @@ from sqlalchemy import create_engine, text
 
 from app.tasks.hfq_refresh import FREQ_DAILY, backfill, count_missing
 
-DATABASE_URL = os.getenv(
-    "DATABASE_URL",
-    "postgresql+psycopg2://postgres:abdxJMPj7SWf@127.0.0.1:5432/quant",
-)
+
+def _sync_url_from_settings() -> str:
+    """DB URL 统一从 app 配置取（读 .env）。
+
+    ⚠️ 此前这里硬编码了生产库连接串（含口令），已改为走配置 —— 口令绝不进源码/版本库。
+    """
+    from app.intel.store import _sync_url
+
+    return _sync_url()
+
+
+DATABASE_URL = os.getenv("DATABASE_URL") or _sync_url_from_settings()
 
 def verify(eng, samples: int = 3) -> bool:
     """用 akshare 真值比对最近几个交易日的 hfq_close（探测是否发生新的除权重锚）"""
