@@ -130,6 +130,12 @@ class Settings(BaseSettings):
     # ⚠️ 但 INTL_AUTHOR_CONVICTION 仍会取「最新 as_of」→ 当日因子值随之更新，
     #    想在回测期间冻结画像口径就关掉它，抽取与因子照跑。
     INTEL_DAILY_BUILD_PROFILES: bool = True
+    # D-12：风格总结（P4-4）是否并入每日构建。**花费 LLM**，与抽取共用日预算
+    # （BudgetGate 逐调用拦截，不会超支）。样本 < 3 mentions 的作者不送审（零成本）。
+    # 默认关 = 保守上线：先手动跑一轮确认质量，再打开。
+    INTEL_DAILY_BUILD_STYLES: bool = False
+    # 单轮最多总结多少位作者（None = 不限；成本控制用，按 total_mentions 倒序取前 N）
+    INTEL_DAILY_BUILD_STYLE_LIMIT: int | None = None
     INTEL_DAILY_BUILD_TIMEOUT_SEC: int = 3600   # 单轮硬超时（防拖垮 dc 盘后流水线）
     INTEL_DAILY_BUILD_EMIT_WS: bool = True      # 构建后广播 factor_updated（backend 增量同步）
 
