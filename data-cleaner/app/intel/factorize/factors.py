@@ -169,19 +169,21 @@ def load_mentions(prompt_version: str = PROMPT_VERSION, engine=None) -> list[dic
 def load_profile_index(engine=None) -> dict[str, dict]:
     """profile_key -> {top_symbols: set[str], accuracy: float|None, sample: int}
 
-    按 computed_at 取每个 profile_key 的最新版本（与后端 intel 路由口径一致）。
+    取每个 profile_key 的**最新 as_of** 版本（D-9 起按 as_of 版本化，历史行不再被覆盖）。
+
+    ⚠️ 判定口径从 computed_at 改为 as_of —— 因为 as_of 才是"这份画像知道到哪天"，
+    而 computed_at 只是"这行什么时候写的"（同日重跑会刷新它，跨天新增时旧行不动）。
+    同一 as_of 若存在多行（同日重跑理论上幂等，不该有；防御性取 computed_at 最新那条）。
     """
     if engine is None:
         engine = get_engine()
     sql = text(
         """
-        SELECT profile_key, top_symbols, accuracy_sample_size, win_rate_20d,
+        SELECT DISTINCT ON (profile_key)
+               profile_key, top_symbols, accuracy_sample_size, win_rate_20d,
                avg_excess_20d
         FROM intel.author_profiles
-        WHERE (profile_key, computed_at) IN (
-            SELECT profile_key, max(computed_at) FROM intel.author_profiles
-            GROUP BY profile_key
-        )
+        ORDER BY profile_key, as_of DESC, computed_at DESC
         """
     )
     out: dict[str, dict] = {}

@@ -56,13 +56,20 @@ def _run_extract(limit: int) -> dict:
     return usvc.run_understanding_batch(limit=limit)
 
 
-def _run_profiles(prompt_version: str, profile_version: str, engine=None) -> dict:
-    """P2 画像构建（零 LLM）。"""
+def _run_profiles(
+    prompt_version: str, profile_version: str, engine=None, as_of=None
+) -> dict:
+    """P2 画像构建（零 LLM）。
+
+    D-9：as_of 是「画像知识截止日」，并入唯一键 ⇒ 跨天重算新增历史行而非覆盖。
+    定时任务不传 as_of = 取今天（Asia/Shanghai），即"今天的画像"。
+    """
     from app.intel.aggregate.profile import build_profiles
 
     profiles = build_profiles(
         prompt_version=prompt_version,
         profile_version=profile_version,
+        as_of=as_of,
         engine=engine,
     )
     sufficient = sum(1 for p in profiles if not p.get("sample_insufficient"))

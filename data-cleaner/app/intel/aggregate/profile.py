@@ -15,7 +15,7 @@ from __future__ import annotations
 import bisect
 import json
 import math
-from datetime import datetime, timezone, timedelta
+from datetime import date, datetime, timezone, timedelta
 
 from app.intel.core.config import settings
 from app.intel.core.logging import get_logger
@@ -28,6 +28,12 @@ logger = get_logger(__name__)
 HALF_LIFE_DAYS = 180  # 风格向量时间加权半衰期
 SAMPLE_THRESHOLD = 30  # 画像最低样本量（P2-5 红线：mentions 与 accuracy 样本均须 ≥ 此值）
 EXCESS_WINDOWS = [20, 60]  # 超额收益窗口（交易日）
+CN_TZ = timezone(timedelta(hours=8))  # Asia/Shanghai（避免依赖系统 tz 库）
+
+
+def _today_cn() -> date:
+    """今天（Asia/Shanghai）—— as_of 默认值，也是「同一天重算幂等」的基准。"""
+    return datetime.now(CN_TZ).date()
 
 
 def is_sample_sufficient(
@@ -450,6 +456,7 @@ def _detect_drift(
 def build_profiles(
     prompt_version: str = "v2",
     profile_version: str = "v1",
+    as_of: date | None = None,
     engine=None,
 ) -> list[dict]:
     """P2 画像构建主入口
@@ -459,14 +466,24 @@ def build_profiles(
     2. 按 profile_key 分组聚合
     3. 每组计算超额收益（raw_bars 只读）
     4. 检测风格漂移
-    5. 写入 intel.author_profiles（版本化不覆盖）
+    5. 写入 intel.author_profiles（按 as_of 版本化，**不同 as_of 不覆盖**）
+
+    Args:
+        as_of: 画像的知识截止日。默认取「今天（Asia/Shanghai）」。
+            唯一键含 as_of ⇒ 同一天重跑 = 幂等覆盖，跨天重跑 = 新增历史行。
+            （D-9：此前唯一键不含日期，每次重算都原地覆盖，历史截面不可复现。）
 
     返回写入的 profile 列表。
     """
     if engine is None:
         engine = get_engine()
 
-    logger.info(f"P2 build_profiles: pv={prompt_version} pver={profile_version}")
+    if as_of is None:
+        as_of = _today_cn()
+
+    logger.info(
+        f"P2 build_profiles: pv={prompt_version} pver={profile_version} as_of={as_of}"
+    )
 
     # Step 1: fetch
     rows = _fetch_mentions_with_docs(prompt_version, engine)
@@ -505,6 +522,7 @@ def build_profiles(
             "profile_key": key,
             "profile_type": ptype,
             "profile_version": profile_version,
+            "as_of": as_of,
             "total_mentions": agg["total_mentions"],
             "total_docs": agg["total_docs"],
             "unique_symbols": agg["unique_symbols"],
@@ -540,11 +558,13 @@ def build_profiles(
         }
 
         # Step 6: write (upsert on unique key)
+        # ⚠️ 唯一键含 as_of ⇒ 同一天重跑幂等覆盖，跨天重跑新增历史行（D-9 版本化）。
+        #    绝不要把 as_of 从 ON CONFLICT / DO UPDATE 里去掉，否则又回到"原地覆盖"。
         with engine.begin() as c:
             c.execute(
                 text("""
                     INSERT INTO intel.author_profiles
-                        (profile_key, profile_type, profile_version,
+                        (profile_key, profile_type, profile_version, as_of,
                          total_mentions, total_docs, unique_symbols,
                          date_first, date_last,
                          stance_dist, style_vector, top_symbols, top_sources,
@@ -553,7 +573,7 @@ def build_profiles(
                          accuracy_sample_size, win_rate_20d, win_rate_60d,
                          sample_insufficient, drift_detected, drift_detail)
                     VALUES
-                        (:profile_key, :profile_type, :profile_version,
+                        (:profile_key, :profile_type, :profile_version, :as_of,
                          :total_mentions, :total_docs, :unique_symbols,
                          :date_first, :date_last,
                          :stance_dist, :style_vector, :top_symbols, :top_sources,
@@ -561,7 +581,7 @@ def build_profiles(
                          :avg_excess_20d, :avg_excess_60d,
                          :accuracy_sample_size, :win_rate_20d, :win_rate_60d,
                          :sample_insufficient, :drift_detected, :drift_detail)
-                    ON CONFLICT (profile_key, profile_type, profile_version)
+                    ON CONFLICT (profile_key, profile_type, profile_version, as_of)
                     DO UPDATE SET
                         total_mentions   = EXCLUDED.total_mentions,
                         total_docs       = EXCLUDED.total_docs,

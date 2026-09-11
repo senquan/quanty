@@ -125,9 +125,10 @@ class Settings(BaseSettings):
     # 抽取开关：关掉后 19:30 只刷画像与因子（零成本）。默认开——不抽取的话
     # 新入库的原文永远停在"未理解"状态（本模块存在的意义就是这条链）。
     INTEL_DAILY_BUILD_EXTRACT: bool = True
-    # 画像是否每轮重算：author_profiles 是**同版本覆盖**（老值不可复现），重算后
-    # INTL_AUTHOR_CONVICTION 会随之变化（实测 9-09 重算：mean 0.9612 → 0.5683）。
-    # 想冻结画像（停掉这个副作用）就把它关掉，抽取与因子照跑。
+    # 画像是否每轮重算：D-9 起 author_profiles 按 **as_of（知识截止日）版本化**，
+    # 跨天重算会**新增历史行**（老值保留、可回溯），不再原地覆盖。
+    # ⚠️ 但 INTL_AUTHOR_CONVICTION 仍会取「最新 as_of」→ 当日因子值随之更新，
+    #    想在回测期间冻结画像口径就关掉它，抽取与因子照跑。
     INTEL_DAILY_BUILD_PROFILES: bool = True
     INTEL_DAILY_BUILD_TIMEOUT_SEC: int = 3600   # 单轮硬超时（防拖垮 dc 盘后流水线）
     INTEL_DAILY_BUILD_EMIT_WS: bool = True      # 构建后广播 factor_updated（backend 增量同步）
