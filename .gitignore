@@ -92,6 +92,12 @@ backend/_manual_*.py
 data-cleaner/data/*_state.json
 data-cleaner/data/*.out
 data-cleaner/data/missing_symbols.json
+
+# data-cleaner/data 下的运行产物（日志/状态/parquet/中间数据集，勿入库）
+data-cleaner/data/*.log
+data-cleaner/data/*.err
+data-cleaner/data/**/*.parquet
+data-cleaner/data/**/*.csv
 data-cleaner/data/ws/*.json
 data-cleaner/data/ws/*.jsonl
 data-cleaner/p2_baseline_report.html

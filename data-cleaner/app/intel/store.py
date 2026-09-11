@@ -7,6 +7,7 @@ API 侧（主请求循环）读 intel 表走 app.intel.core.db 的 async session
 from __future__ import annotations
 
 import json
+import re
 
 from sqlalchemy import create_engine, text
 
@@ -361,6 +362,56 @@ def llm_spent_today_cny() -> float:
     return float(val)
 
 
+def _extract_priority_map() -> dict[str, int]:
+    """解析 INTEL_EXTRACT_PRIORITY（形如 "manual:10,wechat:20,rss:50"）。
+
+    返回 source_type → 优先级（小者先抽）。解析失败/未配置时返回空 dict，
+    调用方退化为「纯 id 升序」（即改动前的行为）。
+    """
+    raw = getattr(settings, "INTEL_EXTRACT_PRIORITY", "") or ""
+    out: dict[str, int] = {}
+    for part in raw.split(","):
+        part = part.strip()
+        if not part or ":" not in part:
+            continue
+        key, _, val = part.partition(":")
+        key = key.strip().lower()
+        if not key:  # ":9" 这类只有冒号的畸形项，跳过（空 key 会污染 CASE 分支）
+            continue
+        try:
+            out[key] = int(val.strip())
+        except ValueError:
+            continue
+    return out
+
+
+def _understanding_order_sql(prio: dict[str, int]) -> tuple[str, dict]:
+    """生成待理解文档的 ORDER BY 子句与绑定参数（纯函数，便于单测）
+
+    三层（D-3 固化）：
+      1. ``source_type`` 优先级（``manual``/``wechat`` 先于 ``rss``）；
+      2. 同级内 ``available_at DESC``（先理解新鲜的，时效性对资讯有意义）；
+      3. ``d.id`` 兜底，保证稳定排序 —— 分页不重不漏。
+
+    空 ``prio`` → 返回 ``ORDER BY d.id``（即改动前行为，可作回滚开关）。
+    """
+    if not prio:
+        return "ORDER BY d.id", {}
+    # 统一小写 + 参数化 + 白名单校验：配置内容绝不直接拼进 SQL
+    safe = {k.lower(): v for k, v in prio.items()
+            if re.fullmatch(r"[a-z0-9_]+", k.lower())}
+    if not safe:
+        return "ORDER BY d.id", {}
+    cases = " ".join(f"WHEN :p_{k} THEN {int(v)}" for k, v in safe.items())
+    params = {f"p_{k}": k for k in safe}
+    # available_at 可能为 NULL（RSS 源未给发布时间）→ NULLS LAST 让它们沉到同组末尾
+    # 而不是被 PG 默认的 DESC(NULLS FIRST) 顶到最前
+    return (
+        f"ORDER BY CASE LOWER(s.source_type) {cases} ELSE 100 END, "
+        f"d.available_at DESC NULLS LAST, d.id"
+    ), params
+
+
 def docs_for_understanding(limit: int, prompt_version: str | None = None,
                            doc_ids: list[int] | None = None) -> list[dict]:
     """待理解文档：预筛由调用方做；这里给出未做过 LLM 抽取的候选（含标题与正文）
@@ -370,6 +421,11 @@ def docs_for_understanding(limit: int, prompt_version: str | None = None,
     api_fail 的文档没有 ok run，天然会被重试。
 
     doc_ids: 只取这批 id（上传后立即抽取用，避免把历史欠账一起抽了）。
+
+    排序（D-3 固化）：**不再按 ``d.id`` 升序**。入库 id 大小只反映"抓取先后"，
+    与"是否值得先理解"无关 —— 此前 RSS 老欠账 id 小永远先抽；用户手动投喂的
+    公众号文章 id 大，排在几千条之后饿死。现按三层（见 ``_understanding_order_sql``）：
+    source_type 优先级 → available_at DESC → d.id。
     """
     pv = prompt_version
     if pv is None:
@@ -379,19 +435,29 @@ def docs_for_understanding(limit: int, prompt_version: str | None = None,
     params: dict = {"lim": limit, "pv": pv}
     if doc_ids:
         params["ids"] = [int(i) for i in doc_ids]
+
+    if doc_ids:
+        # 定向抽取：调用方已给定关心的顺序，且这批量本该独立于全局优先级
+        order_by, join = "ORDER BY d.id", ""
+    else:
+        order_by, extra = _understanding_order_sql(_extract_priority_map())
+        params.update(extra)
+        join = "JOIN intel.sources s ON s.id = d.source_id" if extra else ""
+
     with get_engine().connect() as c:
         rows = c.execute(
             text(
                 f"""
                 SELECT d.id, d.title, d.content, d.available_at
                 FROM intel.documents d
+                {join}
                 WHERE NOT EXISTS (
                     SELECT 1 FROM intel.llm_runs r
                     WHERE r.doc_id = d.id AND r.status = 'ok'
                       AND r.prompt_version = :pv
                 )
                 {scope}
-                ORDER BY d.id
+                {order_by}
                 LIMIT :lim
                 """
             ),

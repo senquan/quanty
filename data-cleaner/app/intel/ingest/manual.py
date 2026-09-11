@@ -77,6 +77,24 @@ def _file_uri(p: Path) -> str:
         return f"file:///{p.resolve().as_posix()}"
 
 
+def _readable_stem(p: Path | str) -> str:
+    """把文件名（或 file:// URI）还原为**人类可读**的标题
+
+    ⚠️ 与 ``_file_uri`` 是同一个坑的两面：``as_uri()`` 会把 ``[`` ``]`` 中文等
+    百分号编码，于是磁盘/URL 里的名字是 ``%5B2026-09-09-1030%5D%E6%84%9F%E6%81%A9...``。
+    直接拿它当 title 落库，前端就会显示一串 ``%E6%84%9F%E6%81%A9``（实测 id=10445
+    就是这样）。这里统一 unquote 还原成 ``[2026-09-09-1030]感恩长鑫打新...``。
+
+    http(s) 的 URL 不做处理（那是真 URL，不是文件名的编码形态）。
+    """
+    from urllib.parse import unquote
+
+    s = str(p)
+    if s.startswith("file://"):
+        s = urlparse(s).path          # /E:/.../%5B2026...%5Dxxx.html
+    return unquote(Path(s).stem).strip()
+
+
 def _looks_like_url(s: str) -> bool:
     s = str(s).strip()
     if not s:
@@ -248,14 +266,14 @@ class ManualSource(FeedSource):
             return items
         # 非清单 → 整篇作为一篇纯文本文章
         it = self._parse_plain_from_text(
-            p.stem, text, external_id=_file_uri(p)
+            _readable_stem(p), text, external_id=_file_uri(p)
         )
         return [it] if it else []
 
     def _parse_plain(self, p: Path) -> FeedItem | None:
         text = p.read_text(encoding="utf-8", errors="replace")
         return self._parse_plain_from_text(
-            p.stem, text, external_id=_file_uri(p)
+            _readable_stem(p), text, external_id=_file_uri(p)
         )
 
     def _parse_plain_from_text(
@@ -303,7 +321,7 @@ class ManualSource(FeedSource):
     def _parse_html_bytes(self, page: str, url: str) -> FeedItem:
         soup = BeautifulSoup(page, "html.parser")
         title = self._extract_title(soup) or (
-            Path(url).stem if url.startswith("file://") else (url or "未命名")
+            _readable_stem(url) if url.startswith("file://") else (url or "未命名")
         )
         author = self._extract_author(soup)
         pub = self._extract_published(soup)
