@@ -182,8 +182,8 @@ P0-6 计划内冻结的接口（无 RSS 站点单页抓取），非缺陷，但�
 | D-7 | **`data-cleaner/tests/` 被 .gitignore 整体忽略** | 225 条 intel 测试**不在版本库**（老朱 9/10 决定维持忽略）。风险：换机器/恢复环境后测试全丢 |
 | D-8 | P2 验收「3 作者 × 10 提及手工核对」无记录 | 正因为没做，D-1 潜伏至今 |
 | D-9 | 画像重算覆盖历史 | `author_profiles` 同版本覆盖，无 `as_of` 版本化 → 历史截面不可复现（计划 P2-2 原意是"版本化不覆盖"，实现偏离）。冻结开关：`INTEL_DAILY_BUILD_PROFILES=false` |
-| D-10 | 「分红养老之路」重复源 | id 2151(wechat) + id 3590(manual)，**均 `enabled=False`**，224 篇挂在 3590。源名重复易混淆 |
-| D-11 | backend 数据读取双轨 | `/mentions`、`/profiles` **直连 Postgres**；`/upload` **转发 dc**。同一份数据两条路径 |
+| D-10 | ~~「分红养老之路」重复源~~ **✅ 已处置（2026-09-11）** —— 实际范围远小于审计预期：全库**仅此 1 组**同名源；189 组同标题文档里 `same_content_groups=0`（**无一组 content_hash 相同 → 是不同文章，不是重复**），冗余抽取仅 ¥0.16231。真实问题只是 id 2151 的 **3 条多格式副本**，其中 1 条被 simhash 漏判（已修 `normalize_text`，见 §9） | id 2151(wechat) + id 3590(manual)，均 `enabled=False`，224 篇挂在 3590 |
+| D-11 | ~~backend 数据读取双轨~~ **✅ 已处置（2026-09-11）** —— 「双轨」本身不是问题（`/mentions`、`/profiles` 直连 Postgres，`/upload` 转发 dc，各取所需）。真实风险是 **`PROMPT_VERSION="v2"` 硬编码跨仓库无契约**：dc 升级后 backend 会**静默返回空列表**且两侧测试全绿。已加启动期校验 + 契约测试（见 §9） | `/mentions`、`/profiles` **直连 Postgres**；`/upload` **转发 dc** |
 | D-12 | P4-4 风格总结未自动化 | 仍需手动 `_p4_build_style_summaries.py`，未并入 19:30 |
 | D-13 | 一次性脚本散落 | `_p1_gate_eval.py`、`_p2_*`、`_p3_*`、`_p4_*`、`_verify_*` 等在 dc 根目录（部分已进 gitignore） |
 | D-14 | ~~文档未同步最新数字~~ **✅ 已处置（2026-09-11）** | 计划文档 §10 原为 5359 篇 / 1764 行 / ¥6.98 的旧快照；已按重跑后的真实数字同步为 **13446 篇 / 864 mention / 2502 因子行 / ¥10.4306**（详见 §6 重跑记录） |
@@ -199,7 +199,7 @@ P0-6 计划内冻结的接口（无 RSS 站点单页抓取），非缺陷，但�
 | 3 | ~~重跑画像 + 因子 + IC，更新文档数字（D-14）~~ **✅ 已完成（2026-09-11）** | 修完 1/2 必须重算 | 零 LLM（画像/因子不花钱） |
 | 4 | ~~**固化 D-3 抽取优先级**~~ **✅ 已完成（2026-09-11）** | 老朱明确要求过 | 小 |
 | 5 | ~~确认 D-4 定时任务生效（必要时重启 dc）~~ **✅ 已确认（2026-09-11）** | 否则每日链路是空的 | 极小 |
-| 6 | D-10 合并重复源、D-11 统一读取路径 | 卫生问题 | 小 |
+| 6 | ~~D-10 合并重复源、D-11 统一读取路径~~ **✅ 已完成（2026-09-11）** | 卫生问题 | 小 |
 | 7 | D-9 画像版本化（按需） | 只在需要严格回测复现时做 | 中 |
 
 **不建议现在做**：新因子、新数据源、P4-4 自动化——先把已有数字修对，再谈扩张。
@@ -420,3 +420,101 @@ cd data-cleaner
    `抽取[skipped]` 变乱码，断言静默失效（表现为「数据明明对，判定却不过」）。
 
 另注：审计报告给的原验证命令仍有效，但只覆盖 L1。
+
+---
+
+## 9. D-10 / D-11 处置记录（2026-09-11）
+
+### 9.1 D-10：核查后发现范围远小于预期
+
+审计把 D-10 写成「重复源易混淆」，实地核查后**结论要修正** —— 这项被高估了：
+
+| 核查项 | 实测值 | 判读 |
+|---|---|---|
+| 全库同名源 | **仅 1 组**：`分红养老之路` id=2151(wechat, 3 篇) / id=3590(manual, 224 篇) | 范围极小，且**两源 `enabled` 都是 False** |
+| 189 组同标题文档 | `same_content_groups = **0**` | 无一组 `content_hash` 相同 → **不是重复，是不同文章**（见下） |
+| 同标题冗余抽取花费 | 28 次 / **¥0.16231** | 与审计估算的 ¥0.16 吻合，可忽略 |
+| 多格式副本 | **3 条**（全在 2151 源） | 真实问题就这 3 条 |
+| simhash 转载识别 | **629 / 14125** 篇已标 `duplicate_of_id` | 系统一直在正常工作 |
+
+**为什么 189 组同标题不算重复**：抽样的同标题组里，`content_hash` 与 URL 均不同 ——
+东财 `1349`/`1354` 是两个频道各发一稿，虎嗅与爱范儿是**跨源授权转载**。它们只是标题像。
+
+**不合并两源的理由**：id=2151 与 id=3590 的 `canonical_url` **零重叠**（URL scheme 不同），
+2151 只有 3 篇且已停用 —— 合并会引入无谓的归属改写风险，收益为零，故不做。
+
+### 9.2 D-10 真问题：`.md` 副本被 simhash 漏判（已修）
+
+3 条副本里，simhash 只判出了 2 条：
+
+```
+8686(.html) vs 8688(.mhtml) → 0   ✅ 已判转载（8688.duplicate_of_id = 8686）
+8686(.html) vs 8687(.md)    → 9   ❌ 漏判（阈值 INTEL_SIMHASH_HAMMING = 3）
+```
+
+**根因不在 simhash，而在 `normalize_text` 的输入假设**（`app/intel/normalize/text.py`）：
+它只按 HTML 处理，而微信导出的 `.md` 正文里混着两样东西 ——
+
+1. **markdown 图片语法里的裸 URL**：`![](https://mmbiz.qpic.cn/...640?wx_fmt=png&from=appmsg)`
+   （实测 6 处）。`.html` 副本里这些图在 `<img>` 标签内被整体剥掉，`.md` 副本却把 URL
+   留在了文本里。这些长 URL 被 `_TOKEN_RE` 切成几十个 shingle（实测 md 版独有 shingle
+   80 个，全是 `'cn|mmbiz'`、`'assets|newemoji'` 这类残渣）。
+2. **微信页面样板尾巴**：`预览时标签不可点 微信扫一扫 知道了 …` —— 两种格式里措辞不一致。
+
+**修法**（`normalize_text` 新增 4 步清洗）：丢 markdown 链接 URL（保留可见文本）→
+清 markdown 装饰字符 `# * _ ` > ~` → 兜底清裸 URL/裸域名/`key=value` 残渣 →
+剥微信样板尾巴（`预览时标签不可点` 起）。
+
+**效果**：三副本汉明距离 `9 / 0 / 9` → **`1 / 0 / 1`**，全部收敛进阈值。
+
+**误判回归**（关键，不能只看正例）：全库 189 组同标题文档共 202 对，修复后判重 77 对。
+抽样 8 对**全部是真转载** —— 虎嗅↔钛媒体（`（本文作者为 定焦One，钛媒体经授权发布）`）、
+东财多频道同稿、华尔街见闻↔东财。转载仍**照常入库**（共振=热度信号），只标
+`duplicate_of_id` 指向首发。**修复同时提升了召回，且无误杀。**
+
+**历史数据补标**：`UPDATE intel.documents SET duplicate_of_id=8686 WHERE id=8687`
+（单行，带 `WHERE duplicate_of_id IS NULL` 保护，跑完复核 3/3 归位）。
+
+### 9.3 D-11：真正的问题是版本契约，不是「双轨」
+
+先说结论：**「双轨」本身不是缺陷**。`/mentions`、`/profiles` 直连 Postgres 读
+（backend 与 dc 共用同一个 `quant` 库的 `intel` schema，`DATABASE_URL` 都是
+`postgresql+asyncpg://.../quant`），`/upload`、`/rsshub/*` 转发 dc 写 —— 读写各走其道，
+是合理设计，没有口径漂移。
+
+**真风险在这里**：
+
+| 位置 | 版本来源 | 值 |
+|---|---|---|
+| `backend/app/api/api_v1/endpoints/intel.py:26` | **硬编码字面量** | `PROMPT_VERSION = "v2"` |
+| `data-cleaner/app/intel/understand/prompts.py:19` | 真实产出方 | `PROMPT_VERSION = "v2"` |
+
+两侧**跨仓库、都是字面量、零守护**。dc 把 prompts 升到 v3 而 backend 没跟，
+`WHERE prompt_version = 'v2'` 命中 **0 行** → `/mentions` **静默返回空列表**，
+而两侧测试**全绿**（backend 测试只断言 SQL 里有 `"prompt_version = :pv"` 字符串，
+dc 测试里 `"v2"` 是夹具字面量）—— 与 D-1「`freq` 写错查询恒 0 行不报错」同类。
+
+**修法**：
+
+1. `endpoints/intel.py` 新增 `verify_prompt_version()`：读库内实际 `prompt_version`
+   集合，与常量比对，区分 **ok / stale / mismatch / no_data / error** 五态，
+   全部只 `WARN` 不抛异常。
+2. `main.py` 的 `lifespan` 接入调用 —— 沿用既有 `STRATEGY_INTERNAL_TOKEN` 判空同一模式：
+   配置/数据问题不该让整个后端起不来。
+3. 新增 `backend/tests/test_intel_prompt_version_contract.py`（7 例）。核心那条
+   **直接从 dc 源文件正则解析 `PROMPT_VERSION` 做断言**（不 import dc，避免跨仓库
+   venv 耦合）—— dc 升级漏同步 backend 时 **CI 直接红**，这是唯一能在合并前拦住
+   静默失败的地方。
+
+**实测库里 `versions = ['v1','v2']`** —— 确实存在 v1 历史数据，证明这个校验不是
+假想风险。四个分支（ok / mismatch / stale / error）已用真库逐一验证触发。
+
+**注**：`/profiles` 早已正确 —— 它取每个 `profile_key` 最新 `computed_at` 的版本
+而非按字面量过滤（`endpoints/intel.py:152` 注释），不受此风险影响。
+
+### 9.4 收尾
+
+- 提交：`a14b6a9`（D-10 normalize_text）、`109f4fd`（D-11 契约校验）
+- 测试：dc **419 passed / 1 failed**（唯一失败是既有 `test_analytics.py::test_backtest`，
+  因子样本 0<10，与改动无关）；backend **56 passed**
+- 遗留：D-9 画像版本化（按需）、D-12 P4-4 未自动化 —— 见 §4 处置顺序表
