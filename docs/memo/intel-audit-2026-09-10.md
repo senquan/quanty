@@ -138,17 +138,30 @@ RSS 老文档 id 小、分红养老新入库 id 大 → 任何新灌入的语料
 `%5B2026-09-09-1030%5D%E6%84%9F...`（实测 id=10445）。新增 `_readable_stem()`
 统一收口三处调用点，存量 1 条已修正。
 
-#### D-4　19:30 定时任务是否在运行进程生效，未确认
+#### D-4　~~19:30 定时任务是否在运行进程生效，未确认~~ **✅ 已确认（2026-09-11）**
 
-`app/intel/tasks.py` 修改于 2026-09-09 16:26，当前 dc 进程 PID 30548。
-若该进程早于 16:26 启动，跑的仍是**空占位**。验证命令（只注册不启动，不拉 RSS）：
+审计时：`app/intel/tasks.py` 修改于 2026-09-09 16:26，dc 进程 PID 30548 早于它，
+跑的可能是**空占位**。审计给的验证命令（只注册不启动，不拉 RSS）：
 
 ```bash
 cd data-cleaner && INTEL_ENABLED=true .venv/Scripts/python.exe -c "
 import app.tasks.scheduler as S; S.register_jobs()
 j=S.scheduler.get_job('intel_daily_build'); print(j.func_ref if j else 'NOT REGISTERED')"
 ```
-期望输出 `app.intel.tasks:_daily_intel_build_job`（旧版是 `_daily_intel_build_placeholder`）。
+
+**已确认在运行进程中生效**，五层取证（见 §8 处置记录）：
+1. 代码层：`func_ref = app.intel.tasks:_daily_intel_build_job`，
+   `trigger = cron[day_of_week='mon-fri', hour='19', minute='30']`；
+2. 进程层：PID 27912 启动于 09-11 09:41:31，**晚于**代码 mtime（09-09 16:26）；
+3. 日志层：dc 日志有 `Added job "_daily_intel_build_job"`；
+4. **运行进程自报**（最强）：`/qos` 的 `system.scheduler` 报
+   `intel_daily_build → app.intel.tasks:_daily_intel_build_job`，
+   `next_run = 2026-09-11T19:30:00+08:00`；
+5. 干跑编排：`run_daily_build(do_extract=False)` → 画像 ok(14) / 因子 ok(2502 行
+   / 386 标的 / 防前视违例 0)、`errors=[]`、成本 ¥0。
+
+**遗留**：审计时那条验证命令只证明「磁盘上的代码对」，**不证明运行进程**——
+本次已通过新增的 `/qos` `system.scheduler` 字段补上，以后一眼可查。
 
 #### D-5　IC 评估从未出数（P3 验收项空缺）
 
@@ -185,7 +198,7 @@ P0-6 计划内冻结的接口（无 RSS 站点单页抓取），非缺陷，但�
 | 2 | **修 D-2**（hfq 回填） | 阻塞 IC，且污染所有收益计算 | 中（需跑复权回填） |
 | 3 | ~~重跑画像 + 因子 + IC，更新文档数字（D-14）~~ **✅ 已完成（2026-09-11）** | 修完 1/2 必须重算 | 零 LLM（画像/因子不花钱） |
 | 4 | ~~**固化 D-3 抽取优先级**~~ **✅ 已完成（2026-09-11）** | 老朱明确要求过 | 小 |
-| 5 | 确认 D-4 定时任务生效（必要时重启 dc） | 否则每日链路是空的 | 极小 |
+| 5 | ~~确认 D-4 定时任务生效（必要时重启 dc）~~ **✅ 已确认（2026-09-11）** | 否则每日链路是空的 | 极小 |
 | 6 | D-10 合并重复源、D-11 统一读取路径 | 卫生问题 | 小 |
 | 7 | D-9 画像版本化（按需） | 只在需要严格回测复现时做 | 中 |
 
@@ -334,3 +347,76 @@ ORDER BY CASE LOWER(s.source_type)
 **`_p4_extract_source.py` 改造**：不再是硬编码「分红养老之路」的一次性脚本，
 改为 `--source <源名>` 通用定向工具，保留 `--limit` / `--dry-run`。
 日常轮次已不需要它（优先级固化后自动按序抽），用途退化为「单独补齐某个源」。
+
+---
+
+## 8. D-4 处置记录：定时任务在运行进程生效的确认（2026-09-11）
+
+**问题**：审计只能证伪不能证实 —— `app/intel/tasks.py` mtime 是 09-09 16:26，
+而当时 dc 进程 PID 30548 早于它。若进程加载的是旧代码，19:30 跑的仍是
+`_daily_intel_build_placeholder`（只打日志的空占位），**整条每日链路等于空的**。
+
+**为什么要分五层**：单靠任一层都不够 ——
+
+| 层 | 手段 | 为什么不够（单独用时） |
+|---|---|---|
+| L1 | 新进程 `import` + `register_jobs()` 看 `func_ref` | 只证明**磁盘上的代码**对，与运行进程无关 |
+| L2 | 进程启动时刻 vs 代码 mtime | 只是**推断**；进程可能热重载，或 mtime 被 touch |
+| L3 | dc 日志里的 `Added job "_daily_intel_build_job"` | **重启会覆盖日志**（实测踩到，见下） |
+| L4 | **运行进程 `/qos` 自报 job 列表** | ✅ 最强：进程内 APScheduler 实例的真实状态 |
+| L5 | 干跑 `run_daily_build(do_extract=False)` | 证明**链路能跑通**，不只是注册了 |
+
+**结论：全部通过。**
+
+```
+L1  func_ref=app.intel.tasks:_daily_intel_build_job  cron[mon-fri 19:30]
+L2  PID=27912 启动=2026-09-11 09:41:31 (CST)  代码 mtime=2026-09-09 16:26:42
+L3  日志含 Added job "_daily_intel_build_job"
+L4  运行进程报 intel_daily_build → app.intel.tasks:_daily_intel_build_job
+    next_run = 2026-09-11T19:30:00+08:00（共 8 个 job）
+L5  抽取[skipped]｜画像[ok] 14 个｜因子[ok] 2502 行 386 标的 违例=0
+    ERRORS=[]  COST=¥0.0000
+```
+
+### 改动：`/qos` 暴露 `system.scheduler`（让进程能自报）
+
+`app/core/qos.py` 新增 `_scheduler_state()`，把运行进程的调度器状态并进
+`system` 字段：
+
+```jsonc
+"scheduler": {
+  "enabled": true, "running": true, "job_count": 8,
+  "jobs": [
+    {"id": "intel_daily_build",
+     "func_ref": "app.intel.tasks:_daily_intel_build_job",
+     "next_run": "2026-09-11T19:30:00+08:00"},
+    ...
+  ]
+}
+```
+
+以后判断「某任务是否真的在跑」只需 `curl :8100/api/v1/qos | jq .system.scheduler`，
+不必再翻日志或比 mtime。`func_ref` 一眼区分真实现与空占位。
+
+### 顺手做成的验收工具：`_verify_d4_task.py`
+
+五层取证一键跑（只读 + 可选干跑，零 LLM 成本）：
+
+```bash
+cd data-cleaner
+./.venv/Scripts/python.exe _verify_d4_task.py                    # L1~L4
+./.venv/Scripts/python.exe _verify_d4_task.py --dry-run-pipeline # 再加 L5
+```
+
+### 排查中踩到的三个坑（都写进了脚本注释）
+
+1. **Windows API 的 FILETIME 是 UTC**：`GetProcessTimes` 拿到的启动时刻直接与本地
+   mtime 比会**差 8 小时**，差点把「进程晚于代码」误判成「早于」。
+   （当时算得「10.85 小时前」正是 UTC 22:28 = CST 06:28。）
+2. **dc 日志会被重启覆盖**：同一路径被 `>` 重新打开，启动段那几十行消失。
+   L3 因此**不能作为判据**，只作兜底 —— 这就是必须加 L4 的原因。
+3. **中文 Windows 两种编码别混**：系统命令（`netstat`）stdout 是 **GBK**；
+   而自己起的 python 子进程 stdout 是 **UTF-8**。用 GBK 解后者会把
+   `抽取[skipped]` 变乱码，断言静默失效（表现为「数据明明对，判定却不过」）。
+
+另注：审计报告给的原验证命令仍有效，但只覆盖 L1。
