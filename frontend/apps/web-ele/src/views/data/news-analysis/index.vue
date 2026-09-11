@@ -66,9 +66,37 @@ onMounted(loadProfiles);
 
 <style scoped>
 .news-page {
-  min-height: 100%;
+  /* 布局把可用内容高度写入 --vben-content-height（ResizeObserver 维护，见
+     packages/@core/composables/src/use-layout-style.ts），直接用它而不是 100% 继承——
+     父级高度不确定时 height:100% 会退化成 auto，导致怎么都撑不满。
+     兜底 100%：脱离布局单独使用时仍有合理表现。 */
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  height: var(--vben-content-height, 100%);
 }
+
+/* ElTabs 吃掉页面剩余高度，并把高度一路传导到 tab pane（资讯抽取据此撑满） */
+.news-page :deep(.el-tabs) {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+}
+.news-page :deep(.el-tabs__content) {
+  flex: 1;
+  min-height: 0;
+}
+.news-page :deep(.el-tab-pane) {
+  height: 100%;
+  /* 必须给 overflow：pane 现在是**定高**盒子，像「作者·来源画像」这种内容 table
+     未设 height、会一直长高——没有 overflow 就会被裁掉且不出现滚动条。 */
+  overflow: auto;
+}
+
 .mb-3 {
+  /* 别让提示条被 flex 压缩（tabs 用 flex:1 吸收剩余空间） */
+  flex: none;
   margin-bottom: 12px;
 }
 </style>

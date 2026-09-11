@@ -134,36 +134,39 @@ function fmtTime(s: string): string {
       <span class="count">共 {{ page.total }} 条</span>
     </div>
 
-    <ElTable
-      v-loading="loading"
-      :data="page.items"
-      stripe
-      height="520"
-      empty-text="暂无资讯抽取结果"
-    >
-      <ElTableColumn prop="symbol" label="标的" width="110" fixed>
-        <template #default="{ row }">
-          <span class="symbol">{{ row.symbol }}</span>
-        </template>
-      </ElTableColumn>
-      <ElTableColumn prop="stance" label="倾向" width="80">
-        <template #default="{ row }">
-          <ElTag :type="stanceMeta[row.stance as Stance].type" size="small" effect="dark">
-            {{ stanceMeta[row.stance as Stance].label }}
-          </ElTag>
-        </template>
-      </ElTableColumn>
-      <ElTableColumn prop="confidence" label="置信" width="70">
-        <template #default="{ row }">{{ (row.confidence * 100).toFixed(0) }}%</template>
-      </ElTableColumn>
-      <ElTableColumn prop="title" label="资讯标题" min-width="220" show-overflow-tooltip />
-      <ElTableColumn prop="thesis" label="论点" min-width="220" show-overflow-tooltip />
-      <ElTableColumn prop="evidence" label="证据" min-width="220" show-overflow-tooltip />
-      <ElTableColumn prop="source" label="来源" width="120" />
-      <ElTableColumn prop="publishedAt" label="时间" width="100">
-        <template #default="{ row }">{{ fmtTime(row.publishedAt) }}</template>
-      </ElTableColumn>
-    </ElTable>
+    <!-- 表格区占满剩余高度：外层 flex:1 + min-height:0 拿到确定高度，表格再用 height="100%" 撑满它 -->
+    <div class="table-wrap">
+      <ElTable
+        v-loading="loading"
+        :data="page.items"
+        stripe
+        height="100%"
+        empty-text="暂无资讯抽取结果"
+      >
+        <ElTableColumn prop="symbol" label="标的" width="110" fixed>
+          <template #default="{ row }">
+            <span class="symbol">{{ row.symbol }}</span>
+          </template>
+        </ElTableColumn>
+        <ElTableColumn prop="stance" label="倾向" width="80">
+          <template #default="{ row }">
+            <ElTag :type="stanceMeta[row.stance as Stance].type" size="small" effect="dark">
+              {{ stanceMeta[row.stance as Stance].label }}
+            </ElTag>
+          </template>
+        </ElTableColumn>
+        <ElTableColumn prop="confidence" label="置信" width="70">
+          <template #default="{ row }">{{ (row.confidence * 100).toFixed(0) }}%</template>
+        </ElTableColumn>
+        <ElTableColumn prop="title" label="资讯标题" min-width="220" show-overflow-tooltip />
+        <ElTableColumn prop="thesis" label="论点" min-width="220" show-overflow-tooltip />
+        <ElTableColumn prop="evidence" label="证据" min-width="220" show-overflow-tooltip />
+        <ElTableColumn prop="source" label="来源" width="120" />
+        <ElTableColumn prop="publishedAt" label="时间" width="100">
+          <template #default="{ row }">{{ fmtTime(row.publishedAt) }}</template>
+        </ElTableColumn>
+      </ElTable>
+    </div>
 
     <div class="pager">
       <ElPagination
@@ -181,10 +184,22 @@ function fmtTime(s: string): string {
 
 <style scoped>
 .news-list {
+  /* border-box：height:100% 把 padding 算进去，否则会比 pane 高 8px
+     多出一条"假"竖向滚动条（pane 已设 overflow:auto） */
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
   padding: 4px;
+}
+/* 表格区吃掉剩余高度；min-height:0 是 flex 下允许收缩的关键（否则会被内容顶开） */
+.table-wrap {
+  flex: 1;
+  min-height: 0;
 }
 .toolbar {
   display: flex;
+  flex: none;
   gap: 10px;
   align-items: center;
   margin-bottom: 12px;
@@ -196,6 +211,7 @@ function fmtTime(s: string): string {
 }
 .pager {
   display: flex;
+  flex: none;
   justify-content: flex-end;
   margin-top: 12px;
 }

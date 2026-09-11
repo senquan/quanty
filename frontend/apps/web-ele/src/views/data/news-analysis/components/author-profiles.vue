@@ -133,6 +133,8 @@ function styleTip(p: AuthorProfile): string {
 
 <style scoped>
 .author-profiles {
+  /* 内容 table 不设 height（按内容撑高），由 tab pane 的 overflow:auto 提供滚动条 */
+  box-sizing: border-box;
   padding: 4px;
 }
 .pk {
