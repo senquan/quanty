@@ -22,6 +22,38 @@ logger = get_logger(__name__)
 SERVICE_VERSION = "1.0.0"
 
 
+def _scheduler_state() -> dict:
+    """运行中进程的调度器状态（D-4 取证用）。
+
+    为什么必须由进程自己报：静态 import 能拿到 `_daily_intel_build_job`
+    **不代表**运行中的进程加载的是这份代码 —— 进程若早于代码 mtime 启动，
+    跑的还是旧的空占位。此前只能靠"进程启动时间 vs 文件 mtime"推断，
+    或翻日志找 `Added job`，而日志会被重启覆盖（2026-09-10 D-4 卡在这里）。
+
+    现在直接报 `func_ref`：一眼看出运行进程里绑的到底是真实现还是占位。
+    """
+    try:
+        from app.tasks.scheduler import scheduler
+    except Exception as e:  # noqa: BLE001 - 未启用调度器时不该拖垮快照
+        return {"enabled": False, "error": f"{type(e).__name__}: {str(e)[:120]}"}
+
+    try:
+        if not getattr(scheduler, "running", False):
+            return {"enabled": False, "reason": "scheduler 未启动"}
+        jobs = []
+        for j in scheduler.get_jobs():
+            nxt = getattr(j, "next_run_time", None)
+            jobs.append({
+                "id": j.id,
+                # func_ref 形如 "app.intel.tasks:_daily_intel_build_job"
+                "func_ref": getattr(j, "func_ref", None),
+                "next_run": nxt.isoformat() if nxt else None,
+            })
+        return {"enabled": True, "running": True, "job_count": len(jobs), "jobs": jobs}
+    except Exception as e:  # noqa: BLE001
+        return {"enabled": True, "running": False, "error": f"{type(e).__name__}: {str(e)[:120]}"}
+
+
 async def build_qos_snapshot() -> dict:
     """构造 QoS / 健康快照。
 
@@ -59,6 +91,7 @@ async def build_qos_snapshot() -> dict:
         "uptime_seconds": round(metrics.uptime_seconds(), 1),
         "factor_count": factor_count,
         "ws": ws_state,
+        "scheduler": _scheduler_state(),
     }
 
     # 根据依赖健康度给出级别（主后端据此标注 online / degraded / offline）

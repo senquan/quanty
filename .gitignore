@@ -87,6 +87,8 @@ data-cleaner/_rebuild_*.py
 data-cleaner/_manual_*.py
 data-cleaner/_oa.json
 backend/_manual_*.py
+# 例外：长期保留的验收工具（不是一次性探针），要入库
+!data-cleaner/_verify_d4_task.py
 
 # 运行状态与报告产物
 data-cleaner/data/*_state.json
