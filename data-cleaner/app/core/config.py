@@ -132,6 +132,14 @@ class Settings(BaseSettings):
     INTEL_DAILY_BUILD_TIMEOUT_SEC: int = 3600   # 单轮硬超时（防拖垮 dc 盘后流水线）
     INTEL_DAILY_BUILD_EMIT_WS: bool = True      # 构建后广播 factor_updated（backend 增量同步）
 
+    # 抽取优先级（D-3 固化）：人工投喂/公众号是**用户主动投喂**的内容，理应先于
+    # 机器抓来的 RSS 欠账被理解。此前靠 ``ORDER BY d.id`` 升序，导致新灌的人工投喂
+    # 排在几千条 RSS 老欠账之后饿死（实测欠账 1.28 万篇，东方财富 1.18 万 id 最小）。
+    # 这里给出 source_type → 优先级（数字越小越优先）；未列出的类型按 100 处理。
+    # 同优先级内按 available_at 倒序（先理解新的），最后用 d.id 兜底保证稳定排序。
+    # 置空字符串可退回旧的「纯 id 升序」行为。
+    INTEL_EXTRACT_PRIORITY: str = "manual:10,wechat:20,rss:50"
+
     # Application
     DEBUG: bool = True
     HOST: str = "0.0.0.0"
