@@ -14,7 +14,7 @@
    ``available_at`` 早于该日开盘的因子值，恰是开盘决策能拿到的信息集。
 
 注意：SQL 注释中不要写 ``键: 值`` ，SQLAlchemy ``text()`` 会把 ``:值`` 解析成
-bind parameter（见 docs/memo/intel-module-plan.md §10 迁移执行约定）。
+bind parameter（见 docs/memo/2026-09-07.intel-module-plan.md §10 迁移执行约定）。
 """
 from __future__ import annotations
 

@@ -1,5 +1,5 @@
 -- 011: 市场情报模块（intel）schema 与基础表
--- 设计见 docs/memo/intel-module-design.md §9
+-- 设计见 docs/memo/2026-09-07.intel-module-design.md §9
 -- 独立 intel schema 与 factor schema 物理隔离，但共用同一 PG 实例。
 -- 本迁移为纯 DDL；INTEL_ENABLED=false 时也照常执行（建空表零运行成本，
 --   与 factor schema 始终存在一致，开关仅门控路由/调度/重型依赖）。

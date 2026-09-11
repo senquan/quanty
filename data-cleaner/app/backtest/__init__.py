@@ -1,6 +1,6 @@
 """脚本策略回测（dc 端）。
 
-按 ``docs/memo/architecture.md`` §0 的归口决策：
+按 ``docs/memo/2026-09-04.architecture.md`` §0 的归口决策：
 **回测在 dc，因为 A 股数据在 dc**（``factor.raw_bars``，5,555 只 / 611 万行）。
 backend 的同类引擎挂在 yfinance / ccxt 上，拿不到 A 股 —— 这是「回测数据源为什么没有 A 股」的根因。
 

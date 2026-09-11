@@ -1,5 +1,5 @@
 -- 012: intel 理解层（P1）—— doc_mentions / doc_style / llm_runs / quarantine
--- 设计见 docs/memo/intel-module-design.md §9；列定义 §9 数据模型表。
+-- 设计见 docs/memo/2026-09-07.intel-module-design.md §9；列定义 §9 数据模型表。
 -- 全部 IF NOT EXISTS 纯 DDL，幂等；不使用表内 UNIQUE（对已应用过的环境不生效，
 --   唯一性一律走 CREATE UNIQUE INDEX / 唯一索引承载）。
 -- 时间戳纪律：ingested 类时间戳一律 DB now() 同语句产生，不混 Python 时钟。

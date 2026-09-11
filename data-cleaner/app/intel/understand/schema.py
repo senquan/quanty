@@ -1,6 +1,6 @@
 """P1-4: LLM 抽取输出契约（pydantic strict）+ span 硬校验
 
-纪律（intel-module-design.md §4/§8）：
+纪律（2026-09-07.intel-module-design.md §4/§8）：
   - 事实 vs 推断分离：stance/thesis 是 LLM 推断，**必须带 span** 指回原文位置，
     无 span 不予入库，落 ``intel.quarantine``（附原因）；
   - 数字禁令：LLM 抽不到的字段写 null，**不许编**（目标价等任何数字也必须落在

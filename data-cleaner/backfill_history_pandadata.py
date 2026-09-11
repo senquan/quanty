@@ -11,7 +11,7 @@
 量纲：raw_bars 既有约定 volume 为「手」。pandadata 返回「股」，在适配器中
 已折算为「手」；akshare 的 成交量 本就是「手」，无需换算。
 
-复权口径（2026-09-06 修正，见 docs/memo/architecture.md §3.3 / §6.1 R1a）：
+复权口径（2026-09-06 修正，见 docs/memo/2026-09-04.architecture.md §3.3 / §6.1 R1a）：
 两侧均取**前复权**（pandadata adjust="pre" / akshare adjust='qfq'）。
 此前两侧均为不复权，导致 2,000 条除权假跳空（`000990.SZ` 2026-07-30 9.08→6.50
 等），并经 `pipeline/adjust.py` 的 `adj_close = close` 透传污染全部价格类因子。

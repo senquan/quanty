@@ -67,7 +67,7 @@ class Settings(BaseSettings):
     WS_MAX_INFLIGHT: int = 1000
 
     # ---- 市场情报模块（intel）：dc 内可选子模块 ----
-    # 设计见 docs/memo/intel-module-design.md / intel-module-plan.md
+    # 设计见 docs/memo/2026-09-07.intel-module-design.md / 2026-09-07.intel-module-plan.md
     # 总开关：关闭时 intel 路由/调度/迁移入口全部跳过，dc 行为与改造前一致，
     # 且 intel 重型依赖（LLM SDK 等）不会被 import（沿用 dc 既有 Dockerfile，不新建镜像）。
     # 决策（2026-09-07）：RSS 先行 / LLM 先云端 / 做有效性检验。
