@@ -1,6 +1,6 @@
 """P1-5: 版本化 prompt（v2 起步）
 
-版本纪律（intel-module-design.md §11）：
+版本纪律（2026-09-07.intel-module-design.md §11）：
   - 每版 prompt 是不可变字符串常量 + 版本号；llm_runs / doc_mentions 记 prompt_version；
   - 改 prompt = 新版本号（v2），旧结果不覆盖——情报可修正、需版本化重跑；
   - P1-Gate 的 2 轮修复机会按版本计：v1 不达标 → 出 v2 重跑 50 篇。

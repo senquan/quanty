@@ -1,6 +1,6 @@
 """脚本策略回测代理 —— backend **不持有计算**，只做网关转发。
 
-按 ``docs/memo/architecture.md`` §0 的归口决策：A 股行情在 dc（``factor.raw_bars``），
+按 ``docs/memo/2026-09-04.architecture.md`` §0 的归口决策：A 股行情在 dc（``factor.raw_bars``），
 backend 拿不到（两库隔离），所以脚本策略回测一律转发到 dc::
 
     POST {dc}/api/v1/backtest/script   跑回测

@@ -206,4 +206,4 @@ pytest tests/ -q
 
 ## 8. 设计参考
 
-完整方案见 `docs/plans/data-cleaning-service-design.md`（数据基础设施策划、因子分类、安全规范 §10、Docker 部署 §9）。
+完整方案见 `docs/plans/2026-08-25.data-cleaning-service-design.md`（数据基础设施策划、因子分类、安全规范 §10、Docker 部署 §9）。

@@ -4,7 +4,7 @@
     python scripts/seed_intel_sources.py            # dry-run：只打印将写入的源
     python scripts/seed_intel_sources.py --apply    # 实际写库（幂等，ON CONFLICT url DO UPDATE）
 
-源清单依据：docs/memo/intel-module-plan.md §1
+源清单依据：docs/memo/2026-09-07.intel-module-plan.md §1
 （2026-09-07 连通性探针实测：全部 HTTP 200 + 真 RSS/Atom；36氪 SPA 死链已剔除，爱范儿替补）。
 """
 import argparse

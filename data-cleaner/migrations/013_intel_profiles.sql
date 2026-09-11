@@ -1,5 +1,5 @@
 -- 013: intel 画像层（P2）—— author_profiles
--- 设计见 docs/memo/intel-module-plan.md §4（P2 — 作者画像 + 历史准确度）
+-- 设计见 docs/memo/2026-09-07.intel-module-plan.md §4（P2 — 作者画像 + 历史准确度）
 -- 幂等 DDL，IF NOT EXISTS；唯一性走索引。
 --
 -- ⚠️ 本文件若经 SQLAlchemy text() 执行，注释里禁止出现 "冒号+紧跟字母/数字"

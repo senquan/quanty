@@ -1,5 +1,5 @@
 -- 014: intel 因子层（P3）—— factor_values + INTL_* 因子注册
--- 设计见 docs/memo/intel-module-plan.md §5（P3 — 因子化 + 回测接入）
+-- 设计见 docs/memo/2026-09-07.intel-module-plan.md §5（P3 — 因子化 + 回测接入）
 --
 -- 与 P0-2 约定一致：因子表推迟到 P3 才建，不提前建空表。
 --
