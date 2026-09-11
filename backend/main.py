@@ -45,6 +45,16 @@ async def lifespan(_: FastAPI):
             "WS_ENABLED=true 但 STRATEGY_INTERNAL_TOKEN 为空，WS 握手将不校验令牌！请配置。"
         )
 
+    # intel 版本契约校验：backend 硬编码的 PROMPT_VERSION 必须与 dc 实际产出一致。
+    # 不一致时 /intel/mentions 会静默返回空列表（WHERE prompt_version 命中 0 行），
+    # 是典型的静默失败，故启动期就 WARN 出来。只告警不阻断（2026-09-11 / D-11）。
+    try:
+        from app.api.api_v1.endpoints.intel import verify_prompt_version
+
+        await verify_prompt_version()
+    except Exception as e:  # noqa: BLE001
+        logging.getLogger(__name__).error("intel prompt_version 启动校验异常: %s", e)
+
     start_scheduler()
     yield
     shutdown_scheduler()

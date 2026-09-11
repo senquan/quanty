@@ -9,6 +9,8 @@
 """
 from pathlib import Path
 
+import logging
+
 from fastapi import APIRouter, Depends, File, Form, UploadFile
 from pydantic import BaseModel
 from sqlalchemy import text
@@ -22,13 +24,91 @@ from app.schemas.response import Response
 
 router = APIRouter(prefix="/intel", tags=["intel"])
 
-# 只暴露经过 P1-Gate 校验的 v2 产出，避免旧版本噪声污染前端
+# 只暴露经过 P1-Gate 校验的 v2 产出，避免旧版本噪声污染前端。
+#
+# ⚠️ 这是**跨仓库的隐式契约**：真实产出方在 data-cleaner
+# （app/intel/understand/prompts.py 的 PROMPT_VERSION）。两侧都是字面量，
+# 谁也没有守护对方。若 dc 把 prompts 升到 v3 而这里仍是 "v2"，本模块的
+# /mentions 会**静默返回空列表**（WHERE prompt_version='v2' 命中 0 行），
+# 且两侧测试全绿 —— 与 D-1「freq 写错查询恒 0 行不报错」是同一类静默失败。
+# 兜底见 verify_prompt_version()（启动期校验 + WARN）。
 PROMPT_VERSION = "v2"
 # 分页：前端资讯抽取页 20 行一页。数据量随每日构建持续增长（已 800+ 条），
 # 全量下发既拖慢首屏也让前端筛选失真（只筛得到已下载的那一页），故筛选与分页
 # 一律下推到 SQL，前端只渲染当前页。
 MENTION_DEFAULT_PAGE_SIZE = 20
 MENTION_MAX_PAGE_SIZE = 100
+
+
+async def verify_prompt_version(db: AsyncSession | None = None) -> dict:
+    """启动期校验：本模块硬编码的 PROMPT_VERSION 是否与实际入库版本一致。
+
+    定位是**只告警、不阻断启动**（配置/数据问题不该让整个后端起不来）：
+    - 库内 max(prompt_version) 与常量不符 → 说明 dc 侧升级了而这里没跟，
+      继续跑就会静默返回空列表，必须 WARN；
+    - 库内 max(prompt_version) 早于常量 → 说明 dc 还没产出新版本，也 WARN；
+    - 查不到任何 prompt_version（库未初始化）→ DEBUG 级提示，不算异常。
+
+    返回诊断 dict（供测试断言，也便于 /qos 之类的可观测面复用）。
+    """
+    from app.core.database import AsyncSessionLocal
+
+    logger = logging.getLogger(__name__)
+    out: dict = {"expected": PROMPT_VERSION, "actual": None, "status": "unknown"}
+
+    own_session = db is None
+    session = AsyncSessionLocal() if own_session else db
+    try:
+        rows = (
+            await session.execute(
+                text(
+                    "SELECT DISTINCT prompt_version FROM intel.doc_mentions"
+                    " WHERE prompt_version IS NOT NULL ORDER BY 1"
+                )
+            )
+        ).scalars().all()
+    except Exception as e:  # noqa: BLE001 - 校验失败不该阻断启动
+        out["status"] = "error"
+        out["error"] = f"{type(e).__name__}: {str(e)[:160]}"
+        logger.warning("intel prompt_version 校验失败（忽略）: %s", out["error"])
+        return out
+    finally:
+        if own_session:
+            await session.close()
+
+    actual = sorted(rows)
+    out["versions"] = actual
+    if not actual:
+        out["status"] = "no_data"
+        logger.debug(
+            "intel.doc_mentions 暂无 prompt_version 数据，跳过校验（backend=%s）",
+            PROMPT_VERSION,
+        )
+        return out
+
+    latest = actual[-1]
+    out["actual"] = latest
+    if latest == PROMPT_VERSION:
+        out["status"] = "ok"
+    elif PROMPT_VERSION not in actual:
+        out["status"] = "mismatch"
+        logger.warning(
+            "intel prompt_version 不一致：backend 硬编码=%s，库内实际=%s →"
+            " /mentions 将返回空列表。请同步 backend PROMPT_VERSION 与"
+            " data-cleaner app/intel/understand/prompts.py 的 PROMPT_VERSION。",
+            PROMPT_VERSION,
+            latest,
+        )
+    else:
+        # 常量仍在库内（历史版本尚未清），但已有更新版本产出 → 前端看到的是旧版
+        out["status"] = "stale"
+        logger.warning(
+            "intel prompt_version 落后：backend 硬编码=%s，库内已有更新版本=%s →"
+            " 前端只会看到旧版本抽取结果，请确认是否需要升级。",
+            PROMPT_VERSION,
+            latest,
+        )
+    return out
 
 
 def _mention_where(q: str, stance: str, source: str) -> tuple[str, dict]:
