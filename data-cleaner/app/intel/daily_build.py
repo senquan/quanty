@@ -1,12 +1,12 @@
-"""intel 每日构建编排：抽取（P1）→ 画像（P2）→ 因子（P3）
+"""intel 每日构建编排：抽取（P1）→ 画像（P2）→ 因子（P3）→ 风格总结（P4-4）
 
-把原先只打日志的 19:30 空占位（``intel_daily_build``）实装成真正跑的三步链路。
+把原先只打日志的 19:30 空占位（``intel_daily_build``）实装成真正跑的链路。
 本模块**只做编排与统计**，算法各自留在 ``understand/``、``aggregate/``、``factorize/``。
 
 纪律：
-- **三步互相隔离**：任一步抛异常只记 ``errors``，后续步骤照跑（抽取挂了不代表
+- **各步互相隔离**：任一步抛异常只记 ``errors``，后续步骤照跑（抽取挂了不代表
   画像/因子不能刷新；反之亦然）。
-- **抽取是唯一花钱的一步**：LLM 未配置 → ``skipped``（不是失败）；日预算用尽由
+- **花钱的两步是抽取与风格总结**：LLM 未配置 → ``skipped``（不是失败）；日预算用尽由
   BudgetGate 在客户端侧中止，摘要里体现为 ``stopped_reason="budget"``。
 - **不静默**：抽不完（limit 截断）、防前视违例、因子 0 行都写进摘要，调用方照抄日志。
 - 因子变更广播（WS）由调用方（``app.intel.tasks``）负责——emit 必须在事件循环
@@ -163,6 +163,33 @@ def build_factors(
     }
 
 
+def _run_style_summaries(
+    prompt_version: str,
+    profile_version: str,
+    *,
+    limit: int | None = None,
+    engine=None,
+) -> dict:
+    """P4-4 风格总结（花钱，受 BudgetGate 约束）。
+
+    D-12：并入 19:30 每日构建 —— 此前只能手动跑 ``_p4_build_style_summaries.py``，
+    导致新出现的作者永远没有风格总结（实测"散户森" 332 mentions 却漏了总结）。
+
+    成本可控性：
+    - 低于 ``DEFAULT_MIN_MENTIONS``（3）的作者直接 skip，**不调 LLM**（零成本）；
+    - 每个作者一次调用，预算闸逐调用拦截 ⇒ 不会超支（与抽取共用同一份日预算）；
+    - 已 ok 的作者默认仍会重算（画像变了总结也该刷新），可用 limit 限制本轮数量。
+    """
+    from app.intel.aggregate.style_summary import build_style_summaries
+
+    return build_style_summaries(
+        profile_version=profile_version,
+        prompt_version=prompt_version,
+        limit=limit,
+        engine=engine,
+    )
+
+
 # ---------------------------------------------------------------- 编排
 
 def run_daily_build(
@@ -170,7 +197,9 @@ def run_daily_build(
     do_extract: bool | None = None,
     do_profiles: bool | None = None,
     do_factors: bool = True,
+    do_styles: bool | None = None,
     extract_limit: int | None = None,
+    style_limit: int | None = None,
     prompt_version: str | None = None,
     profile_version: str = PROFILE_VERSION,
     dry_run_factors: bool = False,
@@ -179,7 +208,7 @@ def run_daily_build(
     """跑一轮每日构建。同步函数（重活），由调度器丢进 executor。
 
     Returns:
-        ``{"started_at","finished_at","steps":{"extract","profiles","factors"},
+        ``{"started_at","finished_at","steps":{"extract","profiles","factors","styles"},
           "errors","cost_cny","factor_codes","emitted":False}``
         —— ``factor_codes`` 供调用方广播；本函数不发 WS。
     """
@@ -193,6 +222,11 @@ def run_daily_build(
         do_extract = bool(getattr(settings, "INTEL_DAILY_BUILD_EXTRACT", True))
     if do_profiles is None:
         do_profiles = bool(getattr(settings, "INTEL_DAILY_BUILD_PROFILES", True))
+    if do_styles is None:
+        do_styles = bool(getattr(settings, "INTEL_DAILY_BUILD_STYLES", False))
+    if style_limit is None:
+        cfg_lim = getattr(settings, "INTEL_DAILY_BUILD_STYLE_LIMIT", None)
+        style_limit = int(cfg_lim) if cfg_lim else None
 
     out: dict[str, Any] = {
         "started_at": _now(),
@@ -264,6 +298,31 @@ def run_daily_build(
     else:
         out["steps"]["factors"] = {"status": "skipped", "reason": "本次不跑因子"}
 
+    # ---- Step 4 风格总结（花钱，BudgetGate 约束）----
+    # D-12：并入每日构建。放在最后 —— 前一步挂了也不影响这步（各步隔离），
+    # 且预算闸与抽取共享同一份日预算，抽取先用、剩余给风格总结。
+    if do_styles:
+        if not _llm_configured():
+            out["steps"]["styles"] = {
+                "status": "skipped", "reason": "INTEL_LLM_* 未配置",
+            }
+        else:
+            try:
+                s = _run_style_summaries(
+                    pv, profile_version, limit=style_limit, engine=engine
+                )
+                out["steps"]["styles"] = {"status": "ok", **s}
+                out["cost_cny"] += float(s.get("cost_cny") or 0.0)
+            except Exception as e:  # noqa: BLE001 —— 单步失败不拖垮整轮
+                out["steps"]["styles"] = {
+                    "status": "error", "error": f"{type(e).__name__}: {str(e)[:200]}"
+                }
+                out["errors"].append(f"styles: {type(e).__name__}: {str(e)[:200]}")
+                logger.error(f"intel 每日构建-风格总结失败: {type(e).__name__}: {e}",
+                             extra={"task": "intel_daily_build"})
+    else:
+        out["steps"]["styles"] = {"status": "skipped", "reason": "本次不跑风格总结"}
+
     out["cost_cny"] = round(float(out["cost_cny"]), 6)
     out["finished_at"] = _now()
     return out
@@ -274,11 +333,14 @@ def format_summary(summary: dict) -> str:
     ex = summary["steps"].get("extract", {})
     pr = summary["steps"].get("profiles", {})
     fa = summary["steps"].get("factors", {})
+    st = summary["steps"].get("styles", {})
     return (
         f"抽取[{ex.get('status')}] 命中={ex.get('prescreen_hit')} "
         f"抽出={ex.get('extracted')} 隔离={ex.get('quarantined')} "
         f"失败={ex.get('api_fail')} 成本=¥{float(ex.get('cost_cny') or 0):.4f}｜"
         f"画像[{pr.get('status')}] {pr.get('profiles', 0)} 个｜"
         f"因子[{fa.get('status')}] {fa.get('written', fa.get('rows', 0))} 行 "
-        f"{fa.get('symbols', 0)} 标的 违例={fa.get('anti_lookahead_violations', 0)}"
+        f"{fa.get('symbols', 0)} 标的 违例={fa.get('anti_lookahead_violations', 0)}｜"
+        f"风格[{st.get('status')}] ok={st.get('ok', 0)} skip={st.get('skipped', 0)} "
+        f"fail={st.get('failed', 0)} 成本=¥{float(st.get('cost_cny') or 0):.4f}"
     )

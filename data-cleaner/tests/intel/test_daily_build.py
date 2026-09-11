@@ -24,8 +24,8 @@ class _Boom(Exception):
 
 @pytest.fixture
 def stub_steps(monkeypatch):
-    """把三步换成可控桩，返回记录调用的 dict"""
-    calls = {"extract": [], "profiles": [], "factors": []}
+    """把四步换成可控桩，返回记录调用的 dict"""
+    calls = {"extract": [], "profiles": [], "factors": [], "styles": []}
 
     def _extract(limit: int) -> dict:
         calls["extract"].append(limit)
@@ -35,7 +35,8 @@ def stub_steps(monkeypatch):
             "api_fail": 0, "cost_cny": 0.0312, "stopped_reason": None,
         }
 
-    def _profiles(prompt_version: str, profile_version: str, engine=None) -> dict:
+    def _profiles(prompt_version: str, profile_version: str, engine=None,
+                  as_of=None) -> dict:
         calls["profiles"].append((prompt_version, profile_version))
         return {"profiles": 11, "sample_sufficient": 3, "sample_insufficient": 8}
 
@@ -49,10 +50,22 @@ def stub_steps(monkeypatch):
             "by_code": {},
         }
 
+    def _styles(prompt_version, profile_version, *, limit=None, engine=None) -> dict:
+        calls["styles"].append((prompt_version, profile_version, limit))
+        return {"ok": 3, "skipped": 1, "failed": 0, "cost_cny": 0.0091,
+                "candidates": 4, "details": []}
+
     monkeypatch.setattr(daily_build, "_run_extract", _extract)
     monkeypatch.setattr(daily_build, "_run_profiles", _profiles)
     monkeypatch.setattr(daily_build, "build_factors", _factors)
+    monkeypatch.setattr(daily_build, "_run_style_summaries", _styles)
     return calls
+
+
+@pytest.fixture
+def styles_on(monkeypatch):
+    """打开风格总结步骤（默认关，需显式开）"""
+    monkeypatch.setattr(settings, "INTEL_DAILY_BUILD_STYLES", True)
 
 
 @pytest.fixture
@@ -67,11 +80,12 @@ def llm_off(monkeypatch):
 
 # ----------------------------------------------------------------- 编排
 
-def test_all_three_steps_run(stub_steps, llm_on):
+def test_all_three_steps_run(stub_steps, llm_on, styles_on):
     out = daily_build.run_daily_build()
-    assert set(out["steps"]) == {"extract", "profiles", "factors"}
+    assert set(out["steps"]) == {"extract", "profiles", "factors", "styles"}
     assert all(s["status"] == "ok" for s in out["steps"].values()), out
-    assert out["cost_cny"] == pytest.approx(0.0312)
+    # 成本 = 抽取 0.0312 + 风格 0.0091（两步都花钱）
+    assert out["cost_cny"] == pytest.approx(0.0312 + 0.0091)
     assert out["errors"] == []
     # factor_codes 按六因子固定顺序排列（不是数据库里的随机顺序）
     assert out["factor_codes"] == ["INTL_MENTION_HEAT_5", "INTL_STYLE_MATCH"]
@@ -146,14 +160,63 @@ def test_selected_steps_can_be_skipped(stub_steps, llm_on):
     assert out["steps"]["profiles"]["status"] == "ok"
 
 
+def test_styles_default_off(stub_steps, llm_on, monkeypatch):
+    """D-12：风格总结默认**不开**（花钱步骤保守上线），显式开才跑。"""
+    monkeypatch.setattr(settings, "INTEL_DAILY_BUILD_STYLES", False)
+    out = daily_build.run_daily_build(do_extract=False, do_profiles=False)
+    assert out["steps"]["styles"]["status"] == "skipped"
+    assert stub_steps["styles"] == [], "默认关时不应调用风格总结"
+
+
+def test_styles_run_when_enabled(stub_steps, llm_on, styles_on):
+    """开启后真跑，且成本计入总成本。"""
+    out = daily_build.run_daily_build(do_extract=False, do_profiles=False,
+                                      do_factors=False, do_styles=True)
+    st = out["steps"]["styles"]
+    assert st["status"] == "ok" and st["ok"] == 3
+    assert out["cost_cny"] == pytest.approx(0.0091)
+    assert stub_steps["styles"], "开启后应调用风格总结"
+
+
+def test_styles_skipped_when_llm_unconfigured(stub_steps, llm_off, styles_on):
+    """LLM 未配置 = skipped（不是失败），与抽取同款契约。"""
+    out = daily_build.run_daily_build(do_extract=False, do_profiles=False,
+                                      do_factors=False, do_styles=True)
+    st = out["steps"]["styles"]
+    assert st["status"] == "skipped"
+    assert "INTEL_LLM_*" in st["reason"]
+    assert out["errors"] == []
+
+
+def test_styles_error_does_not_stop_other_steps(stub_steps, llm_on, monkeypatch,
+                                                styles_on):
+    """风格总结挂了不应拖垮已完成的因子步骤（各步隔离）。"""
+    monkeypatch.setattr(
+        daily_build, "_run_style_summaries",
+        lambda *a, **kw: (_ for _ in ()).throw(_Boom("502")),
+    )
+    out = daily_build.run_daily_build(do_extract=False, do_profiles=False,
+                                      do_factors=True, do_styles=True)
+    assert out["steps"]["styles"]["status"] == "error"
+    assert out["steps"]["factors"]["status"] == "ok"
+    assert any(e.startswith("styles:") for e in out["errors"])
+
+
+def test_styles_limit_override(stub_steps, llm_on):
+    daily_build.run_daily_build(do_extract=False, do_profiles=False,
+                                do_factors=False, do_styles=True, style_limit=2)
+    assert stub_steps["styles"][-1][2] == 2
+
+
 def test_extract_limit_override(stub_steps, llm_on):
     daily_build.run_daily_build(extract_limit=7)
     assert stub_steps["extract"] == [7]
 
 
-def test_format_summary_mentions_all_steps(stub_steps, llm_on):
+def test_format_summary_mentions_all_steps(stub_steps, llm_on, styles_on):
     s = daily_build.format_summary(daily_build.run_daily_build())
     assert "抽取[ok]" in s and "画像[ok]" in s and "因子[ok]" in s
+    assert "风格[ok]" in s
 
 
 # ----------------------------------------------------------------- build_factors 自检
