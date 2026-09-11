@@ -1081,3 +1081,33 @@ hfq 缺失造成的假象。因子日区间只有 `2026-09-07 ~ 2026-09-10`，�
 
 **`_p4_extract_source.py`**：改为 `--source <源名>` 通用定向工具（原为硬编码
 「分红养老之路」的一次性脚本），保留 `--limit` / `--dry-run`。
+
+---
+
+### D-4 定时任务在运行进程生效的确认（2026-09-11）
+
+审计时 `app/intel/tasks.py`（mtime 09-09 16:26）与当时 dc 进程启动时刻的先后
+关系无法确定 —— 若进程更早启动，19:30 跑的仍是 `_daily_intel_build_placeholder`
+（空占位），**整条每日链路等于空的**。
+
+**五层取证，全部通过**：
+
+| 层 | 手段 | 结果 |
+|---|---|---|
+| L1 | 新进程 `register_jobs()` 看 `func_ref` | `app.intel.tasks:_daily_intel_build_job`，`cron[mon-fri 19:30]` |
+| L2 | 进程启动时刻 vs 代码 mtime | PID 27912 启动 09-11 09:41:31 > mtime 09-09 16:26:42 |
+| L3 | dc 日志的 `Added job "_daily_intel_build_job"` | 命中（但日志会被重启覆盖，仅作兜底） |
+| L4 | **运行进程 `/qos` 自报** | `intel_daily_build → app.intel.tasks:_daily_intel_build_job`，`next_run = 2026-09-11T19:30:00+08:00` |
+| L5 | 干跑 `run_daily_build(do_extract=False)` | 画像 ok(14) / 因子 ok(2502 行 / 386 标的 / 防前视违例 0)，`errors=[]`，¥0 |
+
+**新增能力：`/qos` 暴露 `system.scheduler`**（`app/core/qos.py::_scheduler_state`）
+把运行进程的 job 列表（`id` / `func_ref` / `next_run`）并进 `/qos`。
+以后判断「某任务是否真的在跑」一条命令即可，不必翻日志或比 mtime；
+`func_ref` 能一眼区分真实现与空占位。
+
+**验收工具**：`_verify_d4_task.py`（五层一键跑，只读 + 可选干跑，零 LLM 成本）。
+
+**踩坑记录**（已写进脚本注释）：
+1. Windows `GetProcessTimes` 的 FILETIME 是 **UTC**，直接与本地 mtime 比差 8 小时；
+2. dc 日志**重启即覆盖**，启动段会消失 → L3 不能单独作判据；
+3. 中文 Windows 两种编码别混：系统命令 stdout 是 **GBK**，python 子进程 stdout 是 **UTF-8**。
