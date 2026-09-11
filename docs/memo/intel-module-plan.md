@@ -1046,3 +1046,38 @@ hfq 缺失造成的假象。因子日区间只有 `2026-09-07 ~ 2026-09-10`，�
 修完后 `pnpm typecheck` 报错数 **32 → 25**，且 `news-analysis/**` 与 `api/intel.ts`
 **零错误**；剩余 25 个分布在 `views/data/dashboard`、`market`、`quant`、`risk`
 等模块，属既有历史错误，与本次改动无关。
+
+---
+
+### D-3 抽取优先级固化（2026-09-11）
+
+**背景**：`docs_for_understanding` 原用 `ORDER BY d.id` 升序取候选，把「入库先后」当成了
+「理解优先级」。id 只反映抓取顺序 —— RSS 老欠账 id 小永远先抽，用户主动投喂的
+公众号/人工文章 id 大排在队尾。实测欠账 **12814 篇**，其中东方财富 RSS 一家 11853 篇；
+手动投喂的「分红养老之路」只有 7 篇欠账却永不入选。
+
+这正是 9/9「上传 200+ 篇却毫无动静」的深层原因（当时靠 `_p4_extract_source.py`
+用 `doc_ids` 定向绕过），也是老朱明确要求过「优先抽取人工投喂」但一直没固化的问题。
+
+**现排序（三层，`store._understanding_order_sql`）**：
+
+| 层 | 规则 | 作用 |
+|---|---|---|
+| 1 | `source_type` 优先级 | `manual:10` / `wechat:20` / `rss:50` / 未知 `ELSE 100` |
+| 2 | `available_at DESC NULLS LAST` | 同级先理解新鲜的（`NULLS LAST` 防"时间未知"抢位） |
+| 3 | `d.id` | 稳定排序，分页不重不漏 |
+
+配置项 `INTEL_EXTRACT_PRIORITY`（dc `.env`），**置空即退回旧的纯 id 升序**（可回滚）。
+
+**保留 `doc_ids` 定向路径**：上传后 `extract=true` 立即抽取仍只抽本次上传批次，
+不被全局优先级重排。
+
+**顺带修掉**：标题回溯漏 unquote（`_file_uri` 转义了方括号/中文，标题却直接
+`Path(url).stem` 落库 → id=10445 的 title 是 `%5B2026-09-09-1030%5D%E6%84%9F...`）。
+新增 `_readable_stem()` 收口 3 处调用点，存量 1 条已修正。
+
+**测试**：`tests/intel/test_extract_priority.py`（11 条，纯函数 + 真实库两层）；
+`test_manual_ingest.py` 新增 3 条覆盖标题还原。
+
+**`_p4_extract_source.py`**：改为 `--source <源名>` 通用定向工具（原为硬编码
+「分红养老之路」的一次性脚本），保留 `--limit` / `--dry-run`。
