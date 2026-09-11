@@ -9,10 +9,29 @@ import json
 import sys
 import argparse
 from datetime import datetime
+from urllib.parse import parse_qsl, unquote, urlsplit
 
 import psycopg2
 
-DB = dict(host="127.0.0.1", port=5432, user="postgres", password="abdxJMPj7SWf", dbname="quant")
+sys.path.insert(0, ".")
+from app.intel.store import _sync_url  # DB URL 统一从 app 配置（读 .env）取
+
+
+def _parse_db_url(url: str) -> dict:
+    """postgresql+psycopg2://user:pw@host:port/db → psycopg2.connect 的 kwargs"""
+    p = urlsplit(url.replace("+psycopg2", "").replace("+asyncpg", ""))
+    return {
+        "host": p.hostname or "127.0.0.1",
+        "port": p.port or 5432,
+        "user": unquote(p.username or ""),
+        "password": unquote(p.password or ""),
+        "dbname": (p.path or "/quant").lstrip("/"),
+        **dict(parse_qsl(p.query)),
+    }
+
+
+# ⚠️ 口令绝不进源码/版本库：此处曾硬编码生产库连接串，已改为从 app 配置解析。
+DB = _parse_db_url(_sync_url())
 
 
 def fetch(profile_version: str | None) -> list[dict]:
