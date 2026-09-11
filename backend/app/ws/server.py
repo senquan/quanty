@@ -116,6 +116,9 @@ async def websocket_dc(
         while True:
             raw = await websocket.receive_text()
             conn.touch()
+            # 刷新"该服务最近在线时刻"，供断连告警计算**真实**失联时长
+            #（只靠 register 记录会把连接存续时长算进失联，见 registry.mark_seen 注释）
+            registry.mark_seen(conn.service_code)
             registry.count_message()
 
             if len(raw.encode("utf-8")) > max_frame:
@@ -163,8 +166,18 @@ async def ws_status() -> dict:
     """
     from app.services import factor_replica_sync as frs
 
+    # 断连告警（只读、不查库）：对本进程内出现过的 service_code 计算失联时长
+    alert_sec = int(getattr(settings, "WS_DISCONNECT_ALERT_SEC", 300))
+    try:
+        alerts = registry.disconnect_report(registry.known_service_codes(), alert_sec)
+    except Exception as e:  # noqa: BLE001 - 探测失败不影响主状态输出
+        logger.warning(f"构造断连告警失败: {e}")
+        alerts = []
+
     return {
         "enabled": True,
         "connections": registry.stats(),
         "replica_stale": frs.stale_snapshot(),
+        "disconnect_alert_sec": alert_sec,
+        "disconnect_alerts": alerts,
     }

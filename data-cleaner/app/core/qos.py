@@ -43,12 +43,22 @@ async def build_qos_snapshot() -> dict:
 
     last = await db.get_last_pipeline_run()
 
+    # WS 长连接状态：此前只能去 backend 的 /ws/status 看，dc 自身不暴露，
+    # 导致"服务健康但长连接已失效"完全不可见（2026-09-10/09-11 两次现象）。
+    try:
+        from app.ws import events as ws_events
+
+        ws_state = ws_events.stats()
+    except Exception as e:  # noqa: BLE001 - 探测失败不降级整个快照
+        ws_state = {"enabled": False, "error": str(e)[:120]}
+
     system = {
         "service_name": settings.SERVICE_NAME,
         "version": SERVICE_VERSION,
         "db": db_status,
         "uptime_seconds": round(metrics.uptime_seconds(), 1),
         "factor_count": factor_count,
+        "ws": ws_state,
     }
 
     # 根据依赖健康度给出级别（主后端据此标注 online / degraded / offline）
