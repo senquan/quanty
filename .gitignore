@@ -98,6 +98,9 @@ data-cleaner/data/*.log
 data-cleaner/data/*.err
 data-cleaner/data/**/*.parquet
 data-cleaner/data/**/*.csv
+data-cleaner/data/**/*.jsonl
+data-cleaner/data/**/*.state.json
+data-cleaner/data/ws_probe/
 data-cleaner/data/ws/*.json
 data-cleaner/data/ws/*.jsonl
 data-cleaner/p2_baseline_report.html
