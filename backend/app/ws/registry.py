@@ -21,7 +21,7 @@ import time
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any
+from typing import Any, Iterable
 
 from fastapi import WebSocket
 
@@ -96,6 +96,10 @@ class ConnectionRegistry:
         self._seen: OrderedDict[str, float] = OrderedDict()
         self._stale_seconds = stale_seconds
         self._rate_limit = rate_limit_per_min
+        # service_code → 最近一次连上的时间戳（断连告警用；unregister 不清，
+        # 以便区分"曾连过又断开"与"本进程内从未连上"）
+        self._last_connected: dict[str, float] = {}
+        self._started_at = time.time()
         self._counters = {
             "registered_total": 0,
             "unregistered_total": 0,
@@ -116,6 +120,8 @@ class ConnectionRegistry:
                 )
                 return False
             self._conns[conn.instance_id] = conn
+            if conn.service_code:
+                self._last_connected[conn.service_code] = time.time()
             self._counters["registered_total"] += 1
         logger.info(
             "dc 已连接",
@@ -152,6 +158,52 @@ class ConnectionRegistry:
 
     def is_service_connected(self, service_code: str) -> bool:
         return service_code in self.connected_service_codes()
+
+    def known_service_codes(self) -> set[str]:
+        """本进程内出现过的 service_code（当前 + 历史），供 `/ws/status` 告警用。"""
+        codes = {c.service_code for c in self._conns.values() if c.service_code}
+        codes |= set(self._last_connected.keys())
+        return codes
+
+    def last_connected_at(self, service_code: str) -> float | None:
+        """该 service_code 最近一次连上的时间戳；从未连过返回 None。"""
+        return self._last_connected.get(service_code)
+
+    def mark_seen(self, service_code: str) -> None:
+        """标记该 service_code 此刻仍在线（**每收到一条消息都要调用**）。
+
+        只在 `register()` 时记录是不够的：长连接维持数小时后断开，算出的失联时长
+        会把**连接持续时间**也算进去。2026-09-11 演练实测：实际仅断连 163s 却报
+        1326s，导致一断线就立刻误告警（阈值形同虚设）。故收到消息即刷新。
+        """
+        if service_code:
+            self._last_connected[service_code] = time.time()
+
+    def disconnect_report(
+        self, service_codes: Iterable[str], threshold_sec: float
+    ) -> list[dict[str, Any]]:
+        """返回「当前未连接且失联已超过阈值」的告警清单。
+
+        基准取"上次连上时刻"；若本进程内从未连上，则以进程启动时刻为基准——
+        否则 backend 重启后 dc 再也没连上的情况会永远不告警。
+        """
+        now = time.time()
+        out: list[dict[str, Any]] = []
+        for code in service_codes:
+            if not code or self.is_service_connected(code):
+                continue
+            base = self._last_connected.get(code)
+            since = base if base is not None else self._started_at
+            down = now - since
+            if down >= threshold_sec:
+                out.append(
+                    {
+                        "service_code": code,
+                        "down_seconds": round(down, 1),
+                        "ever_connected": base is not None,
+                    }
+                )
+        return out
 
     # ---------------- 水位 / 幂等 ----------------
 

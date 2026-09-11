@@ -80,6 +80,14 @@ class Settings(BaseSettings):
     WS_CONNECTION_STALE_SEC: int = 120
     # 清洗服务存活轮询：已建立 WS 连接的实例跳过轮询，仅对未连接实例兜底
     CLEANER_POLL_SKIP_CONNECTED: bool = True
+    # ---- WS 断连告警（dc 失联的主动发现手段）----
+    # 背景：dc 的 WS 客户端若静默停止重连，backend 侧只表现为 connections=0 且
+    # **无人察觉**（2026-09-10 / 09-11 两次），而覆盖度检测/修复命令通道会静默失效。
+    # 本任务周期性比对"已注册的清洗服务"与"实际 WS 连接"，超时即告警。
+    ENABLE_WS_DISCONNECT_ALERT: bool = True
+    WS_DISCONNECT_ALERT_SEC: int = 300          # 失联超过该秒数才告警
+    WS_DISCONNECT_ALERT_CHECK_SEC: int = 60     # 检查周期
+    WS_DISCONNECT_ALERT_EVERY_SEC: int = 600    # 同一服务告警的最小重复间隔（防刷屏）
     # 因子副本每日对账（发现缺失 / 冗余 / 陈旧），需配合 ENABLE_FACTOR_SYNC
     ENABLE_FACTOR_RECONCILE: bool = False
     FACTOR_RECONCILE_HOUR: int = 7

@@ -20,6 +20,7 @@ import random
 import socket
 from contextlib import suppress
 from pathlib import Path
+from time import time as _time
 from typing import Any, Iterator
 from urllib.parse import urlencode
 
@@ -70,6 +71,8 @@ class WSClient:
         reconnect_max: float = 30.0,
         idle_flush_sec: float = 5.0,
         max_inflight: int = 1000,
+        supervise_interval_sec: float = 30.0,
+        stale_connect_sec: float = 300.0,
     ) -> None:
         self._outbox = outbox
         self._uri = uri
@@ -84,8 +87,17 @@ class WSClient:
         self._reconnect_max = reconnect_max
         self._idle_flush_sec = idle_flush_sec
         self._max_inflight = max_inflight
+        self._supervise_interval = supervise_interval_sec
+        # 超过该时长仍未建立连接 → 判定 `_run` 卡死，由看门狗重建任务
+        self._stale_connect_sec = stale_connect_sec
+        self._last_connect_at = 0.0
+        # `_run` 本次启动时刻：兜底"从未连接成功"的卡死场景
+        # （若只看 _last_connect_at，从未连上时它为 0，判据永不成立）
+        self._run_started_at = 0.0
 
         self._task: asyncio.Task | None = None
+        # 看门狗任务（见 `_supervise`）：保证重连循环不会静默终止
+        self._supervisor: asyncio.Task | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self._ws: Any = None
         self._wakeup: asyncio.Event | None = None
@@ -154,14 +166,73 @@ class WSClient:
         self._loop = asyncio.get_running_loop()
         self._stopping = False
         self._task = asyncio.create_task(self._run(), name="dc-ws-client")
+        # ⚠️ 此前没有结束回调：一旦 `_run` 因异常/取消退出，既无日志也无人拉起，
+        # 表现为「服务健康但长连接永久失效」（2026-09-10 / 09-11 两次线上现象）。
+        self._task.add_done_callback(self._on_run_done)
+        if self._supervisor is None or self._supervisor.done():
+            self._supervisor = asyncio.create_task(
+                self._supervise(), name="dc-ws-supervisor"
+            )
         logger.info(
             "WS 客户端已启动",
             extra={"ws_uri": self._uri, "instance_id": self._instance_id},
         )
 
+    def _on_run_done(self, task: asyncio.Task) -> None:
+        """`_run` 结束回调：只负责**记录**（重新拉起交给看门狗）。"""
+        if task.cancelled():
+            logger.warning("WS 连接任务被取消（若非停机，看门狗将重新拉起）")
+            return
+        exc = task.exception()
+        if exc is not None:
+            logger.error(f"WS 连接任务异常退出（看门狗将重新拉起）: {exc!r}")
+        else:
+            logger.warning("WS 连接任务已结束（非预期，看门狗将重新拉起）")
+
+    async def _supervise(self) -> None:
+        """看门狗：确保重连循环**始终有人在跑**。
+
+        覆盖两类静默失效：
+        1) `_run` 任务已结束（异常 / 被取消）→ 重新拉起；
+        2) 任务还活着但长时间连不上（卡在 connect / _session，此时 /qos 仍 200）
+           → 取消并重建任务。
+        """
+        while not self._stopping:
+            await asyncio.sleep(self._supervise_interval)
+            if self._stopping:
+                return
+            task = self._task
+            if task is None or task.done():
+                logger.warning("WS 连接任务不在运行，看门狗重新拉起")
+                await self.start()
+                continue
+
+            # 基准取"上次连上"与"本轮任务启动"的较晚者：
+            # 前者覆盖"连上后又断开"，后者覆盖"一次都没连上"（否则基准为 0 永不触发）
+            since = max(self._last_connect_at, self._run_started_at)
+            if (
+                not self._connected
+                and since
+                and (_time() - since) > self._stale_connect_sec
+            ):
+                logger.warning(
+                    f"WS 长连接已超过 {self._stale_connect_sec}s 未建立，"
+                    "判定卡死并重建连接任务"
+                )
+                task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await task
+                self._task = None
+                await self.start()
+
     async def stop(self) -> None:
         """停止后台任务并尝试优雅下线。"""
         self._stopping = True
+        sup, self._supervisor = self._supervisor, None
+        if sup is not None:
+            sup.cancel()
+            with suppress(asyncio.CancelledError):
+                await sup
         task, self._task = self._task, None
         if task is not None:
             task.cancel()
@@ -283,6 +354,8 @@ class WSClient:
         # 重连退避（错峰 + 指数 + 抖动）由本类自行管理，
         # 不再依赖 websockets 内置 reconnect_delays（该参数在 14/15 已被移除，
         # 残留会作为 **kwargs 透传给 asyncio.create_connection 而崩溃）。
+        # 记录本轮启动时刻，供看门狗判定"一直连不上"的卡死。
+        self._run_started_at = _time()
         delays = self._delays()
         while not self._stopping:
             try:
@@ -309,8 +382,15 @@ class WSClient:
             except Exception as e:  # noqa: BLE001 - 连接无法建立（backend 未启动等）
                 metrics.inc("ws_connect_failed_total")
                 logger.warning(f"WS 连接失败，等待重连: {e}")
-            # 统一退避后重连：连接失败与会话结束都走这里（首次延迟已含错峰）
-            await asyncio.sleep(next(delays))
+            # 统一退避后重连：连接失败与会话结束都走这里（首次延迟已含错峰）。
+            # 这里必须兜住异常：否则任何意外都会让 `while` 循环静默终止。
+            try:
+                await asyncio.sleep(next(delays))
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:  # noqa: BLE001
+                logger.error(f"WS 重连退避异常，短休眠后继续: {e}")
+                await asyncio.sleep(self._reconnect_min)
 
     def _build_headers(self) -> dict[str, str]:
         headers = {"User-Agent": "data-cleaner-ws"}
@@ -339,6 +419,7 @@ class WSClient:
         """一次连接的会话：发送 hello → 启动发送协程 → 接收循环。"""
         self._ws = ws
         self._connected = True
+        self._last_connect_at = _time()
         self._resync_from = None
         self._wakeup = asyncio.Event()
         metrics.inc("ws_connected_total")
