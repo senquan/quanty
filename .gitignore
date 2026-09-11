@@ -60,12 +60,22 @@ docs/repos
 docs/skills
 
 # Test
-tests/
-test_*
+# ⚠️ 长期回归测试**入库**（换机器/恢复环境后仍要有测试，见审计 D-7）。
+# 这里只排除「跑测试时产生的临时物」，**不要**再用 `tests/` + `test_*` 一刀切
+# —— 那会把 backend/tests、data-cleaner/tests 整个挡在版本库外。
+__pycache__/
+.pytest_cache/
+# 测试临时工作区（内容形如 test_<case>0/1/…，是运行产物不是用例源码）
+.pytest_tmp/
 
 # AI temp
 *.txt
 _t_*.py
+
+# 测试夹具放行 —— 必须放在 `*.txt` / `*.csv` 之后（gitignore 是「最后匹配胜出」），
+# 否则夹具文件会被上面两条通用规则吞掉。
+!**/tests/fixtures/**
+!**/tests/**/fixtures/**
 
 # Data Cleaner Raw Data
 data-cleaner/data/ws/*.json
