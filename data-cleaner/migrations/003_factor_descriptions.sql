@@ -324,7 +324,7 @@ VALUES (
     '',
     '["div_yield"]'::jsonb,
     'system',
-    '股息率：近12个月每股分红与股价之比，衡量现金回报水平，是红利低波策略的核心选股指标。'
+    '股息率（单位：百分比，如 4.85=4.85%）：取 daily_basic.dv_ttm 年度披露值并前向填充，衡量现金回报水平，是红利低波策略的核心选股指标。'
 )
 ON CONFLICT (code) DO UPDATE SET description = EXCLUDED.description;
 

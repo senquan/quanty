@@ -69,18 +69,24 @@ class ValueDivYield(Factor):
     name = "股息率"
     category = "value"
     frequency = "Daily"
-    data_sources = ["dividend_ttm", "adj_close", "div_yield"]
+    # 单位：百分比（4.85 = 4.85%）。实测 stock_fhps_em / daily_basic.dv_ttm 均为百分比口径。
+    # div_yield 为实际数据路径；dividend_ttm 当前未填充，仅作潜在全历史回退。
+    data_sources = ["div_yield", "dividend_ttm", "adj_close"]
 
     def compute(self, df):
-        # 优先用 近12月每股分红 / 价 推导（全历史；daily_basic.dv_ttm 仅约 3 日历史）。
-        if ("dividend_ttm" in df.columns and df["dividend_ttm"].notna().any()
-                and "adj_close" in df.columns):
-            dy = df["dividend_ttm"] / df["adj_close"]
-            dy = dy.clip(lower=0, upper=0.2)  # 股息率 >20% 视为异常
+        # 实际数据路径：div_yield（= daily_basic.dv_ttm，年度披露值，已按 symbol 前向填充）。
+        if "div_yield" in df.columns and df["div_yield"].notna().any():
+            dy = df["div_yield"].clip(lower=0, upper=20)  # 股息率 >20% 视为异常（百分比口径）
             if dy.notna().any():
                 return dy
-        if "div_yield" in df.columns:
-            return df["div_yield"]
+        # 潜在回退：近12月每股分红 / 前复权价（比率→×100 转百分比，与上方口径一致）。
+        # 注：metadata_refresh.upsert_stock_info 当前只写 industry/list_date，dividend_ttm 恒为空，
+        # 故该分支不会被触发；保留作全历史扩展，避免单位歧义。
+        if ("dividend_ttm" in df.columns and df["dividend_ttm"].notna().any()
+                and "adj_close" in df.columns):
+            dy = (df["dividend_ttm"] / df["adj_close"] * 100).clip(lower=0, upper=20)
+            if dy.notna().any():
+                return dy
         return pd.Series(float("nan"), index=df.index)
 
 

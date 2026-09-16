@@ -120,7 +120,8 @@ class FundamentalSource(BaseSource):
         """东方财富分红送配：按年度返回全 A 股息率。
 
         返回列：symbol, report_year, dividend_yield, cash_div_per_10sh。
-        dividend_yield 为小数（0.0125=1.25%），与 daily_basic.dv_ttm 口径一致。
+        dividend_yield 为百分比（4.85=4.85%），与因子 VAL_DIV_YIELD 口径一致；
+        写入 daily_basic.dv_ttm 后由 factor_build 前向填充到全年。
         symbol 映射为 tushare 风格（600519.SH）以对齐 raw_bars/daily_basic。
         """
         cols = ["symbol", "report_year", "dividend_yield", "cash_div_per_10sh"]
