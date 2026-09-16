@@ -168,6 +168,50 @@ def load_trade_dates() -> list:
         return []
 
 
+def load_dividend_payers() -> set:
+    """返回 daily_basic 中 dv_ttm 非空的 symbol 集合（历史上有过分红披露的标的）。
+
+    用于股息率回补时识别"从不分红"标的，将其 dv_ttm 显式置 0（视为 0 股息率），
+    使因子覆盖率趋近 100%；仅对不曾出现过 dv_ttm 的标的写 0，避免覆盖真实分红值。
+    """
+    eng = _engine()
+    if eng is None:
+        return set()
+    from sqlalchemy import text
+
+    try:
+        with eng.connect() as conn:
+            rows = conn.execute(
+                text("SELECT DISTINCT symbol FROM factor.daily_basic WHERE dv_ttm IS NOT NULL")
+            ).fetchall()
+        return {r[0] for r in rows}
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"load_dividend_payers 失败: {e}")
+        return set()
+
+
+def load_first_trade_dates(symbols: list) -> dict:
+    """返回给定 symbol 在 raw_bars 中的首交易日(date)。无记录的标的不在返回 dict 中。"""
+    eng = _engine()
+    if eng is None or not symbols:
+        return {}
+    from sqlalchemy import text
+
+    try:
+        with eng.connect() as conn:
+            rows = conn.execute(
+                text(
+                    "SELECT symbol, MIN(date(timestamp)) AS d "
+                    "FROM factor.raw_bars WHERE symbol = ANY(:syms) GROUP BY symbol"
+                ),
+                {"syms": list(symbols)},
+            ).fetchall()
+        return {r[0]: r[1] for r in rows}
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"load_first_trade_dates 失败: {e}")
+        return {}
+
+
 def upsert_trading_status(rows: list[dict]) -> int:
     """写入 trading_status。rows 项含 symbol/trade_date/limit_up/limit_down/pct_chg/suspended。"""
     eng = _engine()

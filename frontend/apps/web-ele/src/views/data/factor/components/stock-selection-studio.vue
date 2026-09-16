@@ -25,6 +25,7 @@ import {
   ElRadioGroup,
   ElRow,
   ElSelect,
+  ElSlider,
   ElTable,
   ElTableColumn,
 } from 'element-plus';
@@ -38,7 +39,31 @@ const props = defineProps<{
 }>();
 
 const selectedIds = ref<string[]>([]);
-const weightMethod = ref<'equal' | 'ic_weighted' | 'max_sharpe'>('ic_weighted');
+const weightMethod = ref<'equal' | 'ic_weighted' | 'max_sharpe' | 'manual'>('ic_weighted');
+
+/** 手动权重模式下，各选中因子的相对权重（0-100）。键为因子 code。 */
+const manualWeights = ref<Record<string, number>>({});
+/** 未显式设定时的默认相对权重（等权基数），随选中因子数变化 */
+const defaultManualWeight = computed(() =>
+  100 / Math.max(1, selectedIds.value.length),
+);
+function manualWeight(code: string): number {
+  return manualWeights.value[code] ?? defaultManualWeight.value;
+}
+function setManualWeight(code: string, v: number) {
+  manualWeights.value = { ...manualWeights.value, [code]: v };
+}
+/** 实时归一化比例（仅用于界面展示，便于用户直观看到最终占比） */
+const manualWeightNorm = computed(() => {
+  const entries: Array<[string, number]> = selectedIds.value.map((c) => [
+    c,
+    manualWeights.value[c] ?? defaultManualWeight.value,
+  ]);
+  const total = entries.reduce((s, [, v]) => s + v, 0);
+  const map: Record<string, number> = {};
+  for (const [c, v] of entries) map[c] = total > 0 ? v / total : 0;
+  return map;
+});
 const stockPool = ref<('bj' | 'cyb' | 'kcb' | 'main')[]>([]);
 const customEnabled = ref(false);
 const customCodesText = ref<string>('');
@@ -118,6 +143,7 @@ async function triggerSelection() {
         {
           selectedFactorIds: selectedIds.value,
           weightMethod: weightMethod.value,
+          manualWeights: manualWeights.value,
           universe: stockPool.value,
           customCodes: customEnabled.value ? customCodes : [],
           mode: mode.value,
@@ -170,6 +196,12 @@ function buildConfig(): FactorStrategyConfig {
   if (weightMethod.value === 'equal') {
     config.weight_mode = 'manual';
     config.weights = Object.fromEntries(codes.map((c) => [c, 1 / codes.length]));
+  } else if (weightMethod.value === 'manual') {
+    config.weight_mode = 'manual';
+    // 取用户设定的相对权重（未设定项用等权基数），后端按此归一化
+    config.weights = Object.fromEntries(
+      codes.map((c) => [c, manualWeights.value[c] ?? defaultManualWeight.value]),
+    );
   }
   // ic_weighted / max_sharpe 真实引擎统一走实时 IR 加权（auto_ir）
   return config;
@@ -300,6 +332,7 @@ const weightOptions = [
   { id: 'equal', title: '等权重加权', desc: '各因子等比暴露，适用于因子间独立且风格平稳的市场。' },
   { id: 'ic_weighted', title: 'IC均值加权', desc: '按各因子IR历史均值线性分配权重（真实接口走实时IR加权）。' },
   { id: 'max_sharpe', title: '最大夏普优化', desc: '本地模拟按协方差惩罚调权；真实接口近似走实时IR加权。' },
+  { id: 'manual', title: '手动权重', desc: '为每个因子拖拽设定相对权重（0-100），后端按你的设定归一化，可任意定制配比。' },
 ];
 
 const modeOptions = [
@@ -401,6 +434,38 @@ const modeOptions = [
                 </div>
                 <p class="text-[11px] text-gray-400 mt-1">{{ opt.desc }}</p>
               </label>
+            </div>
+
+            <!-- 手动权重：逐因子滑杆 -->
+            <div
+              v-if="weightMethod === 'manual'"
+              class="mt-3 rounded-xl bg-white border border-emerald-100 p-3 space-y-2.5"
+            >
+              <div class="flex items-center justify-between">
+                <span class="text-[11px] font-semibold text-emerald-600">逐因子相对权重（0-100）</span>
+                <span class="text-[10px] text-gray-400">下方为归一化后占比</span>
+              </div>
+              <div
+                v-for="f in factors.filter((x) => selectedIds.includes(x.id))"
+                :key="f.id"
+                class="flex items-center gap-2"
+              >
+                <span class="w-28 truncate text-xs text-gray-600" :title="f.name">{{ f.name }}</span>
+                <ElSlider
+                  :model-value="manualWeight(f.code)"
+                  :min="0"
+                  :max="100"
+                  :step="1"
+                  class="flex-1"
+                  @update:model-value="(v) => setManualWeight(f.code, v as number)"
+                />
+                <span class="w-12 text-right font-mono text-xs text-emerald-600">
+                  {{ ((manualWeightNorm[f.code] ?? 0) * 100).toFixed(0) }}%
+                </span>
+              </div>
+              <span class="text-[10px] text-gray-400 block pt-1">
+                引擎按你设定的相对权重归一化后参与打分；未拖动的因子默认等权基数。
+              </span>
             </div>
           </div>
 

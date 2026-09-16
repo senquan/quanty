@@ -706,6 +706,22 @@ export function runStockSelection(
       for (const f of selectedFactors)
         weights[f.code] = Math.abs(f.icMean) / totalAbsIC;
     }
+  } else if (params.weightMethod === 'manual') {
+    // 手工权重：取用户设定的相对权重（0-100），归一化后使用
+    const raw: Record<string, number> = {};
+    const defaultW = 1.0 / selectedFactors.length;
+    let total = 0;
+    for (const f of selectedFactors) {
+      const v =
+        (params.manualWeights && params.manualWeights[f.code]) ?? defaultW;
+      raw[f.code] = v;
+      total += v;
+    }
+    if (total <= 0) {
+      for (const f of selectedFactors) weights[f.code] = defaultW;
+    } else {
+      for (const f of selectedFactors) weights[f.code] = raw[f.code]! / total;
+    }
   } else {
     const corrMap = calculateCorrelationMatrix(selectedFactors);
     const scores: Record<string, number> = {};

@@ -119,7 +119,9 @@ export interface StockSelectionMetrics {
 
 export interface StockSelectionParams {
   selectedFactorIds: string[];
-  weightMethod: 'equal' | 'ic_weighted' | 'max_sharpe';
+  weightMethod: 'equal' | 'ic_weighted' | 'max_sharpe' | 'manual';
+  /** 手动权重模式下的逐因子相对权重（0-100，由引擎归一化）。键为因子 code。 */
+  manualWeights?: Record<string, number>;
   /** 标的股票池（板块多选，空数组 = 全市场） */
   universe: ('bj' | 'cyb' | 'kcb' | 'main')[];
   /** 自选股代码列表（与所选板块取并集，跨板块生效） */

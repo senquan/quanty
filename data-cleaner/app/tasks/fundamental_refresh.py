@@ -427,4 +427,33 @@ def backfill_dividend_yield_history(years: list[int] | None = None) -> dict:
         state["done_dividend_years"] = sorted(done)
         _save_val_state(state)
         logger.info(f"股息率回补完成({y}): {len(rows)} 行")
+
+    # 补齐"从不分红"标的：daily_basic 中从无 dv_ttm 记录的标的视为 0 股息率。
+    # 在其上市首日写 dv_ttm=0，factor_build 按 symbol 前向填充后全年为 0，因子覆盖率→~100%。
+    # 仅对无 dv_ttm 的标的写 0（COALESCE 不会覆盖真实分红值），幂等可重复跑。
+    try:
+        universe = fundamental_store.load_universe()
+        payers = fundamental_store.load_dividend_payers()
+        non_payers = [s for s in universe if s not in payers]
+        if non_payers:
+            first_dates = fundamental_store.load_first_trade_dates(non_payers)
+            zero_rows = [
+                {
+                    "symbol": s,
+                    "trade_date": first_dates[s],
+                    "pe": None, "pe_ttm": None, "pb": None, "ps_ttm": None,
+                    "dv_ttm": 0.0,
+                    "turnover_rate": None, "turnover_rate_f": None,
+                    "total_mv": None, "circ_mv": None, "float_share": None,
+                }
+                for s in non_payers
+                if s in first_dates
+            ]
+            if zero_rows:
+                fundamental_store.bulk_upsert_daily_basic(zero_rows)
+                total_rows += len(zero_rows)
+                logger.info(f"从不分红标的补 0 完成: {len(zero_rows)} 行")
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"从不分红标的补 0 异常: {e}")
+
     return {"status": "done", "rows": total_rows, "years": sorted(done)}
