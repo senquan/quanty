@@ -109,6 +109,9 @@ backend/_manual_*.py
 # D-8 画像超额收益人工核对工具（3 作者 × 10 提及独立复算 + 三点可复核样例）
 !data-cleaner/_d8_verify.py
 !data-cleaner/_d8_spotcheck.py
+# 2026-09-16 迁移重放自检：改过 migrations/*.sql 后先跑它，确认 dc 还能起来
+# （apply_migrations 每次启动全量重放，语法正确 ≠ 能重放）
+!data-cleaner/_verify_migrations_replay.py
 
 # 运行状态与报告产物
 data-cleaner/data/*_state.json

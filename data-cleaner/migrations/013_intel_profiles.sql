@@ -39,8 +39,20 @@ CREATE TABLE IF NOT EXISTS intel.author_profiles (
     computed_at         TIMESTAMPTZ DEFAULT now()
 );
 
-CREATE UNIQUE INDEX IF NOT EXISTS idx_intel_profiles_key_ver
-    ON intel.author_profiles(profile_key, profile_type, profile_version);
+-- ⚠️ 此处原本创建 3 列唯一索引 idx_intel_profiles_key_ver
+--    (profile_key, profile_type, profile_version)，**已删除，不要加回来**。
+--
+--    原因：apply_migrations()（app/storage/db.py）每次启动会**全量重放**
+--    所有 migrations/*.sql —— 没有 applied 记录表、没有校验和。018 引入
+--    as_of 版本化后，同一 (key, type, ver) 会**合法地**存在多个 as_of 版本行
+--    （实测 14 个 key × 2 个 as_of）。若本文件仍创建这个 3 列唯一索引，
+--    重放时就会在已有多个 as_of 的库上撞 UniqueViolationError，
+--    ⇒ 整个迁移流程中断、dc 起不来（2026-09-16 实际发生）。
+--
+--    最终唯一键由 018_intel_profiles_asof.sql 定义：
+--        (profile_key, profile_type, profile_version, as_of)
+--    018 里保留的 DROP INDEX IF EXISTS 负责清理历史遗留的旧索引，
+--    因此这里删掉 CREATE 不会让任何环境失去唯一性约束。
 
 CREATE INDEX IF NOT EXISTS idx_intel_profiles_type ON intel.author_profiles(profile_type);
 CREATE INDEX IF NOT EXISTS idx_intel_profiles_computed ON intel.author_profiles(computed_at);
